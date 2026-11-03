@@ -1,0 +1,53 @@
+"""Tests for camera streaming, snapshot generation, and AI visual detection."""
+
+import pytest
+from fastapi.testclient import TestClient
+from backend.ai.detection import detection_service
+from backend.auth.flipper_listener import UID_REGEX
+from backend.camera.streamer import camera_streamer
+from backend.main import app
+
+
+def test_camera_snapshot_endpoint():
+    """Verifies /api/camera/snapshot returns valid JPEG image."""
+    with TestClient(app) as client:
+        resp = client.get("/api/camera/snapshot")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/jpeg"
+        assert len(resp.content) > 1000  # Frame must contain image data
+
+
+def test_camera_stream_chunk_generator():
+    """Verifies stream generator produces MJPEG boundary chunks."""
+    gen = camera_streamer.stream_generator()
+    chunk = next(gen)
+    assert b"--frame" in chunk
+    assert b"Content-Type: image/jpeg" in chunk
+    assert len(chunk) > 1000
+
+
+def test_ai_detection_processing():
+    """Verifies AI detection service produces alerts and bounding boxes."""
+    frame = camera_streamer.capture_frame()
+    alerts = detection_service.process_frame(frame, zone="Sector-Delta")
+    assert len(alerts) > 0
+    first = alerts[0]
+    assert first.type == "detection"
+    assert first.confidence >= 0.50
+    assert len(first.bounding_box) == 4
+
+
+def test_flipper_uid_regex():
+    """Verifies regex extraction of various Flipper Zero NFC CLI outputs."""
+    line1 = "Found Mifare Classic 1k, UID: 04 A2 3B 4C 5D 6E 7F"
+    match1 = UID_REGEX.search(line1)
+    assert match1 is not None
+    assert match1.group(1).replace(" ", "") == "04A23B4C5D6E7F"
+
+    line2 = "ISO14443A tag UID: 04:11:22:33:44:55:66 (7 bytes)"
+    match2 = UID_REGEX.search(line2)
+    assert match2 is not None
+
+    line3 = "Tag UID: A1:B2:C3:D4"
+    match3 = UID_REGEX.search(line3)
+    assert match3 is not None

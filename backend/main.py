@@ -14,9 +14,12 @@ import os
 from typing import Any, Dict, List, Optional, Set
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response, StreamingResponse
 
 from backend.ai.detection import detection_service
 from backend.auth.authorization import auth_service
+from backend.auth.flipper_listener import FlipperListener
+from backend.camera.streamer import camera_streamer
 from backend.database import db
 from backend.models import (
     AuthScanRequest,
@@ -96,16 +99,44 @@ async def telemetry_broadcaster():
         pass
 
 
+main_event_loop: Optional[asyncio.AbstractEventLoop] = None
+
+
+def on_flipper_tag_scanned(raw_uid: str):
+    """Callback invoked when Flipper Zero detects an NFC tag over USB serial."""
+    authorized, operator_data, message = auth_service.verify_tag_uid(raw_uid)
+    logger.info("Flipper USB scan: %s -> %s", raw_uid, message)
+    if main_event_loop and main_event_loop.is_running():
+        payload = {
+            "type": "auth_event",
+            "source": "flipper_zero_usb",
+            "authorized": authorized,
+            "operator": operator_data,
+            "message": message,
+            "tag_uid": raw_uid,
+        }
+        asyncio.run_coroutine_threadsafe(ws_manager.broadcast(payload), main_event_loop)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: ensure DB tables and start telemetry broadcaster
+    global main_event_loop
+    main_event_loop = asyncio.get_running_loop()
+
+    # Startup: ensure DB tables, start telemetry and Flipper listener
     db.init_db()
-    task = asyncio.create_task(telemetry_broadcaster())
+    telemetry_task = asyncio.create_task(telemetry_broadcaster())
+    flipper = FlipperListener(on_tag_detected=on_flipper_tag_scanned)
+    flipper.start()
+
     yield
-    # Shutdown: cancel telemetry broadcaster
-    task.cancel()
+
+    # Shutdown: stop background listeners
+    telemetry_task.cancel()
+    flipper.stop()
+    camera_streamer.close()
     try:
-        await task
+        await telemetry_task
     except asyncio.CancelledError:
         pass
 
@@ -239,9 +270,10 @@ async def send_robot_command(command: RobotCommandRequest):
     action = command.action.lower().strip()
     result = robot.move(action=action, speed=command.speed)
 
-    # Log command event
+    # Log command or emergency stop event
+    event_type = "emergency_stop" if action == "emergency_stop" else "robot_command"
     mission_service.log_event(
-        event_type="robot_command",
+        event_type=event_type,
         description=f"Action: {action}, Speed: {command.speed}, Success: {result['success']}",
     )
 
@@ -311,7 +343,27 @@ async def trigger_simulated_detection(zone: Optional[str] = None):
 
 
 # ============================================================================
-# 6. Real-time WebSocket
+# 6. Camera Streaming & Video Feeds
+# ============================================================================
+
+@app.get("/api/camera/stream", tags=["Camera"])
+async def stream_camera():
+    """Real-time MJPEG video stream for Meta Quest 3S VR command center."""
+    return StreamingResponse(
+        camera_streamer.stream_generator(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@app.get("/api/camera/snapshot", tags=["Camera"])
+async def get_camera_snapshot():
+    """Returns single JPEG frame for lightweight previews or snapshot analysis."""
+    jpeg = camera_streamer.get_jpeg_bytes()
+    return Response(content=jpeg, media_type="image/jpeg")
+
+
+# ============================================================================
+# 7. Real-time WebSocket
 # ============================================================================
 
 @app.websocket("/ws")

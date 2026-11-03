@@ -138,6 +138,21 @@ Triggers an object detection alert (simulated/live) and broadcasts to VR headset
 
 ---
 
+### 6. Camera Streaming & Video Feeds
+#### `GET /api/camera/stream`
+Real-time MJPEG video stream (multipart/x-mixed-replace) consumed directly by Meta Quest 3S or web clients.
+
+#### `GET /api/camera/snapshot`
+Returns the latest single frame as JPEG binary (`image/jpeg`).
+
+---
+
+## Flipper Zero USB Integration
+When Flipper Zero is plugged in via USB-C, the backend automatically monitors serial lines (`/dev/ttyACM*`) at 115200 baud for NFC scans.
+Upon detection, the UID is normalized, authorized, and pushed over WebSocket to the VR headset in real-time.
+
+---
+
 ## WebSocket Channel (`/ws`)
 
 ### Sent by Server to VR Headset

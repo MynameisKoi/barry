@@ -25,24 +25,37 @@ META QUEST 3S  <---(WebSocket / HTTP)--->  LAPTOP GATEWAY  <---(Serial/ROS2)--->
 barry/
 ├── backend/
 │   ├── auth/
-│   │   └── authorization.py    # Flipper Zero NFC verification & operator registry
+│   │   ├── authorization.py    # Flipper Zero NFC verification & operator registry
+│   │   └── flipper_listener.py # USB serial auto-listener for Flipper Zero (/dev/ttyACM*)
+│   ├── camera/
+│   │   └── streamer.py         # MJPEG live stream & synthetic quadruped HUD fallback
 │   ├── robot/
 │   │   ├── interface.py        # Abstract RobotInterface decoupling backend from hardware
 │   │   ├── simulator.py        # Full kinematics & telemetry simulator (Day 1-3 dev)
 │   │   └── dogzilla.py         # Hardware driver placeholder ready for physical DOGZILLA
 │   ├── ai/
-│   │   └── detection.py        # Lightweight YOLO / vision alert generator
+│   │   └── detection.py        # Lightweight YOLO / vision alert generator & contour tracker
 │   ├── services/
 │   │   └── mission.py          # Mission lifecycle, zone tracking & audit trail
 │   ├── database.py             # SQLite manager & schema migrations
 │   ├── models.py               # Pydantic schemas for REST & WebSocket
-│   └── main.py                 # FastAPI application & WebSocket broadcaster
+│   └── main.py                 # FastAPI application, camera streaming & WebSocket broadcaster
 ├── frontend/
-│   └── unity-project/          # Meta Quest 3S Unity project (Meta XR SDK)
+│   └── unity-project/
+│       └── Assets/Scripts/     # C# Unity VR Cockpit controllers:
+│           ├── BarryNetworkManager.cs  # WebSocket & REST network bridge
+│           ├── BarryCameraReceiver.cs  # MJPEG & snapshot texture renderer
+│           ├── BarryCockpitUI.cs       # 5 HUD panels, AI alerts, emergency stop
+│           └── BarryInputController.cs # Keyboard WASD & Meta XR touch controller inputs
+├── tools/
+│   ├── register_tag.py         # Interactive CLI to enroll physical NFC tags
+│   └── flipper_serial.py       # Standalone USB serial monitor for Flipper Zero
 ├── tests/
 │   ├── test_auth.py            # NFC authorization & UID normalization unit tests
+│   ├── test_camera.py          # MJPEG streaming & AI vision detection tests
 │   ├── test_robot.py           # Locomotion & emergency stop unit tests
-│   └── test_mission.py         # Mission lifecycle & audit trail unit tests
+│   ├── test_mission.py         # Mission lifecycle & audit trail unit tests
+│   └── test_full_system.py     # End-to-end 8-stage mission verification harness
 ├── docs/
 │   ├── architecture.md         # Detailed topology & architectural principles
 │   ├── api-specification.md    # REST & WebSocket endpoint contracts
@@ -118,12 +131,21 @@ curl -X POST http://localhost:8000/api/robot/command \
 curl -X POST http://localhost:8000/api/robot/reset-emergency
 ```
 
-### D. Trigger AI Object Detection Alert
+### D. Video Streaming & Snapshots
+```bash
+# View live MJPEG stream URL (open in browser or Unity):
+http://localhost:8000/api/camera/stream
+
+# Grab instantaneous snapshot:
+curl -s http://localhost:8000/api/camera/snapshot -o snapshot.jpg
+```
+
+### E. Trigger AI Object Detection Alert
 ```bash
 curl -X POST "http://localhost:8000/api/ai/trigger-detection?zone=Zone-A"
 ```
 
-### E. Stop Mission & Review Event History
+### F. Stop Mission & Review Event History
 ```bash
 # Stop active mission
 curl -X POST http://localhost:8000/api/mission/stop \
@@ -132,6 +154,18 @@ curl -X POST http://localhost:8000/api/mission/stop \
 
 # Retrieve chronological audit history
 curl -X GET http://localhost:8000/api/events
+```
+
+### G. Flipper Zero Tools
+```bash
+# 1. Enroll physical NFC test tags into the database:
+python3 tools/register_tag.py --id OP-004 --name "Lead Inspector" --role "Safety Officer" --uid "04:A2:3B:4C"
+
+# 2. List enrolled credentials:
+python3 tools/register_tag.py --list
+
+# 3. Standalone Flipper Zero USB serial monitor:
+python3 tools/flipper_serial.py
 ```
 
 ---
