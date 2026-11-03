@@ -17,9 +17,10 @@ import serial
 logger = logging.getLogger("barry.flipper")
 
 # Regex to match 3 to 10-byte hex UIDs/Hex IDs from Flipper NFC or 125kHz RFID CLI output
-# e.g.: "Hex: 2E B7 76", "UID: 04 A2 3B 4C 5D 6E 7F", "UID: 04:A2:3B:4C", "UID: 04A23B4C5D6E7F"
+# e.g.: "H10301 2EB776", "Hex: 2E B7 76", "UID: 04 A2 3B 4C 5D 6E 7F", "UID: 04:A2:3B:4C"
 UID_REGEX = re.compile(
-    r"(?:UID|tag\s+uid|serial\s+number|Hex)[:\s]+([0-9A-Fa-f]{2}(?:[:\s-]?[0-9A-Fa-f]{2}){2,9})",
+    r"(?:UID|tag\s+uid|serial\s+number|Hex)[:\s]+([0-9A-Fa-f]{2}(?:[:\s-]?[0-9A-Fa-f]{2}){2,9})"
+    r"|(?:H10301|EM4100|Indala|HID|RFID|Key)\s+([0-9A-Fa-f]{6,16})",
     re.IGNORECASE,
 )
 
@@ -91,9 +92,10 @@ class FlipperListener:
                 self.ser = serial.Serial(port, self.baudrate, timeout=1.0)
                 logger.info("Connected to Flipper Zero on %s", port)
 
-                # Send newline to wake up Flipper CLI prompt
-                self.ser.write(b"\r\n")
-                time.sleep(0.1)
+                # Clear CLI state and drain initial banner
+                self.ser.write(b"\x03\r\n")
+                time.sleep(0.3)
+                self.ser.read(2048)
 
                 if self.scan_mode == "rfid":
                     logger.info("Engaging Flipper 125kHz RFID reader...")
@@ -107,10 +109,10 @@ class FlipperListener:
                     if not line:
                         continue
 
-                    # Search for UID in Flipper output
+                    # Search for UID or RFID hex token in Flipper output
                     match = UID_REGEX.search(line)
                     if match:
-                        raw_uid = match.group(1).strip()
+                        raw_uid = (match.group(1) or match.group(2)).strip()
                         now = time.time()
                         # Debounce scans within 1.5 seconds
                         if raw_uid != self.last_scanned_uid or (now - self.last_scan_time) > 1.5:
@@ -122,13 +124,14 @@ class FlipperListener:
                                     self.on_tag_detected(raw_uid)
                                 except Exception as err:
                                     logger.error("Callback error on tag detected: %s", err)
-                            # Re-engage rfid read if in rfid mode
-                            if self.scan_mode == "rfid":
-                                time.sleep(0.5)
-                                try:
-                                    self.ser.write(b"rfid read\r\n")
-                                except Exception:
-                                    pass
+
+                    # When Flipper finishes a read, automatically resume reading
+                    if "Reading stopped" in line and self.scan_mode == "rfid" and self.running:
+                        time.sleep(0.3)
+                        try:
+                            self.ser.write(b"rfid read\r\n")
+                        except Exception:
+                            pass
 
             except serial.SerialException as se:
                 logger.debug("Flipper serial disconnected (%s). Retrying...", se)
