@@ -16,11 +16,36 @@ def test_db(tmp_path):
 
 
 def test_normalize_uid():
-    """Verifies that NFC UIDs are normalized consistently."""
+    """Verifies that NFC and RFID UIDs are normalized consistently."""
     assert normalize_uid("04:a2:3b:4c:5d:6e:7f") == "04:A2:3B:4C:5D:6E:7F"
     assert normalize_uid("04-A2-3B-4C-5D-6E-7F") == "04:A2:3B:4C:5D:6E:7F"
     assert normalize_uid("04 A2 3B 4C 5D 6E 7F") == "04:A2:3B:4C:5D:6E:7F"
     assert normalize_uid("04a23b4c5d6e7f") == "04:A2:3B:4C:5D:6E:7F"
+    # 3-byte HID H10301 RFID card
+    assert normalize_uid("2E B7 76") == "2E:B7:76"
+    assert normalize_uid("2eb776") == "2E:B7:76"
+    assert normalize_uid("2E:B7:76") == "2E:B7:76"
+
+
+def test_auth_service_hid_card(test_db):
+    """Verifies that 3-byte HID H10301 cards can be registered and verified in any format."""
+    service = AuthService(db_manager=test_db)
+    service.register_operator("OP-004", "Test Lead", "Commander", "2E:B7:76")
+
+    # Match via spaced format (as displayed on Flipper screen)
+    auth1, op1, _ = service.verify_tag_uid("2E B7 76")
+    assert auth1 is True
+    assert op1["operator_id"] == "OP-004"
+
+    # Match via raw hex
+    auth2, op2, _ = service.verify_tag_uid("2EB776")
+    assert auth2 is True
+    assert op2["operator_id"] == "OP-004"
+
+    # Match via normalized
+    auth3, op3, _ = service.verify_tag_uid("2E:B7:76")
+    assert auth3 is True
+    assert op3["operator_id"] == "OP-004"
 
 
 def test_auth_service_authorized(test_db):

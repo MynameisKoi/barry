@@ -16,10 +16,10 @@ import serial
 
 logger = logging.getLogger("barry.flipper")
 
-# Regex to match 4, 7, or 10-byte hex UIDs from Flipper NFC CLI output
-# e.g.: "UID: 04 A2 3B 4C 5D 6E 7F" or "UID: 04:A2:3B:4C" or "UID: 04A23B4C5D6E7F"
+# Regex to match 3 to 10-byte hex UIDs/Hex IDs from Flipper NFC or 125kHz RFID CLI output
+# e.g.: "Hex: 2E B7 76", "UID: 04 A2 3B 4C 5D 6E 7F", "UID: 04:A2:3B:4C", "UID: 04A23B4C5D6E7F"
 UID_REGEX = re.compile(
-    r"(?:UID|tag\s+uid|serial\s+number)[:\s]+([0-9A-Fa-f]{2}(?:[:\s-]?[0-9A-Fa-f]{2}){3,9})",
+    r"(?:UID|tag\s+uid|serial\s+number|Hex)[:\s]+([0-9A-Fa-f]{2}(?:[:\s-]?[0-9A-Fa-f]{2}){2,9})",
     re.IGNORECASE,
 )
 

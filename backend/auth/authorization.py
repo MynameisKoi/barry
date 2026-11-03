@@ -22,8 +22,8 @@ def normalize_uid(raw_uid: str) -> str:
     clean_hex = re.sub(r"[^0-9A-Fa-f]", "", raw_uid).upper()
     if not clean_hex:
         return raw_uid.strip().upper()
-    # Format as pairs separated by colons if length is even
-    if len(clean_hex) % 2 == 0 and len(clean_hex) >= 8:
+    # Format as pairs separated by colons if length is even and at least 4 hex chars (2 bytes)
+    if len(clean_hex) % 2 == 0 and len(clean_hex) >= 4:
         return ":".join(clean_hex[i : i + 2] for i in range(0, len(clean_hex), 2))
     return clean_hex
 
@@ -42,19 +42,22 @@ class AuthService:
         if not raw_uid or not raw_uid.strip():
             return False, None, "Tag UID cannot be empty."
 
+        clean_hex = re.sub(r"[^0-9A-Fa-f]", "", raw_uid).upper()
         normalized = normalize_uid(raw_uid)
         timestamp = datetime.now(timezone.utc).isoformat()
 
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
-            # Allow matching either exact normalized or raw uppercase
+            # Allow matching normalized, raw uppercase, or stripped hex
             cursor.execute(
                 """
                 SELECT operator_id, name, role, tag_uid
                 FROM operators
-                WHERE UPPER(tag_uid) = ? OR UPPER(tag_uid) = ?
+                WHERE UPPER(tag_uid) = ?
+                   OR UPPER(tag_uid) = ?
+                   OR REPLACE(REPLACE(REPLACE(UPPER(tag_uid), ':', ''), '-', ''), ' ', '') = ?
                 """,
-                (normalized, raw_uid.strip().upper()),
+                (normalized, raw_uid.strip().upper(), clean_hex),
             )
             row = cursor.fetchone()
 
