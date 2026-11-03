@@ -46,10 +46,12 @@ class FlipperListener:
         self,
         port: Optional[str] = None,
         baudrate: int = 115200,
+        scan_mode: str = "rfid",  # 'rfid', 'nfc', 'listen'
         on_tag_detected: Optional[Callable[[str], None]] = None,
     ) -> None:
         self.target_port = port
         self.baudrate = baudrate
+        self.scan_mode = scan_mode
         self.on_tag_detected = on_tag_detected
         self.ser: Optional[serial.Serial] = None
         self.running: bool = False
@@ -93,6 +95,13 @@ class FlipperListener:
                 self.ser.write(b"\r\n")
                 time.sleep(0.1)
 
+                if self.scan_mode == "rfid":
+                    logger.info("Engaging Flipper 125kHz RFID reader...")
+                    self.ser.write(b"rfid read\r\n")
+                elif self.scan_mode == "nfc":
+                    logger.info("Engaging Flipper NFC scanner...")
+                    self.ser.write(b"nfc\r\nscanner\r\n")
+
                 while self.running and self.ser.is_open:
                     line = self.ser.readline().decode("utf-8", errors="ignore").strip()
                     if not line:
@@ -107,12 +116,19 @@ class FlipperListener:
                         if raw_uid != self.last_scanned_uid or (now - self.last_scan_time) > 1.5:
                             self.last_scanned_uid = raw_uid
                             self.last_scan_time = now
-                            logger.info("Flipper scanned NFC UID: %s", raw_uid)
+                            logger.info("Flipper scanned NFC/RFID credential: %s", raw_uid)
                             if self.on_tag_detected:
                                 try:
                                     self.on_tag_detected(raw_uid)
                                 except Exception as err:
                                     logger.error("Callback error on tag detected: %s", err)
+                            # Re-engage rfid read if in rfid mode
+                            if self.scan_mode == "rfid":
+                                time.sleep(0.5)
+                                try:
+                                    self.ser.write(b"rfid read\r\n")
+                                except Exception:
+                                    pass
 
             except serial.SerialException as se:
                 logger.debug("Flipper serial disconnected (%s). Retrying...", se)

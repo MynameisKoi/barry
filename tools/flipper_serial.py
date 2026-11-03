@@ -37,6 +37,7 @@ def main():
     parser = argparse.ArgumentParser(description="Monitor Flipper Zero NFC scans over USB.")
     parser.add_argument("--port", help="Serial port (e.g. /dev/ttyACM0). Auto-detected if omitted.")
     parser.add_argument("--baud", type=int, default=115200, help="Baud rate (default: 115200)")
+    parser.add_argument("--mode", default="rfid", choices=["rfid", "nfc", "listen"], help="Scan mode: rfid (125kHz), nfc (13.56MHz), or listen")
     parser.add_argument("--api", default="http://localhost:8000", help="BARRY backend base URL")
 
     args = parser.parse_args()
@@ -50,10 +51,10 @@ def main():
     def callback(uid: str):
         on_tag_scanned(uid, args.api)
 
-    listener = FlipperListener(port=args.port, baudrate=args.baud, on_tag_detected=callback)
+    listener = FlipperListener(port=args.port, baudrate=args.baud, scan_mode=args.mode, on_tag_detected=callback)
     listener.start()
 
-    print("[BARRY FLIPPER MONITOR] Running... Press Ctrl+C to terminate.")
+    print(f"[BARRY FLIPPER MONITOR] Running in '{args.mode.upper()}' mode on {port or 'auto-detect'}...")
     try:
         while True:
             time.sleep(1.0)
