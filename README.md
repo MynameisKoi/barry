@@ -59,6 +59,7 @@ barry/
 ├── docs/
 │   ├── architecture.md         # Detailed topology & architectural principles
 │   ├── api-specification.md    # REST & WebSocket endpoint contracts
+│   ├── quest3s-setup-guide.md  # Meta Quest 3S developer mode, ADB & Wi-Fi guide
 │   └── setup-guide.md          # Step-by-step developer installation guide
 ├── requirements.txt            # Python dependencies
 ├── .env.example                # Sample environment variables
