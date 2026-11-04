@@ -1,0 +1,928 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BARRY // Command Cockpit</title>
+    <style>
+        :root {
+            --bg-deep: #070a0e;
+            --bg-panel: #0f151d;
+            --bg-card: #141c26;
+            --border-glow: #1a2c3d;
+            --cyan-neon: #00f0ff;
+            --green-radar: #00ff88;
+            --amber-warn: #ffb700;
+            --red-alert: #ff2a4b;
+            --text-dim: #748ba0;
+            --text-main: #d9e6f2;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Courier New", monospace;
+        }
+
+        body {
+            background-color: var(--bg-deep);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow-x: hidden;
+        }
+
+        /* Top Bar */
+        header {
+            background: linear-gradient(90deg, #0b1118 0%, #111a24 100%);
+            border-bottom: 1px solid #1f3347;
+            padding: 12px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .brand h1 {
+            font-size: 1.4rem;
+            letter-spacing: 2px;
+            color: var(--cyan-neon);
+            text-transform: uppercase;
+        }
+
+        .badge-mode {
+            background: rgba(0, 240, 255, 0.12);
+            color: var(--cyan-neon);
+            border: 1px solid var(--cyan-neon);
+            padding: 2px 8px;
+            font-size: 0.75rem;
+            border-radius: 3px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .system-indicators {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            font-size: 0.85rem;
+        }
+
+        .indicator-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #444;
+        }
+
+        .dot-online {
+            background: var(--green-radar);
+            box-shadow: 0 0 8px var(--green-radar);
+        }
+
+        .dot-offline {
+            background: var(--red-alert);
+            box-shadow: 0 0 8px var(--red-alert);
+        }
+
+        /* Main Cockpit Layout */
+        main {
+            display: grid;
+            grid-template-columns: 1fr 440px;
+            gap: 16px;
+            padding: 16px;
+            flex: 1;
+        }
+
+        @media (max-width: 1024px) {
+            main {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .panel {
+            background: var(--bg-panel);
+            border: 1px solid #1a2a3a;
+            border-radius: 6px;
+            padding: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+        }
+
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #1c2e42;
+            padding-bottom: 8px;
+            font-size: 0.85rem;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            color: var(--text-dim);
+        }
+
+        .panel-header span.highlight {
+            color: var(--cyan-neon);
+            font-weight: bold;
+        }
+
+        /* Video Feed Container */
+        .video-container {
+            position: relative;
+            width: 100%;
+            background: #000;
+            border-radius: 4px;
+            overflow: hidden;
+            border: 1px solid #233b52;
+            aspect-ratio: 4 / 3;
+            max-height: 520px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .video-stream {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        .video-overlay-banner {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(10, 15, 22, 0.85);
+            border-left: 3px solid var(--green-radar);
+            padding: 4px 10px;
+            font-size: 0.75rem;
+            letter-spacing: 1px;
+            color: var(--green-radar);
+            text-transform: uppercase;
+        }
+
+        .video-controls {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            display: flex;
+            gap: 8px;
+        }
+
+        /* Buttons */
+        button {
+            cursor: pointer;
+            border: 1px solid #2a445f;
+            background: #142230;
+            color: #d9e6f2;
+            padding: 8px 14px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            letter-spacing: 1px;
+            transition: all 0.15s ease;
+            text-transform: uppercase;
+        }
+
+        button:hover {
+            background: #1d3247;
+            border-color: var(--cyan-neon);
+            color: #fff;
+        }
+
+        button:active {
+            transform: scale(0.97);
+        }
+
+        .btn-primary {
+            background: rgba(0, 240, 255, 0.15);
+            border-color: var(--cyan-neon);
+            color: var(--cyan-neon);
+        }
+        .btn-primary:hover {
+            background: var(--cyan-neon);
+            color: #000;
+        }
+
+        .btn-estop {
+            background: rgba(255, 42, 75, 0.2);
+            border: 2px solid var(--red-alert);
+            color: var(--red-alert);
+            font-weight: bold;
+            letter-spacing: 2px;
+            padding: 12px 18px;
+            font-size: 0.95rem;
+        }
+        .btn-estop:hover {
+            background: var(--red-alert);
+            color: #fff;
+            box-shadow: 0 0 16px rgba(255, 42, 75, 0.6);
+        }
+
+        .btn-estop.active-lock {
+            animation: pulse-red 1s infinite alternate;
+        }
+
+        @keyframes pulse-red {
+            from { background: rgba(255, 42, 75, 0.3); border-color: var(--red-alert); }
+            to { background: var(--red-alert); border-color: #fff; color: #fff; }
+        }
+
+        /* Locomotion D-Pad */
+        .locomotion-section {
+            display: grid;
+            grid-template-columns: 180px 1fr;
+            gap: 20px;
+            align-items: center;
+            background: var(--bg-card);
+            padding: 14px;
+            border-radius: 4px;
+            border: 1px solid #1a2a3a;
+        }
+
+        .dpad-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 52px);
+            grid-template-rows: repeat(3, 52px);
+            gap: 6px;
+            justify-content: center;
+        }
+
+        .dpad-btn {
+            background: #142230;
+            border: 1px solid #28445f;
+            color: #c0d4e8;
+            font-size: 1.1rem;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+            user-select: none;
+        }
+
+        .dpad-btn.active {
+            background: var(--cyan-neon);
+            color: #000;
+            box-shadow: 0 0 12px var(--cyan-neon);
+        }
+
+        .dpad-stop {
+            background: rgba(255, 170, 0, 0.15);
+            border-color: var(--amber-warn);
+            color: var(--amber-warn);
+            font-size: 0.75rem;
+        }
+
+        .key-hint {
+            font-size: 0.6rem;
+            display: block;
+            color: var(--text-dim);
+        }
+
+        /* Telemetry Cards */
+        .telemetry-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+        }
+
+        .telem-card {
+            background: var(--bg-card);
+            border: 1px solid #1b2c3d;
+            border-radius: 4px;
+            padding: 10px 14px;
+        }
+
+        .telem-label {
+            font-size: 0.7rem;
+            color: var(--text-dim);
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        .telem-val {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: var(--cyan-neon);
+            margin-top: 4px;
+        }
+
+        /* Battery Bar */
+        .battery-bar-container {
+            width: 100%;
+            height: 8px;
+            background: #1a2530;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+
+        .battery-bar-fill {
+            height: 100%;
+            width: 95%;
+            background: var(--green-radar);
+            transition: width 0.3s ease, background 0.3s ease;
+        }
+
+        /* Flipper NFC/RFID Card Box */
+        .flipper-card-box {
+            background: var(--bg-card);
+            border: 1px solid #1f354c;
+            border-radius: 6px;
+            padding: 14px;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .flipper-card-box.scanned-pulse {
+            border-color: var(--green-radar);
+            box-shadow: 0 0 20px rgba(0, 255, 136, 0.3);
+            background: #0d241d;
+        }
+
+        .flipper-icon-strip {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+
+        .flipper-title {
+            font-size: 0.75rem;
+            letter-spacing: 1.5px;
+            color: var(--amber-warn);
+            text-transform: uppercase;
+            font-weight: bold;
+        }
+
+        .credential-name {
+            font-size: 1.1rem;
+            font-weight: bold;
+            color: #fff;
+        }
+
+        .credential-meta {
+            font-size: 0.8rem;
+            color: var(--text-dim);
+            margin-top: 4px;
+        }
+
+        .credential-uid {
+            font-family: monospace;
+            background: #09121a;
+            border: 1px solid #1b2f42;
+            padding: 3px 8px;
+            border-radius: 3px;
+            display: inline-block;
+            margin-top: 6px;
+            color: var(--cyan-neon);
+            font-size: 0.85rem;
+        }
+
+        /* Event Ticker */
+        .events-log {
+            background: #080d12;
+            border: 1px solid #152230;
+            border-radius: 4px;
+            height: 160px;
+            overflow-y: auto;
+            padding: 8px;
+            font-size: 0.75rem;
+            font-family: monospace;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .event-entry {
+            border-left: 2px solid #23405c;
+            padding-left: 6px;
+            line-height: 1.3;
+        }
+
+        .event-entry.auth_success { border-color: var(--green-radar); color: var(--green-radar); }
+        .event-entry.emergency_stop { border-color: var(--red-alert); color: var(--red-alert); }
+        .event-entry.detection { border-color: var(--amber-warn); color: var(--amber-warn); }
+        .event-entry.mission_start { border-color: var(--cyan-neon); color: var(--cyan-neon); }
+
+        /* Emergency Overlay */
+        #estop-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; width: 100vw; height: 100vh;
+            background: rgba(255, 0, 50, 0.15);
+            border: 8px solid var(--red-alert);
+            pointer-events: none;
+            z-index: 9999;
+            box-sizing: border-box;
+            animation: border-flash 0.8s infinite alternate;
+        }
+
+        @keyframes border-flash {
+            from { border-color: var(--red-alert); }
+            to { border-color: rgba(255, 42, 75, 0.2); }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="estop-overlay"></div>
+
+    <header>
+        <div class="brand">
+            <h1>BARRY // COCKPIT</h1>
+            <span class="badge-mode" id="mode-badge">SIMULATION MODE</span>
+        </div>
+        <div class="system-indicators">
+            <div class="indicator-item">
+                <span class="status-dot dot-online" id="ws-dot"></span>
+                <span id="ws-label">GATEWAY: ONLINE</span>
+            </div>
+            <div class="indicator-item">
+                <span class="status-dot dot-online" id="cam-dot"></span>
+                <span>CAM: 20 FPS</span>
+            </div>
+            <div class="indicator-item">
+                <span id="clock-utc">--:--:-- UTC</span>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <!-- LEFT COLUMN: Camera Feed & Locomotion Controls -->
+        <div style="display: flex; flex-direction: column; gap: 16px;">
+            <!-- Live Camera Feed Panel -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span>FEED 01 // <span class="highlight">DOGZILLA FORWARD OPTICS</span></span>
+                    <span id="cam-resolution">640x480 MJPEG</span>
+                </div>
+                <div class="video-container">
+                    <img id="camera-stream-img" class="video-stream" src="/api/camera/stream" alt="BARRY Camera Stream">
+                    <div class="video-overlay-banner" id="video-overlay">AI TRACKING: ACTIVE</div>
+                    <div class="video-controls">
+                        <button onclick="triggerSimulatedAIAlert()">Trigger AI Anomaly</button>
+                        <button onclick="reloadStream()">Refresh Feed</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Locomotion & Steering Pad -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span>LOCOMOTION // <span class="highlight">TELEOPERATION</span></span>
+                    <span>WASD KEYS / D-PAD</span>
+                </div>
+                <div class="locomotion-section">
+                    <!-- Virtual D-PAD -->
+                    <div class="dpad-grid">
+                        <div></div>
+                        <button class="dpad-btn" id="btn-fwd" onclick="sendLocomotion('forward', 0.3)">
+                            ▲<span class="key-hint">W</span>
+                        </button>
+                        <div></div>
+
+                        <button class="dpad-btn" id="btn-left" onclick="sendLocomotion('left', 0.2)">
+                            ◀<span class="key-hint">A</span>
+                        </button>
+                        <button class="dpad-btn dpad-stop" id="btn-stop" onclick="sendLocomotion('stop', 0.0)">
+                            HALT<span class="key-hint">SPACE</span>
+                        </button>
+                        <button class="dpad-btn" id="btn-right" onclick="sendLocomotion('right', 0.2)">
+                            ▶<span class="key-hint">D</span>
+                        </button>
+
+                        <div></div>
+                        <button class="dpad-btn" id="btn-back" onclick="sendLocomotion('backward', 0.3)">
+                            ▼<span class="key-hint">S</span>
+                        </button>
+                        <div></div>
+                    </div>
+
+                    <!-- Safety & Controls Info -->
+                    <div style="display: flex; flex-direction: column; gap: 10px;">
+                        <div style="font-size: 0.8rem; color: var(--text-dim); line-height: 1.4;">
+                            Use keyboard <strong style="color:var(--cyan-neon)">W A S D</strong> to pilot quadruped. Press <strong style="color:var(--amber-warn)">SPACE</strong> to stop. Press <strong style="color:var(--red-alert)">E</strong> for instant Emergency Stop.
+                        </div>
+                        <div style="display: flex; gap: 10px; align-items: center;">
+                            <button class="btn-estop" id="btn-estop-main" onclick="triggerEStop()">EMERGENCY STOP (E)</button>
+                            <button id="btn-estop-reset" onclick="resetEStop()" style="display:none;">RESET LOCK (R)</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- RIGHT COLUMN: NFC Badge, Mission Panel, Telemetry, Alerts -->
+        <div style="display: flex; flex-direction: column; gap: 16px;">
+            
+            <!-- Flipper NFC/RFID Card Badge -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span>CREDENTIAL // <span class="highlight">FLIPPER ZERO USB</span></span>
+                    <span id="flipper-link-status" style="color: var(--green-radar);">SERIAL READY</span>
+                </div>
+                <div class="flipper-card-box" id="flipper-card">
+                    <div class="flipper-icon-strip">
+                        <span class="flipper-title">FLIPPER RFID / NFC DETECTED</span>
+                        <span id="card-verified-tag" style="color:var(--green-radar); font-size:0.75rem; font-weight:bold;">● VERIFIED</span>
+                    </div>
+                    <div class="credential-name" id="badge-name">Primary Field Lead</div>
+                    <div class="credential-meta" id="badge-role">Robotic Mission Commander &bull; Operator OP-004</div>
+                    <div class="credential-uid" id="badge-uid">UID: 2E:B7:76</div>
+                </div>
+            </div>
+
+            <!-- Mission Commissioning Panel -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span>MISSION // <span class="highlight">INSPECTION LIFECYCLE</span></span>
+                    <span id="mission-status-badge" style="color: var(--amber-warn);">IDLE</span>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 10px;">
+                    <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
+                        <span style="color: var(--text-dim);">ACTIVE MISSION:</span>
+                        <span id="mission-id-val" style="font-family: monospace; color: var(--cyan-neon);">NONE</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
+                        <span style="color: var(--text-dim);">TARGET ZONE:</span>
+                        <span id="mission-zone-val" style="color: #fff;">Sector-A (Restricted)</span>
+                    </div>
+                    <div style="display: flex; gap: 8px; margin-top: 4px;">
+                        <button class="btn-primary" style="flex:1;" id="btn-start-mission" onclick="startActiveMission()">START MISSION</button>
+                        <button style="flex:1;" id="btn-stop-mission" onclick="stopActiveMission()">CONCLUDE</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Telemetry & Kinematics -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span>TELEMETRY // <span class="highlight">KINEMATICS</span></span>
+                    <span id="last-cmd-lbl">STOP</span>
+                </div>
+                <div class="telemetry-grid">
+                    <div class="telem-card">
+                        <div class="telem-label">POSITION (X, Y)</div>
+                        <div class="telem-val" id="pos-val">0.00, 0.00 m</div>
+                    </div>
+                    <div class="telem-card">
+                        <div class="telem-label">HEADING ANGLE</div>
+                        <div class="telem-val" id="heading-val">0.0°</div>
+                    </div>
+                    <div class="telem-card" style="grid-column: span 2;">
+                        <div style="display: flex; justify-content: space-between;">
+                            <span class="telem-label">BATTERY RESERVE</span>
+                            <span id="battery-pct-lbl" style="color: var(--green-radar); font-weight: bold; font-size: 0.85rem;">98.5%</span>
+                        </div>
+                        <div class="battery-bar-container">
+                            <div class="battery-bar-fill" id="battery-fill"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Real-Time Audit Log & Detection Ticker -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span>AUDIT LOG // <span class="highlight">LIVE STREAM</span></span>
+                    <button onclick="clearEventLog()" style="padding: 2px 6px; font-size: 0.65rem;">CLEAR</button>
+                </div>
+                <div class="events-log" id="events-feed">
+                    <div class="event-entry">System ready. Waiting for events...</div>
+                </div>
+            </div>
+
+        </div>
+    </main>
+
+    <script>
+        let ws;
+        let activeOperatorId = "OP-004";
+        let isEmergencyStopped = false;
+
+        // Web Audio Synthesizer for futuristic sound feedback
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playBeep(freq = 880, type = 'sine', duration = 0.12) {
+            try {
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = type;
+                osc.frequency.value = freq;
+                gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start();
+                osc.stop(audioCtx.currentTime + duration);
+            } catch (e) {}
+        }
+
+        function playSuccessChime() {
+            playBeep(587.33, 'triangle', 0.08);
+            setTimeout(() => playBeep(880.00, 'triangle', 0.15), 90);
+        }
+
+        function playAlertTone() {
+            playBeep(440, 'sawtooth', 0.1);
+            setTimeout(() => playBeep(330, 'sawtooth', 0.18), 120);
+        }
+
+        // Clock
+        function updateClock() {
+            const now = new Date();
+            document.getElementById('clock-utc').innerText = now.toISOString().substring(11, 19) + ' UTC';
+        }
+        setInterval(updateClock, 1000);
+        updateClock();
+
+        // WebSocket Connection
+        function initWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                document.getElementById('ws-dot').className = 'status-dot dot-online';
+                document.getElementById('ws-label').innerText = 'GATEWAY: ONLINE';
+                logEvent('Connected to BARRY WebSocket gateway.', 'system');
+            };
+
+            ws.onclose = () => {
+                document.getElementById('ws-dot').className = 'status-dot dot-offline';
+                document.getElementById('ws-label').innerText = 'GATEWAY: RECONNECTING';
+                setTimeout(initWebSocket, 2000);
+            };
+
+            ws.onerror = (err) => {
+                console.warn('WS error:', err);
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    handleServerMessage(msg);
+                } catch (e) {
+                    console.error('Error parsing WS message:', e);
+                }
+            };
+        }
+
+        function handleServerMessage(msg) {
+            // 1. Telemetry updates
+            if (msg.type === 'telemetry') {
+                const telem = msg.telemetry;
+                if (telem) {
+                    document.getElementById('pos-val').innerText = `${telem.position.x.toFixed(2)}, ${telem.position.y.toFixed(2)} m`;
+                    document.getElementById('heading-val').innerText = `${telem.position.heading.toFixed(1)}°`;
+                    document.getElementById('last-cmd-lbl').innerText = (telem.last_command || 'STOP').toUpperCase();
+                    
+                    const batt = Math.max(0, Math.min(100, telem.battery_level));
+                    document.getElementById('battery-pct-lbl').innerText = `${batt.toFixed(1)}%`;
+                    document.getElementById('battery-fill').style.width = `${batt}%`;
+                    
+                    setEmergencyState(telem.emergency_stopped);
+                }
+                const mission = msg.mission;
+                if (mission) {
+                    updateMissionDisplay(mission);
+                }
+            }
+            // 2. Auth events from Flipper USB
+            else if (msg.type === 'auth_event') {
+                playSuccessChime();
+                const cardBox = document.getElementById('flipper-card');
+                cardBox.classList.add('scanned-pulse');
+                setTimeout(() => cardBox.classList.remove('scanned-pulse'), 1500);
+
+                if (msg.authorized && msg.operator) {
+                    document.getElementById('badge-name').innerText = msg.operator.name;
+                    document.getElementById('badge-role').innerText = `${msg.operator.role} • ${msg.operator.operator_id}`;
+                    document.getElementById('badge-uid').innerText = `UID: ${msg.tag_uid}`;
+                    activeOperatorId = msg.operator.operator_id;
+                    logEvent(`NFC/RFID Verified: ${msg.operator.name} [${msg.tag_uid}]`, 'auth_success');
+                } else {
+                    playAlertTone();
+                    logEvent(`Unauthorized Tag Scan: ${msg.tag_uid}`, 'emergency_stop');
+                }
+            }
+            // 3. AI Detections
+            else if (msg.type === 'detection') {
+                playAlertTone();
+                const alertText = `DETECTED: ${msg.object.toUpperCase()} (${Math.round(msg.confidence * 100)}%) in ${msg.zone}`;
+                logEvent(alertText, 'detection');
+            }
+            // 4. Mission state changes
+            else if (msg.type === 'mission_update') {
+                updateMissionDisplay(msg.mission);
+            }
+            // 5. Emergency Stop
+            else if (msg.type === 'emergency_stop') {
+                playAlertTone();
+                setEmergencyState(true);
+                logEvent('EMERGENCY STOP ACTIVATED!', 'emergency_stop');
+            }
+        }
+
+        function updateMissionDisplay(mission) {
+            if (!mission) return;
+            const badge = document.getElementById('mission-status-badge');
+            if (mission.active || mission.status === 'in_progress') {
+                badge.innerText = 'IN PROGRESS';
+                badge.style.color = 'var(--green-radar)';
+                document.getElementById('mission-id-val').innerText = mission.mission_id || 'ACTIVE';
+            } else {
+                badge.innerText = (mission.status || 'IDLE').toUpperCase();
+                badge.style.color = 'var(--amber-warn)';
+                document.getElementById('mission-id-val').innerText = mission.mission_id ? `${mission.mission_id} (ENDED)` : 'NONE';
+            }
+        }
+
+        function setEmergencyState(isStopped) {
+            isEmergencyStopped = isStopped;
+            const estopBtn = document.getElementById('btn-estop-main');
+            const resetBtn = document.getElementById('btn-estop-reset');
+            const overlay = document.getElementById('estop-overlay');
+
+            if (isStopped) {
+                estopBtn.classList.add('active-lock');
+                estopBtn.innerText = 'LOCKED (E-STOP)';
+                resetBtn.style.display = 'inline-block';
+                overlay.style.display = 'block';
+            } else {
+                estopBtn.classList.remove('active-lock');
+                estopBtn.innerText = 'EMERGENCY STOP (E)';
+                resetBtn.style.display = 'none';
+                overlay.style.display = 'none';
+            }
+        }
+
+        // Locomotion API
+        async function sendLocomotion(action, speed = 0.2) {
+            playBeep(700, 'sine', 0.04);
+            try {
+                const resp = await fetch('/api/robot/command', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: action, speed: speed })
+                });
+                if (!resp.ok) {
+                    const err = await resp.json();
+                    logEvent(`Command Error: ${err.detail || 'Blocked'}`, 'emergency_stop');
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        async function triggerEStop() {
+            playAlertTone();
+            await sendLocomotion('emergency_stop', 0.0);
+        }
+
+        async function resetEStop() {
+            playSuccessChime();
+            try {
+                await fetch('/api/robot/reset-emergency', { method: 'POST' });
+                logEvent('Emergency stop reset. Locomotion restored.', 'auth_success');
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        // Mission API
+        async function startActiveMission() {
+            playSuccessChime();
+            try {
+                const resp = await fetch('/api/mission/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ operator_id: activeOperatorId, zone: 'Sector-A' })
+                });
+                const data = await resp.json();
+                if (resp.ok) {
+                    logEvent(`Mission ${data.mission_id} started by ${data.operator_name}`, 'mission_start');
+                } else {
+                    logEvent(`Start failed: ${data.detail || 'Error'}`, 'emergency_stop');
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        async function stopActiveMission() {
+            playBeep(520, 'triangle', 0.1);
+            try {
+                const resp = await fetch('/api/mission/stop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ reason: 'Manual operator completion' })
+                });
+                const data = await resp.json();
+                logEvent(`Mission concluded: ${data.message || 'Complete'}`, 'system');
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        // Trigger Simulated Detection
+        async function triggerSimulatedAIAlert() {
+            try {
+                await fetch('/api/ai/trigger-detection?zone=Sector-A', { method: 'POST' });
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function reloadStream() {
+            const img = document.getElementById('camera-stream-img');
+            img.src = '/api/camera/stream?t=' + Date.now();
+        }
+
+        function logEvent(text, cls = 'system') {
+            const feed = document.getElementById('events-feed');
+            const entry = document.createElement('div');
+            entry.className = `event-entry ${cls}`;
+            const time = new Date().toISOString().substring(11, 19);
+            entry.innerText = `[${time}] ${text}`;
+            feed.prepend(entry);
+        }
+
+        function clearEventLog() {
+            document.getElementById('events-feed').innerHTML = '';
+        }
+
+        // Keyboard pilots
+        const keyMap = {
+            'w': 'btn-fwd', 'ArrowUp': 'btn-fwd',
+            's': 'btn-back', 'ArrowDown': 'btn-back',
+            'a': 'btn-left', 'ArrowLeft': 'btn-left',
+            'd': 'btn-right', 'ArrowRight': 'btn-right',
+            ' ': 'btn-stop'
+        };
+
+        let activeKey = null;
+
+        window.addEventListener('keydown', (e) => {
+            if (e.repeat) return;
+            const k = e.key.toLowerCase();
+            if (k === 'e') {
+                triggerEStop();
+                return;
+            }
+            if (k === 'r') {
+                resetEStop();
+                return;
+            }
+            if (keyMap[e.key] || keyMap[k]) {
+                const btnId = keyMap[e.key] || keyMap[k];
+                const btn = document.getElementById(btnId);
+                if (btn) btn.classList.add('active');
+                
+                if (k === 'w' || e.key === 'ArrowUp') sendLocomotion('forward', 0.3);
+                else if (k === 's' || e.key === 'ArrowDown') sendLocomotion('backward', 0.3);
+                else if (k === 'a' || e.key === 'ArrowLeft') sendLocomotion('left', 0.2);
+                else if (k === 'd' || e.key === 'ArrowRight') sendLocomotion('right', 0.2);
+                else if (e.key === ' ') sendLocomotion('stop', 0.0);
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            const k = e.key.toLowerCase();
+            if (keyMap[e.key] || keyMap[k]) {
+                const btnId = keyMap[e.key] || keyMap[k];
+                const btn = document.getElementById(btnId);
+                if (btn) btn.classList.remove('active');
+                
+                // If pilot released movement key, send stop
+                if (['w', 's', 'a', 'd', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) || ['w', 's', 'a', 'd'].includes(k)) {
+                    sendLocomotion('stop', 0.0);
+                }
+            }
+        });
+
+        // Initialize on load
+        window.addEventListener('DOMContentLoaded', () => {
+            initWebSocket();
+        });
+    </script>
+</body>
+</html>

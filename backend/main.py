@@ -11,10 +11,11 @@ from datetime import datetime, timezone
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from backend.ai.detection import detection_service
 from backend.auth.authorization import auth_service
@@ -162,6 +163,9 @@ app.add_middleware(
 # Root & Health Endpoints
 # ============================================================================
 
+STATIC_DIR = Path(__file__).parent / "static"
+
+
 @app.get("/", tags=["Health"])
 async def root():
     return {
@@ -169,8 +173,18 @@ async def root():
         "status": "online",
         "mode": robot.get_status()["mode"],
         "version": "1.0.0",
+        "cockpit_url": "/cockpit",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@app.get("/cockpit", tags=["Cockpit"], response_class=FileResponse)
+async def get_cockpit():
+    """Serves the interactive cybernetic web command cockpit."""
+    html_path = STATIC_DIR / "cockpit.html"
+    if not html_path.exists():
+        raise HTTPException(status_code=404, detail="Cockpit UI not found.")
+    return FileResponse(html_path)
 
 
 # ============================================================================

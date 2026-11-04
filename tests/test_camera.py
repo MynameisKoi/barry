@@ -48,6 +48,16 @@ def test_flipper_uid_regex():
     match2 = UID_REGEX.search(line2)
     assert match2 is not None
 
+
+def test_cockpit_endpoint():
+    """Verifies that /cockpit returns valid HTML with cybernetic command UI."""
+    with TestClient(app) as client:
+        resp = client.get("/cockpit")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert "BARRY // COCKPIT" in resp.text
+        assert "DOGZILLA FORWARD OPTICS" in resp.text
+
     line3 = "Tag UID: A1:B2:C3:D4"
     match3 = UID_REGEX.search(line3)
     assert match3 is not None
