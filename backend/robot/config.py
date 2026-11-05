@@ -1,0 +1,3 @@
+"""
+All settings from env
+"""
