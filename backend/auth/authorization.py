@@ -1,12 +1,12 @@
 """NFC Authorization Module for BARRY.
 
 Handles NFC test credential verification, normalization, operator lookup,
-and authentication event logging.
+and authentication event logging in both authorization_logs and events.
 """
 
 from datetime import datetime, timezone
 import re
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from backend.database import DatabaseManager, db
 
 
@@ -18,6 +18,7 @@ def normalize_uid(raw_uid: str) -> str:
       - 04-a2-3b-4c-5d-6e-7f
       - 04 a2 3b 4c 5d 6e 7f
       - 04A23B4C5D6E7F
+      - 2E B7 76 (3-byte HID H10301)
     """
     clean_hex = re.sub(r"[^0-9A-Fa-f]", "", raw_uid).upper()
     if not clean_hex:
@@ -63,7 +64,16 @@ class AuthService:
 
             if row:
                 operator = dict(row)
-                # Log successful auth event
+                reason = f"Authorized: {operator['name']} ({operator['role']})"
+                # Log in authorization_logs
+                cursor.execute(
+                    """
+                    INSERT INTO authorization_logs (operator_id, credential_uid, authorized, timestamp, reason)
+                    VALUES (?, ?, 1, ?, ?)
+                    """,
+                    (operator["operator_id"], normalized, timestamp, reason),
+                )
+                # Log in general events
                 cursor.execute(
                     """
                     INSERT INTO events (mission_id, event_type, description, timestamp)
@@ -76,9 +86,18 @@ class AuthService:
                         timestamp,
                     ),
                 )
-                return True, operator, f"Authorized: {operator['name']} ({operator['role']})"
+                return True, operator, reason
             else:
-                # Log failed auth event
+                reason = f"Unauthorized credential: UID {normalized} is not registered."
+                # Log in authorization_logs
+                cursor.execute(
+                    """
+                    INSERT INTO authorization_logs (operator_id, credential_uid, authorized, timestamp, reason)
+                    VALUES (NULL, ?, 0, ?, ?)
+                    """,
+                    (normalized, timestamp, reason),
+                )
+                # Log in general events
                 cursor.execute(
                     """
                     INSERT INTO events (mission_id, event_type, description, timestamp)
@@ -91,26 +110,37 @@ class AuthService:
                         timestamp,
                     ),
                 )
-                return False, None, f"Unauthorized credential: UID {normalized} is not registered."
+                return False, None, reason
 
     def list_operators(self) -> List[dict]:
         """Returns all registered operators."""
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT operator_id, name, role, tag_uid FROM operators ORDER BY operator_id ASC")
+            cursor.execute(
+                "SELECT operator_id, name, role, tag_uid FROM operators ORDER BY operator_id ASC"
+            )
             return [dict(row) for row in cursor.fetchall()]
 
-    def register_operator(self, operator_id: str, name: str, role: str, tag_uid: str) -> dict:
+    def register_operator(
+        self, operator_id: str, name: str, role: str, tag_uid: str
+    ) -> dict:
         """Registers a new test operator credential."""
         normalized = normalize_uid(tag_uid)
+        now_iso = datetime.now(timezone.utc).isoformat()
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                INSERT INTO operators (operator_id, name, role, tag_uid)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO operators (operator_id, name, role, tag_uid, created_at)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (operator_id.strip(), name.strip(), role.strip(), normalized),
+                (
+                    operator_id.strip(),
+                    name.strip(),
+                    role.strip(),
+                    normalized,
+                    now_iso,
+                ),
             )
         return {
             "operator_id": operator_id.strip(),
@@ -118,6 +148,30 @@ class AuthService:
             "role": role.strip(),
             "tag_uid": normalized,
         }
+
+    def get_authorization_logs(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Returns chronological authorization attempt records."""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, operator_id, credential_uid, authorized, timestamp, reason
+                FROM authorization_logs
+                ORDER BY id DESC LIMIT ?
+                """,
+                (limit,),
+            )
+            return [
+                {
+                    "id": r["id"],
+                    "operator_id": r["operator_id"],
+                    "credential_uid": r["credential_uid"],
+                    "authorized": bool(r["authorized"]),
+                    "timestamp": r["timestamp"],
+                    "reason": r["reason"],
+                }
+                for r in cursor.fetchall()
+            ]
 
 
 # Global default auth service

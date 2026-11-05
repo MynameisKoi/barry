@@ -2,7 +2,7 @@
 
 FastAPI main application serving REST APIs and real-time WebSocket
 for Meta Quest 3S VR command center, Flipper Zero NFC authorization,
-and DOGZILLA quadruped locomotion.
+DOGZILLA quadruped locomotion, and the BARRY AI Intelligence Engine.
 """
 
 import asyncio
@@ -18,10 +18,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from backend.ai.detection import detection_service
+from backend.ai.orchestrator import AIOrchestrator
+from backend.ai.schemas import (
+    AIAnalysisRecord,
+    AIProviderStatus,
+    AnalyzeEventRequest,
+    InspectionEventIngest,
+    InspectionEventResponse,
+    MissionReport,
+)
+from backend.api.auth import router as auth_router
+from backend.api.missions import router as missions_router
 from backend.auth.authorization import auth_service
 from backend.auth.flipper_listener import FlipperListener
 from backend.camera.streamer import camera_streamer
 from backend.database import db
+from backend.events.logger import EventLogger
 from backend.models import (
     AuthScanRequest,
     AuthScanResponse,
@@ -31,7 +43,6 @@ from backend.models import (
     MissionStatusResponse,
     MissionStopRequest,
     OperatorResponse,
-    RobotAction,
     RobotCommandRequest,
     RobotStatusResponse,
 )
@@ -43,6 +54,7 @@ from backend.services.mission import mission_service
 # Logging setup
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("barry.backend")
+
 
 # Connection Manager for WebSockets (Meta Quest 3S VR command center & browser clients)
 class ConnectionManager:
@@ -77,9 +89,11 @@ class ConnectionManager:
 
 ws_manager = ConnectionManager()
 
-# Robot Controller Initialization
+# Core Services Initialization
 ROBOT_MODE = os.getenv("ROBOT_MODE", "simulation").lower()
 robot: RobotInterface = RobotSimulator() if ROBOT_MODE == "simulation" else DogzillaController()
+event_logger = EventLogger(db_manager=db)
+ai_orchestrator = AIOrchestrator(db_manager=db)
 logger.info("BARRY initialized with robot controller mode: %s", ROBOT_MODE)
 
 
@@ -157,6 +171,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(auth_router)
+app.include_router(missions_router)
 
 
 # ============================================================================
@@ -324,8 +341,67 @@ async def reset_emergency_stop():
 
 
 # ============================================================================
-# 4. Audit Trail & Events Endpoints
+# 4. Audit Trail & Structured Inspection Events Endpoints
 # ============================================================================
+
+@app.post("/api/events/ingest", response_model=InspectionEventResponse, tags=["Audit & Events"])
+async def ingest_inspection_event(payload: InspectionEventIngest):
+    """
+    Ingests a structured inspection event from DOGZILLA or sensors, persists it to SQLite,
+    runs optional AI analysis, and broadcasts updates over WebSocket.
+    Failed AI requests never block or fail event ingestion.
+    """
+    try:
+        stored_event = event_logger.ingest_event(
+            mission_id=payload.mission_id,
+            source=payload.source,
+            event_type=payload.event_type,
+            data=payload.data,
+            event_uuid=payload.event_uuid,
+        )
+    except ValueError as ve:
+        msg = str(ve)
+        if "not found" in msg.lower():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=msg)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+
+    await ws_manager.broadcast(
+        {
+            "type": "inspection_event",
+            "event": stored_event,
+        }
+    )
+
+    # If duplicate event already has ai_analysis attached, return it directly
+    if stored_event.get("ai_analysis") is not None:
+        return InspectionEventResponse(**stored_event)
+
+    if payload.auto_analyze:
+        analysis_record = await ai_orchestrator.analyze_inspection_event(
+            event_payload=stored_event,
+            mission_id=stored_event["mission_id"],
+            event_id=stored_event["id"],
+        )
+        stored_event["ai_analysis"] = analysis_record
+        if analysis_record.analysis is not None:
+            await ws_manager.broadcast(
+                {
+                    "type": "ai_alert",
+                    "mission_id": stored_event["mission_id"],
+                    "event_id": stored_event["id"],
+                    "risk_level": analysis_record.risk_level,
+                    "summary": analysis_record.analysis.summary,
+                    "recommended_action": analysis_record.analysis.recommended_action,
+                    "requires_human_review": analysis_record.analysis.requires_human_review,
+                    "detected_objects": analysis_record.analysis.detected_objects,
+                    "provider": analysis_record.provider,
+                    "model": analysis_record.model,
+                    "timestamp": analysis_record.created_at,
+                }
+            )
+
+    return InspectionEventResponse(**stored_event)
+
 
 @app.get("/api/events", response_model=List[EventRecord], tags=["Audit & Events"])
 async def get_event_history(
@@ -336,9 +412,131 @@ async def get_event_history(
     return mission_service.get_events(mission_id=mission_id, limit=limit)
 
 
+@app.get("/api/events/structured", tags=["Audit & Events"])
+async def get_structured_events(
+    mission_id: Optional[str] = Query(None, description="Filter by mission ID"),
+    limit: int = Query(50, ge=1, le=500),
+):
+    """Returns structured inspection events stored in `inspection_events`."""
+    return event_logger.list_inspection_events(mission_id=mission_id, limit=limit)
+
+
+@app.get("/api/events/{event_id}", tags=["Audit & Events"])
+async def get_event_by_id(event_id: int):
+    """Returns a specific structured inspection event and its AI analysis by ID."""
+    insp_event = event_logger.get_inspection_event(event_id)
+    if insp_event:
+        return insp_event
+
+    # Fallback check in legacy audit `events` table
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM events WHERE event_id = ?", (event_id,))
+        row = cursor.fetchone()
+        if row:
+            return dict(row)
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Event '{event_id}' not found.",
+    )
+
+
 # ============================================================================
-# 5. AI Detection & Alerts Endpoints
+# 5. AI Intelligence Engine & Detection Endpoints
 # ============================================================================
+
+@app.post("/api/ai/analyze", response_model=AIAnalysisRecord, tags=["AI Inspection"])
+async def analyze_inspection_data(request: AnalyzeEventRequest):
+    """
+    Triggers BARRY AI analysis on an existing `event_id` or an ad-hoc inspection payload.
+    Validates output with Pydantic, stores in `ai_analyses`, and broadcasts `ai_alert`.
+    """
+    if request.event_id is not None:
+        stored = event_logger.get_inspection_event(request.event_id)
+        if not stored:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Inspection event '{request.event_id}' not found.",
+            )
+        target_payload = stored
+        target_mission_id = request.mission_id or stored.get("mission_id")
+        target_event_id = request.event_id
+    else:
+        target_mission_id = request.mission_id
+        target_event_id = None
+        target_payload = {
+            "mission_id": target_mission_id,
+            "source": request.source,
+            "event_type": request.event_type,
+            "data": request.data,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    analysis_record = await ai_orchestrator.analyze_inspection_event(
+        event_payload=target_payload,
+        mission_id=target_mission_id,
+        event_id=target_event_id,
+    )
+
+    if analysis_record.analysis is not None:
+        await ws_manager.broadcast(
+            {
+                "type": "ai_alert",
+                "mission_id": analysis_record.mission_id,
+                "event_id": analysis_record.event_id,
+                "risk_level": analysis_record.risk_level,
+                "summary": analysis_record.analysis.summary,
+                "recommended_action": analysis_record.analysis.recommended_action,
+                "requires_human_review": analysis_record.analysis.requires_human_review,
+                "detected_objects": analysis_record.analysis.detected_objects,
+                "provider": analysis_record.provider,
+                "model": analysis_record.model,
+                "timestamp": analysis_record.created_at,
+            }
+        )
+
+    return analysis_record
+
+
+@app.post("/api/ai/report/{mission_id}", response_model=MissionReport, tags=["AI Inspection"])
+async def generate_mission_report(mission_id: str):
+    """Generates a comprehensive AI-assisted inspection report for a mission."""
+    try:
+        report = await ai_orchestrator.generate_mission_report(mission_id)
+    except ValueError as ve:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(ve),
+        )
+
+    await ws_manager.broadcast(
+        {
+            "type": "mission_report",
+            "mission_id": report.mission_id,
+            "risk_level": report.ai_assessment.risk_level,
+            "summary": report.ai_assessment.summary,
+            "generated_at": report.generated_at,
+        }
+    )
+    return report
+
+
+@app.get("/api/ai/status", response_model=AIProviderStatus, tags=["AI Inspection"])
+async def get_ai_provider_status():
+    """Returns active LLM provider, fallback configuration, model, and readiness status."""
+    return await ai_orchestrator.get_provider_status()
+
+
+@app.get("/api/ai/analyses", tags=["AI Inspection"])
+async def list_ai_analyses(
+    mission_id: Optional[str] = Query(None, description="Filter by mission ID"),
+    event_id: Optional[int] = Query(None, description="Filter by inspection event ID"),
+    limit: int = Query(50, ge=1, le=500),
+):
+    """Returns stored AI analysis records from SQLite."""
+    return ai_orchestrator.list_analyses(mission_id=mission_id, event_id=event_id, limit=limit)
+
 
 @app.post("/api/ai/trigger-detection", response_model=DetectionAlert, tags=["AI Inspection"])
 async def trigger_simulated_detection(zone: Optional[str] = None):
