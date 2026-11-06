@@ -8,9 +8,10 @@ Behaviour guarantees
 --------------------
 * **Auth**: every request carries ``X-Robot-Key`` (``config.api_key``).
 * **Control session**: acquired lazily by the first mutating command and kept in
-  ``X-Control-Session``. A 409 reply is treated as "session expired or
-  replaced": the session is re-acquired and the command is retried **once**
-  with a fresh sequence number. A second 409 is returned as ``REJECTED``.
+  ``X-Control-Session``. A 409 reply is treated as "session expired, replaced
+  or stale sequence": the session is re-acquired (presenting the old id in
+  ``X-Control-Session`` so the Pi can renew our own lease) and the command is
+  retried **once** with a fresh sequence number. A second 409 is returned as ``REJECTED``.
 * **Sequence numbers**: ``X-Command-Seq`` is strictly increasing across all
   mutating commands of this client (also across re-acquired sessions, which is
   valid for a per-session "strictly increasing" rule). Sequencing and sending
@@ -97,6 +98,9 @@ class RemoteRobotClient(RobotInterface):
         self._state_lock = threading.RLock()
 
         self._session_id: Optional[str] = None
+        # Last session id the Pi rejected with 409; sent on POST /session so the
+        # Pi can renew the lease for its current holder (us) after a stale seq.
+        self._previous_session_id: Optional[str] = None
         self._seq = 0
         self._link_ok = True
         self._state = ControlState()  # best-effort mirror of the Pi's tracked state
@@ -367,8 +371,11 @@ class RemoteRobotClient(RobotInterface):
                 if resp is None:
                     return CommandResult(CommandStatus.FAILED, name, f"Link error: {error}")
                 if resp.status_code == protocol.HTTP_CONFLICT and attempt == 0:
-                    # Session expired / replaced: forget it and retry once.
+                    # Session expired / replaced / stale seq: drop it and retry
+                    # once. Remember the old id so the re-acquire can present it
+                    # and let the Pi renew our own lease instead of answering 409.
                     with self._state_lock:
+                        self._previous_session_id = self._session_id
                         self._session_id = None
                     continue
                 return self._to_result(name, resp)
@@ -379,7 +386,10 @@ class RemoteRobotClient(RobotInterface):
         otherwise the ``CommandResult`` to return. Caller holds ``_cmd_lock``."""
         if self._session_id:
             return None
-        resp, error = self._call("POST", protocol.PATH_SESSION)
+        with self._state_lock:
+            previous = self._previous_session_id
+        headers = {protocol.SESSION_HEADER: previous} if previous else None
+        resp, error = self._call("POST", protocol.PATH_SESSION, headers=headers)
         if resp is None:
             return CommandResult(CommandStatus.FAILED, name, f"Link error: {error}")
         if resp.status_code != 200 and resp.status_code != 201:
@@ -393,6 +403,7 @@ class RemoteRobotClient(RobotInterface):
             return CommandResult(CommandStatus.FAILED, name, "Malformed session reply.")
         with self._state_lock:
             self._session_id = session_id
+            self._previous_session_id = None
         return None
 
     # ------------------------------------------------------------------

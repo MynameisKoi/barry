@@ -146,6 +146,19 @@ def test_session_reacquired_once_on_409(client, pi):
     assert seqs == sorted(set(seqs))
 
 
+def test_reacquire_presents_old_session_header(client, pi):
+    client.move_analog(MotionCommand(forward=0.5))
+    pi.motion_409_once = True
+    client.move_analog(MotionCommand(forward=0.5))
+    posts = [r for r in pi.by_path(protocol.PATH_SESSION) if r.method == "POST"]
+    assert protocol.SESSION_HEADER not in posts[0].headers  # first acquire
+    assert posts[1].headers[protocol.SESSION_HEADER] == "s1"  # renew request
+    # once re-acquired the stale id is not sent again
+    pi.motion_409_once = True
+    client.move_analog(MotionCommand(forward=0.5))
+    assert [r for r in pi.by_path(protocol.PATH_SESSION)][-1].headers[protocol.SESSION_HEADER] == "s2"
+
+
 def test_second_409_is_rejected_not_looped(client, pi):
     pi.motion_status = 409
     res = client.move_analog(MotionCommand(forward=0.5))
@@ -363,13 +376,15 @@ def test_factory_dogzilla_uses_controller(monkeypatch):
     created = {}
 
     class FakeController:
-        def __init__(self, **kwargs):
-            created.update(kwargs)
+        def __init__(self, *args, **kwargs):
+            created["args"] = args
+            created["kwargs"] = kwargs
 
     monkeypatch.setattr(dogzilla, "DogzillaController", FakeController)
-    robot = create_robot(RobotConfig(mode=RobotMode.DOGZILLA, dogzilla_port="/dev/ttyTEST"))
+    config = RobotConfig(mode=RobotMode.DOGZILLA, dogzilla_port="/dev/ttyTEST")
+    robot = create_robot(config)
     assert isinstance(robot, FakeController)
-    assert created == {"device_endpoint": "/dev/ttyTEST"}
+    assert created == {"args": (config,), "kwargs": {}}
 
 
 def test_factory_default_reads_env(monkeypatch):
