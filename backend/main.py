@@ -31,6 +31,11 @@ from backend.api.auth import router as auth_router
 from backend.api.missions import router as missions_router
 from backend.auth.authorization import auth_service
 from backend.auth.flipper_listener import FlipperListener
+from backend.camera.auth import CameraAuth
+from backend.camera.config import CameraConfig
+from backend.camera.factory import build_camera_service
+from backend.camera.interface import CameraUnavailableError
+from backend.camera.router import create_camera_router
 from backend.camera.streamer import camera_streamer
 from backend.database import db
 from backend.events.logger import EventLogger
@@ -146,7 +151,21 @@ async def lifespan(app: FastAPI):
     flipper = FlipperListener(on_tag_detected=on_flipper_tag_scanned)
     flipper.start()
 
+    # Camera Feed API (v1): one shared capture service for all viewers.
+    # A missing or failed camera must not take the whole backend down; the
+    # status endpoint reports it as disconnected instead.
+    camera_config = CameraConfig.from_env()
+    app.state.camera = build_camera_service(camera_config)
+    if camera_config.enabled:
+        try:
+            # start() blocks while it retries, so keep it off the event loop.
+            await asyncio.to_thread(app.state.camera.start)
+        except CameraUnavailableError as exc:
+            logger.warning("Camera unavailable at startup: %s", exc)
+
     yield
+
+    await asyncio.to_thread(app.state.camera.stop)
 
     # Shutdown: stop background listeners
     telemetry_task.cancel()
@@ -176,6 +195,9 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(missions_router)
+# Camera Feed API v1: /api/v1/camera/{stream,snapshot,status}, token-protected
+# via CAMERA_API_KEY (fails closed with 503 if unset).
+app.include_router(create_camera_router(lambda: app.state.camera, CameraAuth.from_env()))
 
 
 # ============================================================================
