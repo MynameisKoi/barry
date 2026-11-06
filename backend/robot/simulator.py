@@ -300,18 +300,71 @@ class RobotSimulator(RobotInterface):
                 self.intensity,
             )
 
-    def set_posture(self, posture: Posture) -> CommandResult:
+    def set_posture(
+        self,
+        posture: Optional[Posture] = None,
+        *,
+        height_z: Optional[float] = None,
+        roll: Optional[float] = None,
+        pitch: Optional[float] = None,
+        yaw: Optional[float] = None,
+        gait_type: Optional[str] = None,
+        pace: Optional[str] = None,
+        imu_enabled: Optional[bool] = None,
+        preset: Optional[str] = None,
+    ) -> Any:
         """Stores height/attitude. Never touches style; rejects unsafe values."""
+        if posture is not None:
+            with self._lock:
+                if self.emergency_stopped:
+                    return self._estop_rejection("posture")
+                reason = check_attitude(posture.roll, posture.pitch, posture.yaw) or check_combination(
+                    self.gait, self.intensity, posture.height
+                )
+                if reason:
+                    return CommandResult(CommandStatus.REJECTED, "posture", reason, self.intensity)
+                self.posture = posture
+                return CommandResult(CommandStatus.ACCEPTED, "posture", "Posture set.", self.intensity)
+
+        # Legacy kwargs dispatch for backward compatibility
         with self._lock:
             if self.emergency_stopped:
-                return self._estop_rejection("posture")
-            reason = check_attitude(posture.roll, posture.pitch, posture.yaw) or check_combination(
-                self.gait, self.intensity, posture.height
-            )
-            if reason:
-                return CommandResult(CommandStatus.REJECTED, "posture", reason, self.intensity)
-            self.posture = posture
-            return CommandResult(CommandStatus.ACCEPTED, "posture", "Posture set.", self.intensity)
+                return {
+                    "success": False,
+                    "message": "Blocked: emergency stop is active. Reset required.",
+                    "telemetry": self.get_status(),
+                }
+            if preset == "obstacle_crossing":
+                height_z = 95.0
+                gait_type = "high_walk"
+                pace = "slow"
+            elif preset == "stand":
+                height_z = 105.0
+                gait_type = "trot"
+                pace = "normal"
+            elif preset == "crouch":
+                height_z = 75.0
+                gait_type = "trot"
+                pace = "slow"
+
+            self.posture_state = {
+                "height_z": height_z if height_z is not None else getattr(self, "posture_state", {}).get("height_z", 105.0),
+                "gait_type": gait_type or getattr(self, "posture_state", {}).get("gait_type", "trot"),
+                "pace": pace or getattr(self, "posture_state", {}).get("pace", "normal"),
+            }
+            self.imu_state = {
+                "roll": roll if roll is not None else getattr(self, "imu_state", {}).get("roll", 0.0),
+                "pitch": pitch if pitch is not None else getattr(self, "imu_state", {}).get("pitch", 0.0),
+                "yaw": yaw if yaw is not None else getattr(self, "imu_state", {}).get("yaw", 0.0),
+                "imu_stabilization": imu_enabled if imu_enabled is not None else getattr(self, "imu_state", {}).get("imu_stabilization", True),
+            }
+            h_preset = HeightPreset.LOW if self.posture_state["height_z"] <= 85.0 else (HeightPreset.HIGH if self.posture_state["height_z"] >= 110.0 else HeightPreset.MEDIUM)
+            self.posture = Posture(h_preset, self.imu_state["roll"], self.imu_state["pitch"], self.imu_state["yaw"])
+            return {
+                "success": True,
+                "message": "Simulated posture updated.",
+                "telemetry": self.get_status(),
+            }
 
     def list_actions(self) -> List[ActionInfo]:
         """Only the approved allowlist (never 255/reset)."""
@@ -469,6 +522,17 @@ class RobotSimulator(RobotInterface):
                     "y": self.y,
                     "heading": self.heading,
                 },
+                "imu": getattr(self, "imu_state", {
+                    "roll": self.posture.roll,
+                    "pitch": self.posture.pitch,
+                    "yaw": self.posture.yaw,
+                    "imu_stabilization": True,
+                }),
+                "posture": getattr(self, "posture_state", {
+                    "height_z": 105.0,
+                    "gait_type": self.gait.value,
+                    "pace": self.intensity.value,
+                }),
                 "speed": self.speed,
                 "last_command": self.last_command,
                 "emergency_stopped": self.emergency_stopped,

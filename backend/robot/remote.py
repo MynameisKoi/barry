@@ -76,12 +76,37 @@ _LEGACY_MOVES = {"forward", "backward", "left", "right"}
 class RemoteRobotClient(RobotInterface):
     """``RobotInterface`` implemented over the Pi's HTTP Robot API."""
 
-    def __init__(self, config: RobotConfig, transport: Optional[httpx.BaseTransport] = None) -> None:
+    def __init__(
+        self,
+        config: Optional[RobotConfig] = None,
+        transport: Optional[httpx.BaseTransport] = None,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> None:
         """
         :param config: Uses ``remote_url``, ``api_key`` and ``remote_timeout_s``.
         :param transport: Optional ``httpx`` transport; tests pass
             ``httpx.MockTransport`` so no network is needed.
         """
+        if config is None:
+            cfg = RobotConfig.from_env()
+            if base_url:
+                config = RobotConfig(
+                    mode=cfg.mode,
+                    remote_url=base_url,
+                    api_key=api_key or cfg.api_key,
+                    remote_timeout_s=timeout or cfg.remote_timeout_s,
+                )
+            else:
+                config = cfg
+        elif base_url:
+            config = RobotConfig(
+                mode=config.mode,
+                remote_url=base_url,
+                api_key=api_key or config.api_key,
+                remote_timeout_s=timeout or config.remote_timeout_s,
+            )
         self.config = config
         headers = {protocol.AUTH_HEADER: config.api_key} if config.api_key else {}
         self._http = httpx.Client(

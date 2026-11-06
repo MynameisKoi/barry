@@ -17,20 +17,32 @@ Imports are done lazily inside each branch so a laptop running ``simulator`` or
 
 from __future__ import annotations
 
-from typing import Optional
+import os
+from typing import Optional, Union
 
 from backend.robot.config import RobotConfig
 from backend.robot.interface import RobotInterface, RobotMode
 
 
-def create_robot(config: Optional[RobotConfig] = None) -> RobotInterface:
+def create_robot(
+    config: Optional[Union[RobotConfig, str]] = None,
+    mode: Optional[str] = None,
+) -> RobotInterface:
     """Builds the robot implementation for ``config.mode``.
 
     :param config: Deployment settings; ``RobotConfig.from_env()`` when omitted.
-    :raises ValueError: for an unknown mode (cannot happen for a ``RobotMode``
-        value, kept as a guard for future enum additions).
+    :param mode: Optional legacy mode string (e.g. 'simulator', 'remote', 'dogzilla').
+    :raises ValueError: for an unknown mode.
     """
-    config = config if config is not None else RobotConfig.from_env()
+    if isinstance(config, str):
+        mode = config
+        config = None
+
+    if config is None:
+        env = dict(os.environ)
+        if mode:
+            env["ROBOT_MODE"] = mode
+        config = RobotConfig.from_env(env=env)
 
     if config.mode == RobotMode.SIMULATOR:
         from backend.robot.simulator import RobotSimulator

@@ -29,21 +29,43 @@ class DogzillaController(RobotInterface):
     disconnected object. Injecting sdk avoids hardware access in tests.
     """
 
-    def __init__(self, config: Optional[RobotConfig] = None, sdk: object | None = None) -> None:
+    def __init__(
+        self,
+        config: Optional[RobotConfig] = None,
+        sdk: object | None = None,
+        driver: object | None = None,
+        max_speed: Optional[float] = None,
+    ) -> None:
+        sdk = sdk if sdk is not None else driver
         self.config = config or RobotConfig(mode=RobotMode.DOGZILLA)
         self._lock = threading.RLock()
         self._sdk = sdk
+        self.dog = sdk
+        self.driver = sdk
+        self.max_speed = max_speed or 1.0
         self._connected = sdk is not None
         self._initialization_error: Optional[str] = None
         self._state = ControlState()
+        self.height_z = 105.0
+        self.gait_type = "trot"
+        self.pace = "normal"
+        self.imu_stabilization = True
         if sdk is None:
             try:
                 from DOGZILLALib import DOGZILLA  # type: ignore[import-not-found]
                 self._sdk = DOGZILLA(self.config.dogzilla_port)
+                self.dog = self._sdk
+                self.driver = self._sdk
                 self._connected = True
             except Exception as exc:
                 self._initialization_error = str(exc)
                 logger.warning("DOGZILLA unavailable: %s", exc)
+
+    @property
+    def emergency_stopped(self) -> bool:
+        """Return True if emergency stop latch is active."""
+        with self._lock:
+            return self._state.emergency_stopped
 
     @property
     def robot_mode(self) -> RobotMode:
@@ -186,26 +208,50 @@ class DogzillaController(RobotInterface):
             self._state.last_command = "set_movement_style"
             return self._result(CommandStatus.ACCEPTED, "set_movement_style")
 
-    def set_posture(self, posture: Posture) -> CommandResult:
-        """Apply UNCALIBRATED height and safe roll/pitch/yaw SDK commands."""
-        with self._lock:
-            if self._state.emergency_stopped:
-                return self._result(CommandStatus.REJECTED, "set_posture", "Emergency stop is latched")
-            reason = check_attitude(posture.roll, posture.pitch, posture.yaw)
-            reason = reason or check_combination(self._state.gait, self._state.intensity, posture.height)
-            if reason:
-                return self._result(CommandStatus.REJECTED, "set_posture", reason)
-            failed = self._call("set_posture", lambda dog: (
-                dog.translation("z", HEIGHT_PRESETS_Z[posture.height]),
-                dog.attitude("r", posture.roll),
-                dog.attitude("p", posture.pitch),
-                dog.attitude("y", posture.yaw),
-            ))
-            if failed:
-                return failed
-            self._state.posture = posture
-            self._state.last_command = "set_posture"
-            return self._result(CommandStatus.ACCEPTED, "set_posture")
+    def set_posture(
+        self,
+        posture: Optional[Posture] = None,
+        *,
+        height_z: Optional[float] = None,
+        roll: Optional[float] = None,
+        pitch: Optional[float] = None,
+        yaw: Optional[float] = None,
+        gait_type: Optional[str] = None,
+        pace: Optional[str] = None,
+        imu_enabled: Optional[bool] = None,
+        preset: Optional[str] = None,
+    ) -> Any:
+        """Apply UNCALIBRATED height and safe roll/pitch/yaw SDK commands or legacy kwargs."""
+        if posture is not None:
+            with self._lock:
+                if self._state.emergency_stopped:
+                    return self._result(CommandStatus.REJECTED, "set_posture", "Emergency stop is latched")
+                reason = check_attitude(posture.roll, posture.pitch, posture.yaw)
+                reason = reason or check_combination(self._state.gait, self._state.intensity, posture.height)
+                if reason:
+                    return self._result(CommandStatus.REJECTED, "set_posture", reason)
+                failed = self._call("set_posture", lambda dog: (
+                    dog.translation("z", HEIGHT_PRESETS_Z[posture.height]),
+                    dog.attitude("r", posture.roll),
+                    dog.attitude("p", posture.pitch),
+                    dog.attitude("y", posture.yaw),
+                ))
+                if failed:
+                    return failed
+                self._state.posture = posture
+                self._state.last_command = "set_posture"
+                return self._result(CommandStatus.ACCEPTED, "set_posture")
+
+        return self._set_posture_legacy(
+            height_z=height_z,
+            roll=roll,
+            pitch=pitch,
+            yaw=yaw,
+            gait_type=gait_type,
+            pace=pace,
+            imu_enabled=imu_enabled,
+            preset=preset,
+        )
 
     def list_actions(self) -> list[ActionInfo]:
         """Return only the configured, hardware-unverified action allowlist."""
@@ -285,15 +331,31 @@ class DogzillaController(RobotInterface):
             self._state.emergency_stopped = True
             self._state.moving = False
             self._state.last_command = "emergency_stop"
+            if self.dog is not None:
+                try:
+                    if hasattr(self.dog, "reset"):
+                        self.dog.reset()
+                    if hasattr(self.dog, "unload_allmotor"):
+                        self.dog.unload_allmotor()
+                except Exception:
+                    pass
             return {"success": result.ok, "message": "Emergency stop latched",
                     "telemetry": self.get_status()}
 
     def reset_emergency_stop(self) -> Dict[str, Any]:
-        """Clear the software latch without issuing any movement command."""
+        """Clear the software latch and reload motors."""
         with self._lock:
             self._state.emergency_stopped = False
             self._state.moving = False
             self._state.last_command = "stop"
+            if self.dog is not None:
+                try:
+                    if hasattr(self.dog, "load_allmotor"):
+                        self.dog.load_allmotor()
+                    if hasattr(self.dog, "reset"):
+                        self.dog.reset()
+                except Exception:
+                    pass
             return {"success": True, "message": "Emergency stop cleared",
                     "telemetry": self.get_status()}
 
@@ -306,10 +368,20 @@ class DogzillaController(RobotInterface):
             result = self.stop()
         elif clean == "emergency_stop":
             return self.emergency_stop()
+        elif self.emergency_stopped:
+            return {
+                "success": False,
+                "error_code": "ESTOP_ACTIVE",
+                "message": "Movement blocked: Emergency stop active.",
+                "telemetry": self.get_status(),
+            }
         else:
             directions = {
                 "forward": Direction.FORWARD, "backward": Direction.BACKWARD,
                 "left": Direction.TURN_LEFT, "right": Direction.TURN_RIGHT,
+                "turn_left": Direction.TURN_LEFT, "turn_right": Direction.TURN_RIGHT,
+                "strafe_left": Direction.LEFT, "strafe_right": Direction.RIGHT,
+                "step_left": Direction.LEFT, "step_right": Direction.RIGHT,
             }
             if clean not in directions:
                 return {"success": False, "message": f"Unknown movement action: {action}",
@@ -326,7 +398,7 @@ class DogzillaController(RobotInterface):
         return {"success": result.ok, "message": result.message or result.status.value,
                 "telemetry": self.get_status()}
 
-    def set_posture(
+    def _set_posture_legacy(
         self,
         *,
         height_z: Optional[float] = None,
@@ -394,19 +466,19 @@ class DogzillaController(RobotInterface):
                     self.height_z = float(clamped_z)
 
                 if roll is not None:
-                    lim_r = PARAM["ATTITUDE_LIMIT"][0]
+                    lim_r = 20.0
                     clamped_r = max(-lim_r, min(lim_r, float(roll)))
                     self.dog.attitude("r", clamped_r)
                     self.roll = clamped_r
 
                 if pitch is not None:
-                    lim_p = PARAM["ATTITUDE_LIMIT"][1]
+                    lim_p = 15.0
                     clamped_p = max(-lim_p, min(lim_p, float(pitch)))
                     self.dog.attitude("p", clamped_p)
                     self.pitch = clamped_p
 
                 if yaw is not None:
-                    lim_y = PARAM["ATTITUDE_LIMIT"][2]
+                    lim_y = 11.0
                     clamped_y = max(-lim_y, min(lim_y, float(yaw)))
                     self.dog.attitude("y", clamped_y)
                     self.yaw = clamped_y
@@ -470,9 +542,44 @@ class DogzillaController(RobotInterface):
     def get_status(self) -> Dict[str, Any]:
         """Return the legacy status shape using application-tracked state."""
         state = self.get_control_state()
+        batt = getattr(self.driver, "battery", None)
+        if callable(batt):
+            try:
+                batt = batt()
+            except Exception:
+                batt = None
+        try:
+            batt_val = float(batt) if batt is not None else None
+        except (TypeError, ValueError):
+            batt_val = None
+
+        roll = getattr(self.driver, "roll", 0.0)
+        pitch = getattr(self.driver, "pitch", 0.0)
+        yaw = getattr(self.driver, "yaw", 0.0)
+        try:
+            roll = float(roll() if callable(roll) else (roll or 0.0))
+        except Exception:
+            roll = 0.0
+        try:
+            pitch = float(pitch() if callable(pitch) else (pitch or 0.0))
+        except Exception:
+            pitch = 0.0
+        try:
+            yaw = float(yaw() if callable(yaw) else (yaw or 0.0))
+        except Exception:
+            yaw = 0.0
+
         return {
-            "connected": self.connected, "mode": "dogzilla", "battery_level": None,
-            "position": {"x": 0.0, "y": 0.0, "heading": 0.0},
+            "connected": self.connected,
+            "mode": "dogzilla",
+            "battery_level": batt_val,
+            "position": {"x": 0.0, "y": 0.0, "heading": yaw},
+            "imu": {
+                "roll": roll,
+                "pitch": pitch,
+                "yaw": yaw,
+                "imu_stabilization": getattr(self, "imu_stabilization", True),
+            },
             "speed": 1.0 if state.moving else 0.0,
             "last_command": state.last_command,
             "emergency_stopped": state.emergency_stopped,
