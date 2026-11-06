@@ -50,7 +50,8 @@ class RobotPosition(BaseModel):
 class RobotStatusResponse(BaseModel):
     connected: bool
     mode: str
-    battery_level: float
+    # None until the hardware has reported a battery reading.
+    battery_level: Optional[float] = None
     position: RobotPosition
     speed: float
     last_command: str
