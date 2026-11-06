@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse
 
 from backend.ai.detection import detection_service
 from backend.ai.orchestrator import AIOrchestrator
@@ -36,7 +36,6 @@ from backend.camera.config import CameraConfig
 from backend.camera.factory import build_camera_service
 from backend.camera.interface import CameraUnavailableError
 from backend.camera.router import create_camera_router
-from backend.camera.streamer import camera_streamer
 from backend.database import db
 from backend.events.logger import EventLogger
 from backend.models import (
@@ -170,7 +169,6 @@ async def lifespan(app: FastAPI):
     # Shutdown: stop background listeners
     telemetry_task.cancel()
     flipper.stop()
-    camera_streamer.close()
     try:
         await telemetry_task
     except asyncio.CancelledError:
@@ -641,20 +639,9 @@ async def trigger_simulated_detection(zone: Optional[str] = None):
 # 6. Camera Streaming & Video Feeds
 # ============================================================================
 
-@app.get("/api/camera/stream", tags=["Camera"])
-async def stream_camera():
-    """Real-time MJPEG video stream for Meta Quest 3S VR command center."""
-    return StreamingResponse(
-        camera_streamer.stream_generator(),
-        media_type="multipart/x-mixed-replace; boundary=frame",
-    )
-
-
-@app.get("/api/camera/snapshot", tags=["Camera"])
-async def get_camera_snapshot():
-    """Returns single JPEG frame for lightweight previews or snapshot analysis."""
-    jpeg = camera_streamer.get_jpeg_bytes()
-    return Response(content=jpeg, media_type="image/jpeg")
+# Camera: served by the token-protected Camera Feed API v1 mounted above
+# (GET /api/v1/camera/{stream,snapshot,status}); the old unauthenticated
+# /api/camera/* routes were removed.
 
 
 # ============================================================================

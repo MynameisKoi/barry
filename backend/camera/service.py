@@ -8,6 +8,7 @@ viewers therefore never create queues or slow the capture loop.
 from __future__ import annotations
 
 from collections import deque
+import logging
 import threading
 import time
 from typing import Deque, Iterator, Optional
@@ -28,7 +29,12 @@ from .status import CameraStatus, Resolution
 
 _MAX_ATTEMPTS = 3
 _INITIAL_BACKOFF_SECONDS = 0.05
+_RECONNECT_INITIAL_SECONDS = 0.5
+_RECONNECT_MAX_SECONDS = 5.0
 _FPS_WINDOW_SIZE = 60
+_TIMING_LOG_INTERVAL_SECONDS = 5.0
+
+logger = logging.getLogger(__name__)
 
 
 class CameraService(CameraInterface):
@@ -46,39 +52,36 @@ class CameraService(CameraInterface):
         self._connected = False
         self._capturing = False
         self._capture_times: Deque[float] = deque(maxlen=_FPS_WINDOW_SIZE)
+        self._last_timing_log = float("-inf")
 
     def start(self) -> None:
         """Open and validate the source, then launch the capture thread."""
         with self._condition:
-            if self._capturing:
+            if self._thread is not None and self._thread.is_alive():
                 return
             if not self._config.enabled:
                 raise CameraUnavailableError("camera is disabled")
 
             self._stop_event.clear()
             self._capture_times.clear()
+            initial_error: Optional[BaseException] = None
             try:
-                self._open_with_retries()
-                raw = self._read_with_retries()
-                self._publish(raw)
+                self._connect()
             except Exception as exc:
-                self._connected = False
-                self._capturing = False
-                self._safe_close_source()
-                if isinstance(exc, CameraUnavailableError):
-                    raise
-                raise CameraUnavailableError(
-                    f"camera source {self._source.name!r} failed to start"
-                ) from exc
-
-            self._connected = True
-            self._capturing = True
+                initial_error = exc
+                self._mark_disconnected()
             self._thread = threading.Thread(
                 target=self._capture_loop,
                 name=f"camera-capture-{self._source.name}",
                 daemon=True,
             )
             self._thread.start()
+
+            if initial_error is not None:
+                raise CameraUnavailableError(
+                    f"camera source {self._source.name!r} failed to start; "
+                    "reconnect scheduled"
+                ) from initial_error
 
     def stop(self) -> None:
         """Stop capture and release the source; safe to call repeatedly."""
@@ -176,6 +179,8 @@ class CameraService(CameraInterface):
     def _open_with_retries(self) -> None:
         last_error: Optional[BaseException] = None
         for attempt in range(_MAX_ATTEMPTS):
+            if self._stop_event.is_set():
+                raise CameraUnavailableError("camera service is stopping")
             try:
                 self._source.open()
                 return
@@ -183,7 +188,12 @@ class CameraService(CameraInterface):
                 last_error = exc
                 self._safe_close_source()
                 if attempt + 1 < _MAX_ATTEMPTS:
-                    self._stop_event.wait(_INITIAL_BACKOFF_SECONDS * (2**attempt))
+                    if self._stop_event.wait(
+                        _INITIAL_BACKOFF_SECONDS * (2**attempt)
+                    ):
+                        raise CameraUnavailableError(
+                            "camera service is stopping"
+                        ) from exc
         raise CameraUnavailableError(
             f"unable to open camera source {self._source.name!r}"
         ) from last_error
@@ -191,12 +201,19 @@ class CameraService(CameraInterface):
     def _read_with_retries(self):
         last_error: Optional[BaseException] = None
         for attempt in range(_MAX_ATTEMPTS):
+            if self._stop_event.is_set():
+                raise FrameCaptureError("camera service is stopping")
             try:
                 return self._source.read()
             except Exception as exc:
                 last_error = exc
                 if attempt + 1 < _MAX_ATTEMPTS:
-                    self._stop_event.wait(_INITIAL_BACKOFF_SECONDS * (2**attempt))
+                    if self._stop_event.wait(
+                        _INITIAL_BACKOFF_SECONDS * (2**attempt)
+                    ):
+                        raise FrameCaptureError(
+                            "camera service is stopping"
+                        ) from exc
         raise FrameCaptureError("camera frame capture failed") from last_error
 
     def _encode(self, raw) -> tuple[bytes, int, int]:
@@ -215,10 +232,15 @@ class CameraService(CameraInterface):
             raise FrameCaptureError("JPEG encoding failed")
         return encoded.tobytes(), width, height
 
-    def _publish(self, raw) -> None:
+    def _publish(self, raw) -> tuple[float, Optional[float]]:
+        encode_started = time.monotonic()
         jpeg, width, height = self._encode(raw)
         captured_at = time.monotonic()
+        encode_seconds = captured_at - encode_started
         with self._condition:
+            previous_at = (
+                self._latest.timestamp if self._latest is not None else None
+            )
             self._sequence += 1
             self._latest = Frame(
                 jpeg=jpeg,
@@ -229,32 +251,104 @@ class CameraService(CameraInterface):
             )
             self._capture_times.append(captured_at)
             self._condition.notify_all()
+        frame_gap_seconds = (
+            captured_at - previous_at if previous_at is not None else None
+        )
+        return encode_seconds, frame_gap_seconds
+
+    def _capture_and_publish(self) -> None:
+        read_started = time.monotonic()
+        raw = self._read_with_retries()
+        read_finished = time.monotonic()
+        encode_seconds, frame_gap_seconds = self._publish(raw)
+        now = time.monotonic()
+        if logger.isEnabledFor(logging.DEBUG) and (
+            now - self._last_timing_log >= _TIMING_LOG_INTERVAL_SECONDS
+        ):
+            frame_gap_ms = (
+                frame_gap_seconds * 1000.0
+                if frame_gap_seconds is not None
+                else None
+            )
+            logger.debug(
+                "camera frame timing source=%s read_ms=%.2f encode_ms=%.2f "
+                "frame_gap_ms=%s",
+                self._source.name,
+                (read_finished - read_started) * 1000.0,
+                encode_seconds * 1000.0,
+                f"{frame_gap_ms:.2f}" if frame_gap_ms is not None else "unknown",
+            )
+            self._last_timing_log = now
+
+    def _connect(self) -> None:
+        self._open_with_retries()
+        try:
+            with self._condition:
+                self._capture_times.clear()
+            self._capture_and_publish()
+        except Exception:
+            self._safe_close_source()
+            raise
+        with self._condition:
+            self._connected = True
+            self._capturing = True
+            self._condition.notify_all()
+
+    def _mark_disconnected(self) -> None:
+        self._safe_close_source()
+        with self._condition:
+            self._connected = False
+            self._capturing = False
+            self._condition.notify_all()
 
     def _capture_loop(self) -> None:
         interval = 1.0 / self._config.target_fps
         deadline = time.monotonic() + interval
+        reconnect_delay = _RECONNECT_INITIAL_SECONDS
         try:
             while not self._stop_event.is_set():
+                with self._condition:
+                    connected = self._connected
+                if not connected:
+                    if self._stop_event.wait(reconnect_delay):
+                        return
+                    try:
+                        self._connect()
+                    except Exception as exc:
+                        logger.warning(
+                            "camera reconnect failed source=%s retry_in=%.1fs: %s",
+                            self._source.name,
+                            min(reconnect_delay * 2, _RECONNECT_MAX_SECONDS),
+                            exc,
+                        )
+                        self._mark_disconnected()
+                        reconnect_delay = min(
+                            reconnect_delay * 2, _RECONNECT_MAX_SECONDS
+                        )
+                        continue
+                    logger.info("camera reconnected source=%s", self._source.name)
+                    reconnect_delay = _RECONNECT_INITIAL_SECONDS
+                    deadline = time.monotonic() + interval
+
                 delay = deadline - time.monotonic()
                 if delay > 0 and self._stop_event.wait(delay):
                     return
                 try:
-                    self._publish(self._read_with_retries())
-                except Exception:
-                    with self._condition:
-                        self._connected = False
-                        self._capturing = False
-                        self._condition.notify_all()
-                    return
+                    self._capture_and_publish()
+                except Exception as exc:
+                    logger.warning(
+                        "camera capture failed source=%s; reconnecting: %s",
+                        self._source.name,
+                        exc,
+                    )
+                    self._mark_disconnected()
+                    reconnect_delay = _RECONNECT_INITIAL_SECONDS
+                    continue
                 deadline += interval
                 if deadline < time.monotonic():
                     deadline = time.monotonic() + interval
         finally:
-            self._safe_close_source()
-            with self._condition:
-                self._connected = False
-                self._capturing = False
-                self._condition.notify_all()
+            self._mark_disconnected()
 
     def _safe_close_source(self) -> None:
         try:

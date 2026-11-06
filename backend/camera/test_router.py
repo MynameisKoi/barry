@@ -122,6 +122,42 @@ def test_client_disconnect_releases_viewer_on_real_server():
         service.stop()
 
 
+def test_response_dropped_before_iteration_releases_viewer(env):
+    """A client that vanishes before the body starts must not leak a slot."""
+    import asyncio
+
+    client, service = env
+    app = client.app
+
+    async def run():
+        sent = []
+
+        async def receive():
+            await asyncio.sleep(10)  # never disconnects by itself
+
+        async def send(message):
+            sent.append(message["type"])
+            if message["type"] == "http.response.start":
+                raise OSError("client went away")  # vanished before the body starts
+
+        scope = {
+            "type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"},
+            "http_version": "1.1", "method": "GET", "scheme": "http",
+            "path": "/api/v1/camera/stream", "raw_path": b"/api/v1/camera/stream",
+            "query_string": b"", "root_path": "", "server": ("test", 80),
+            "client": ("test", 1), "app": app,
+            "headers": [(b"x-camera-key", KEY.encode())],
+        }
+        with pytest.raises(Exception) as excinfo:
+            await app(scope, receive, send)
+        # excinfo keeps the traceback (and the response) alive, so the slot
+        # must have been released deterministically, not by garbage collection.
+        assert service.status().active_viewers == 0
+        assert excinfo.value is not None
+
+    asyncio.run(run())
+
+
 def test_viewer_limit_returns_429(env):
     client, service = env  # max_viewers=1
     with client.stream("GET", "/api/v1/camera/stream", headers=H) as first:
