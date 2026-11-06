@@ -1,90 +1,20 @@
-"""Tests for DOGZILLALib protocol helpers, DogzillaController hardware scaling,
-Raspberry Pi Robot Server + Watchdog, and AI Orchestrator DOGZILLA telemetry rules.
+"""Tests for the vendored DOGZILLALib protocol helpers, the AI orchestrator's
+DOGZILLA telemetry rules, and the laptop's legacy posture endpoint.
+
+DogzillaController and the Pi server are covered by the v1 suites
+(``tests/test_robot_dogzilla.py``, ``tests/test_robot_server.py``,
+``tests/test_robot_e2e.py``).
 """
 
 import struct
-import time
-from unittest.mock import MagicMock
+
 import pytest
 from fastapi.testclient import TestClient
 
 from backend.ai.providers.mock_provider import MockProvider
 from backend.main import app as main_app
 from backend.robot.DOGZILLALib import Byte2Float, PARAM, conver2float, conver2u8
-from backend.robot.dogzilla import DogzillaController
 from backend.robot.factory import create_robot
-from backend.robot.server import WatchdogController, app as pi_app, pi_config
-
-
-class FakeDogzillaDriver:
-    """In-memory mock of DOGZILLALib.DOGZILLA for testing serial command translation."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, tuple]] = []
-        self.battery = 84
-        self.roll = 1.5
-        self.pitch = -2.0
-        self.yaw = 45.0
-
-    def forward(self, step: int) -> None:
-        self.calls.append(("forward", (step,)))
-
-    def back(self, step: int) -> None:
-        self.calls.append(("back", (step,)))
-
-    def left(self, step: int) -> None:
-        self.calls.append(("left", (step,)))
-
-    def right(self, step: int) -> None:
-        self.calls.append(("right", (step,)))
-
-    def turnleft(self, step: int) -> None:
-        self.calls.append(("turnleft", (step,)))
-
-    def turnright(self, step: int) -> None:
-        self.calls.append(("turnright", (step,)))
-
-    def stop(self) -> None:
-        self.calls.append(("stop", ()))
-
-    def reset(self) -> None:
-        self.calls.append(("reset", ()))
-
-    def unload_allmotor(self) -> None:
-        self.calls.append(("unload_allmotor", ()))
-
-    def load_allmotor(self) -> None:
-        self.calls.append(("load_allmotor", ()))
-
-    def translation(self, direction: str, data: float) -> None:
-        self.calls.append(("translation", (direction, data)))
-
-    def attitude(self, direction: str, data: float) -> None:
-        self.calls.append(("attitude", (direction, data)))
-
-    def gait_type(self, mode: str) -> None:
-        self.calls.append(("gait_type", (mode,)))
-
-    def pace(self, mode: str) -> None:
-        self.calls.append(("pace", (mode,)))
-
-    def imu(self, mode: int) -> None:
-        self.calls.append(("imu", (mode,)))
-
-    def read_battery(self) -> int:
-        return self.battery
-
-    def read_roll(self) -> float:
-        return self.roll
-
-    def read_pitch(self) -> float:
-        return self.pitch
-
-    def read_yaw(self) -> float:
-        return self.yaw
-
-    def read_version(self) -> str:
-        return "2.0.7"
 
 
 def test_dogzillalib_byte_conversions():
@@ -103,104 +33,12 @@ def test_dogzillalib_byte_conversions():
     assert round(Byte2Float(packed_le), 2) == 12.5
 
 
-def test_dogzilla_controller_scaling_posture_and_estop():
-    driver = FakeDogzillaDriver()
-    ctrl = DogzillaController(driver=driver, max_speed=1.0)
-
-    # 1. Telemetry read from driver on init
-    status = ctrl.get_status()
-    assert status["connected"] is True
-    assert status["battery_level"] == 84.0
-    assert status["imu"]["roll"] == 1.5
-    assert status["imu"]["pitch"] == -2.0
-    assert status["position"]["heading"] == 45.0
-
-    # 2. Forward movement scales normalized speed 0.5 -> step 10 mm (not 0.5!)
-    res_fwd = ctrl.move("forward", speed=0.5)
-    assert res_fwd["success"] is True
-    assert ("forward", (10,)) in driver.calls
-
-    # 3. Turn left scales normalized speed 0.5 -> 50 deg/s (respecting [30, 70] deadband)
-    res_turn = ctrl.move("left", speed=0.5)
-    assert res_turn["success"] is True
-    assert ("turnleft", (50,)) in driver.calls
-
-    # 4. Strafe right scales normalized speed 0.5 -> 9 mm
-    res_strafe = ctrl.move("strafe_right", speed=0.5)
-    assert res_strafe["success"] is True
-    assert ("right", (9,)) in driver.calls
-
-    # 5. Obstacle crossing preset configures high_walk + slow + z=95
-    res_posture = ctrl.set_posture(preset="obstacle_crossing", imu_enabled=True, pitch=10.0)
-    assert res_posture["success"] is True
-    assert ("gait_type", ("high_walk",)) in driver.calls
-    assert ("pace", ("slow",)) in driver.calls
-    assert ("translation", ("z", 95)) in driver.calls
-    assert ("imu", (1,)) in driver.calls
-    assert ("attitude", ("p", 10.0)) in driver.calls
-
-    # 6. Emergency stop via move("emergency_stop") halts, resets, and unloads all 12 motors
-    res_estop = ctrl.move("emergency_stop")
-    assert res_estop["success"] is True
-    assert ctrl.emergency_stopped is True
-    assert ("unload_allmotor", ()) in driver.calls
-
-    # Subsequent moves blocked while E-stop active
-    blocked = ctrl.move("forward", speed=0.4)
-    assert blocked["success"] is False
-    assert blocked["error_code"] == "ESTOP_ACTIVE"
-
-    # Reset E-stop reloads motors and restores standing posture
-    res_reset = ctrl.reset_emergency_stop()
-    assert res_reset["success"] is True
-    assert ctrl.emergency_stopped is False
-    assert ("load_allmotor", ()) in driver.calls
-
-
-def test_pi_robot_server_auth_speed_cap_and_watchdog():
+def test_factory_accepts_legacy_mode_string():
     sim_robot = create_robot("simulation")
-    wd = WatchdogController(sim_robot, timeout_ms=100)
-
     sim_robot.move("forward", speed=0.4)
-    wd.feed("forward")
-    assert wd.is_moving is True
     assert sim_robot.get_status()["speed"] == 0.4
-
-    time.sleep(0.12)
-    expired = wd.check_and_stop_if_expired()
-    assert expired is True
-    assert wd.is_moving is False
+    sim_robot.stop()
     assert sim_robot.get_status()["speed"] == 0.0
-
-    # Verify Pi Server API key enforcement and emergency speed cap
-    orig_primary = pi_config.ROBOT_API_KEY
-    orig_emerg = pi_config.ROBOT_EMERGENCY_KEY
-    try:
-        pi_config.ROBOT_API_KEY = "laptop-secret-key"
-        pi_config.ROBOT_EMERGENCY_KEY = "quest-emergency-key"
-
-        with TestClient(pi_app) as client:
-            # Unauthenticated /healthz works
-            assert client.get("/healthz").status_code == 200
-
-            # Missing X-Robot-Key rejected with 401
-            assert client.get("/api/robot/status").status_code == 401
-
-            # Emergency key caps speed to ROBOT_EMERGENCY_MAX_SPEED (0.35)
-            client.post(
-                "/api/robot/reset-emergency",
-                headers={"X-Robot-Key": "laptop-secret-key"},
-            )
-            cmd_resp = client.post(
-                "/api/robot/command",
-                headers={"X-Robot-Key": "quest-emergency-key"},
-                json={"action": "forward", "speed": 0.9},
-            )
-            assert cmd_resp.status_code == 200
-            assert cmd_resp.json()["telemetry"]["speed"] <= pi_config.ROBOT_EMERGENCY_MAX_SPEED
-    finally:
-        pi_config.ROBOT_API_KEY = orig_primary
-        pi_config.ROBOT_EMERGENCY_KEY = orig_emerg
 
 
 @pytest.mark.asyncio

@@ -375,12 +375,32 @@ class RobotInterface(ABC):
         """Sets pace (from intensity) and gait. Must not change body height."""
 
     @abstractmethod
-    def set_posture(self, posture: Posture) -> CommandResult:
-        """Sets body height preset and roll/pitch/yaw.
+    def set_posture(self, posture: Optional[Posture] = None, **legacy: Any) -> Any:
+        """Sets body height preset and roll/pitch/yaw; returns a ``CommandResult``.
 
         Rejects angles outside ``config.ATTITUDE_SAFE_LIMITS`` and unsafe
         style/posture combinations. Not the same as ``reset()``.
+
+        Legacy form: called with keyword arguments only (``height_z``,
+        ``gait_type``, ``pace``, ``preset``, ...), as ``backend/main.py`` does,
+        implementations delegate to ``backend.robot.legacy.apply_legacy_posture``
+        and return the legacy ``{"success", "message", "telemetry"}`` dict.
         """
+
+    # --- IMU self-stabilization (optional capability) ------------------
+
+    @property
+    def imu_enabled(self) -> bool:
+        """Tracked IMU self-stabilization flag. ``False`` when unsupported."""
+        return False
+
+    def set_imu(self, enabled: bool) -> CommandResult:
+        """Toggles IMU self-stabilization (SDK ``imu(0|1)``).
+
+        Not part of the v1 Quest controls; only the legacy posture API uses it.
+        Default: rejected, for implementations without the capability.
+        """
+        return CommandResult(CommandStatus.REJECTED, "imu", "IMU control is not supported by this robot.")
 
     # --- actions ------------------------------------------------------
 

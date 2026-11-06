@@ -13,13 +13,14 @@ from backend.robot.config import (
     SDK_VYAW_MAX, SDK_VYAW_MIN_NONZERO, RobotConfig, check_attitude,
     check_combination,
 )
+from backend.robot.legacy import legacy_status_blocks
 from backend.robot.interface import (
     ActionInfo, CommandResult, CommandStatus, ControlState, Direction, Intensity,
     MotionCommand, MovementStyle, Orientation, Posture, RobotInterface,
     RobotMode, Telemetry, apply_dead_zone,
 )
 
-logger = logging.getLogger("barry.robot.dogzilla")
+logger = logging.getLogger(__name__)
 
 
 class DogzillaController(RobotInterface):
@@ -36,9 +37,15 @@ class DogzillaController(RobotInterface):
         self._connected = sdk is not None
         self._initialization_error: Optional[str] = None
         self._state = ControlState()
+        self._imu_enabled = False
         if sdk is None:
             try:
-                from DOGZILLALib import DOGZILLA  # type: ignore[import-not-found]
+                try:
+                    # Copy vendored in the repo (backend/robot/DOGZILLALib.py).
+                    from backend.robot.DOGZILLALib import DOGZILLA
+                except ImportError:
+                    # Installed SDK on the Pi (``pip install`` from Yahboom's setup.py).
+                    from DOGZILLALib import DOGZILLA  # type: ignore[import-not-found,no-redef]
                 self._sdk = DOGZILLA(self.config.dogzilla_port)
                 self._connected = True
             except Exception as exc:
@@ -186,8 +193,13 @@ class DogzillaController(RobotInterface):
             self._state.last_command = "set_movement_style"
             return self._result(CommandStatus.ACCEPTED, "set_movement_style")
 
-    def set_posture(self, posture: Posture) -> CommandResult:
+    def set_posture(self, posture: Optional[Posture] = None, **legacy: Any) -> Any:
         """Apply UNCALIBRATED height and safe roll/pitch/yaw SDK commands."""
+        if posture is None:
+            # Legacy keyword form used by backend/main.py (see backend/robot/legacy.py).
+            from backend.robot.legacy import apply_legacy_posture
+
+            return apply_legacy_posture(self, **legacy)
         with self._lock:
             if self._state.emergency_stopped:
                 return self._result(CommandStatus.REJECTED, "set_posture", "Emergency stop is latched")
@@ -288,6 +300,22 @@ class DogzillaController(RobotInterface):
             return {"success": result.ok, "message": "Emergency stop latched",
                     "telemetry": self.get_status()}
 
+    @property
+    def imu_enabled(self) -> bool:
+        with self._lock:
+            return self._imu_enabled
+
+    def set_imu(self, enabled: bool) -> CommandResult:
+        """Toggle IMU self-stabilization via SDK ``imu(1|0)``. Rejected while e-stopped."""
+        with self._lock:
+            if self._state.emergency_stopped:
+                return self._result(CommandStatus.REJECTED, "imu", "Emergency stop is latched")
+            failed = self._call("imu", lambda dog: dog.imu(1 if enabled else 0))
+            if failed:
+                return failed
+            self._imu_enabled = bool(enabled)
+            return self._result(CommandStatus.ACCEPTED, "imu")
+
     def reset_emergency_stop(self) -> Dict[str, Any]:
         """Clear the software latch without issuing any movement command."""
         with self._lock:
@@ -326,147 +354,6 @@ class DogzillaController(RobotInterface):
         return {"success": result.ok, "message": result.message or result.status.value,
                 "telemetry": self.get_status()}
 
-    def set_posture(
-        self,
-        *,
-        height_z: Optional[float] = None,
-        roll: Optional[float] = None,
-        pitch: Optional[float] = None,
-        yaw: Optional[float] = None,
-        gait_type: Optional[str] = None,
-        pace: Optional[str] = None,
-        imu_enabled: Optional[bool] = None,
-        preset: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Controls DOGZILLA body height, camera/body attitude, gait, pace, or obstacle-crossing preset."""
-        if self.emergency_stopped:
-            return {
-                "success": False,
-                "error_code": "ESTOP_ACTIVE",
-                "message": "Posture change blocked: Emergency stop is active.",
-                "telemetry": self.get_status(),
-            }
-        if not self.connected or self.dog is None:
-            return {
-                "success": False,
-                "error_code": "OFFLINE",
-                "message": "Cannot set posture: Physical DOGZILLA hardware is offline.",
-                "telemetry": self.get_status(),
-            }
-
-        with self._lock:
-            try:
-                if preset:
-                    p_clean = preset.strip().lower()
-                    if p_clean == "obstacle_crossing":
-                        # Matches joystick_dogzilla.py __obstacle_crossing()
-                        self.dog.gait_type("high_walk")
-                        self.dog.pace("slow")
-                        self.dog.translation("z", 95)
-                        self.gait_type = "high_walk"
-                        self.pace = "slow"
-                        self.height_z = 95.0
-                    elif p_clean == "crouch":
-                        self.dog.pace("slow")
-                        self.dog.translation("z", self.MIN_HEIGHT_Z)
-                        self.pace = "slow"
-                        self.height_z = float(self.MIN_HEIGHT_Z)
-                    elif p_clean in ("stand", "reset", "default"):
-                        self.dog.reset()
-                        self.dog.pace("normal")
-                        self.dog.translation("z", self.DEFAULT_HEIGHT_Z)
-                        self.gait_type = "trot"
-                        self.pace = "normal"
-                        self.height_z = float(self.DEFAULT_HEIGHT_Z)
-                        self.roll = 0.0
-                        self.pitch = 0.0
-                        self.yaw = 0.0
-                    else:
-                        return {
-                            "success": False,
-                            "message": f"Unknown posture preset '{preset}'.",
-                            "telemetry": self.get_status(),
-                        }
-
-                if height_z is not None:
-                    clamped_z = max(self.MIN_HEIGHT_Z, min(self.MAX_HEIGHT_Z, round(height_z)))
-                    self.dog.translation("z", clamped_z)
-                    self.height_z = float(clamped_z)
-
-                if roll is not None:
-                    lim_r = PARAM["ATTITUDE_LIMIT"][0]
-                    clamped_r = max(-lim_r, min(lim_r, float(roll)))
-                    self.dog.attitude("r", clamped_r)
-                    self.roll = clamped_r
-
-                if pitch is not None:
-                    lim_p = PARAM["ATTITUDE_LIMIT"][1]
-                    clamped_p = max(-lim_p, min(lim_p, float(pitch)))
-                    self.dog.attitude("p", clamped_p)
-                    self.pitch = clamped_p
-
-                if yaw is not None:
-                    lim_y = PARAM["ATTITUDE_LIMIT"][2]
-                    clamped_y = max(-lim_y, min(lim_y, float(yaw)))
-                    self.dog.attitude("y", clamped_y)
-                    self.yaw = clamped_y
-
-                if gait_type is not None:
-                    g_clean = gait_type.strip().lower()
-                    if g_clean not in ("trot", "walk", "high_walk"):
-                        return {
-                            "success": False,
-                            "message": f"Invalid gait_type '{gait_type}'. Must be trot, walk, or high_walk.",
-                            "telemetry": self.get_status(),
-                        }
-                    self.dog.gait_type(g_clean)
-                    self.gait_type = g_clean
-
-                if pace is not None:
-                    pace_clean = pace.strip().lower()
-                    if pace_clean not in ("slow", "normal", "high"):
-                        return {
-                            "success": False,
-                            "message": f"Invalid pace '{pace}'. Must be slow, normal, or high.",
-                            "telemetry": self.get_status(),
-                        }
-                    self.dog.pace(pace_clean)
-                    self.pace = pace_clean
-
-                if imu_enabled is not None:
-                    self.dog.imu(1 if imu_enabled else 0)
-                    self.imu_enabled = bool(imu_enabled)
-
-                self.last_command = f"posture:{preset or 'custom'}"
-            except Exception as exc:
-                logger.error("DOGZILLA set_posture error: %s", exc)
-                return {
-                    "success": False,
-                    "message": f"DOGZILLA posture command failed: {exc}",
-                    "telemetry": self.get_status(),
-                }
-
-        return {
-            "success": True,
-            "message": "DOGZILLA posture updated.",
-            "telemetry": self.get_status(),
-        }
-
-    def _refresh_hardware_telemetry(self) -> None:
-        """Polls battery and IMU roll/pitch/yaw from DOGZILLALib under serial lock."""
-        if not self.connected or self.dog is None:
-            return
-        with self._lock:
-            try:
-                bat = self.dog.read_battery()
-                if isinstance(bat, (int, float)) and 0 <= bat <= 100:
-                    self.battery_level = float(bat)
-                self.roll = float(self.dog.read_roll())
-                self.pitch = float(self.dog.read_pitch())
-                self.yaw = float(self.dog.read_yaw())
-            except Exception as exc:
-                logger.debug("Telemetry poll skipped: %s", exc)
-
     def get_status(self) -> Dict[str, Any]:
         """Return the legacy status shape using application-tracked state."""
         state = self.get_control_state()
@@ -477,4 +364,5 @@ class DogzillaController(RobotInterface):
             "last_command": state.last_command,
             "emergency_stopped": state.emergency_stopped,
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            **legacy_status_blocks(self, state),
         }

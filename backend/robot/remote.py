@@ -42,6 +42,7 @@ import httpx
 
 from backend.robot import protocol
 from backend.robot.config import RobotConfig
+from backend.robot.legacy import legacy_status_blocks
 from backend.robot.interface import (
     ActionInfo,
     CommandResult,
@@ -160,7 +161,13 @@ class RemoteRobotClient(RobotInterface):
             self._track(intensity=style.intensity, gait=style.gait)
         return result
 
-    def set_posture(self, posture: Posture) -> CommandResult:
+    def set_posture(self, posture: Optional[Posture] = None, **legacy: Any) -> Any:
+        """``POST /posture``. Keyword-only legacy calls go through ``backend.robot.legacy``;
+        their ``imu_enabled`` is rejected because the v1 Pi API has no IMU route."""
+        if posture is None:
+            from backend.robot.legacy import apply_legacy_posture
+
+            return apply_legacy_posture(self, **legacy)
         body = {
             "height": posture.height.value,
             "roll": posture.roll,
@@ -489,6 +496,7 @@ class RemoteRobotClient(RobotInterface):
             "last_command": state.last_command,
             "emergency_stopped": state.emergency_stopped,
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            **legacy_status_blocks(self, state),
         }
 
     def _legacy_result(self, result: CommandResult) -> Dict[str, Any]:
