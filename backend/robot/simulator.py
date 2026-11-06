@@ -58,7 +58,9 @@ from typing import Any, Dict, List, Optional
 from backend.robot.config import (
     APPROVED_ACTIONS,
     DISCRETE_STEP_FOR_INTENSITY,
+    HEIGHT_PRESETS_Z,
     MOTION_SCALE_FOR_INTENSITY,
+    PACE_FOR_INTENSITY,
     SDK_VX_MAX,
     SDK_VY_MAX,
     SDK_VYAW_MAX,
@@ -73,6 +75,7 @@ from backend.robot.interface import (
     CommandStatus,
     ControlState,
     Direction,
+    Gait,
     HeightPreset,
     Intensity,
     MotionCommand,
@@ -334,37 +337,112 @@ class RobotSimulator(RobotInterface):
                     "message": "Blocked: emergency stop is active. Reset required.",
                     "telemetry": self.get_status(),
                 }
-            if preset == "obstacle_crossing":
-                height_z = 95.0
-                gait_type = "high_walk"
-                pace = "slow"
-            elif preset == "stand":
-                height_z = 105.0
-                gait_type = "trot"
-                pace = "normal"
-            elif preset == "crouch":
-                height_z = 75.0
-                gait_type = "trot"
-                pace = "slow"
+            new_gait, new_intensity = self.gait, self.intensity
+            new_height = self.posture.height
+            new_roll, new_pitch, new_yaw = (
+                self.posture.roll,
+                self.posture.pitch,
+                self.posture.yaw,
+            )
+            commanded_z = float(HEIGHT_PRESETS_Z[new_height])
+            pace_to_intensity = {value: key for key, value in PACE_FOR_INTENSITY.items()}
 
+            try:
+                if preset is not None:
+                    preset_clean = str(preset).strip().lower()
+                    if preset_clean == "obstacle_crossing":
+                        new_gait = Gait.HIGH_WALK
+                        new_intensity = Intensity.LOW
+                        new_height = HeightPreset.MEDIUM
+                    elif preset_clean == "crouch":
+                        new_intensity = Intensity.LOW
+                        new_height = HeightPreset.LOW
+                    elif preset_clean in ("stand", "reset", "default"):
+                        new_gait = Gait.TROT
+                        new_intensity = Intensity.MEDIUM
+                        new_height = HeightPreset.MEDIUM
+                        new_roll = new_pitch = new_yaw = 0.0
+                    else:
+                        return self._posture_error(f"Unknown posture preset '{preset}'.")
+                    commanded_z = float(HEIGHT_PRESETS_Z[new_height])
+
+                if height_z is not None:
+                    z = float(height_z)
+                    if not math.isfinite(z):
+                        return self._posture_error("height_z must be a finite number.")
+                    lo, hi = min(HEIGHT_PRESETS_Z.values()), max(HEIGHT_PRESETS_Z.values())
+                    commanded_z = float(max(lo, min(hi, round(z))))
+                    new_height = self._nearest_height(commanded_z)
+                if roll is not None:
+                    new_roll = float(roll)
+                if pitch is not None:
+                    new_pitch = float(pitch)
+                if yaw is not None:
+                    new_yaw = float(yaw)
+                if gait_type is not None:
+                    try:
+                        new_gait = Gait(str(gait_type).strip().lower())
+                    except ValueError:
+                        return self._posture_error(
+                            f"Invalid gait_type '{gait_type}'. Must be trot, walk, or high_walk."
+                        )
+                if pace is not None:
+                    pace_clean = str(pace).strip().lower()
+                    if pace_clean not in pace_to_intensity:
+                        return self._posture_error(
+                            f"Invalid pace '{pace}'. Must be slow, normal, or high."
+                        )
+                    new_intensity = pace_to_intensity[pace_clean]
+            except (TypeError, ValueError) as exc:
+                return self._posture_error(f"Invalid posture value: {exc}")
+
+            reason = check_attitude(new_roll, new_pitch, new_yaw) or check_combination(
+                new_gait, new_intensity, new_height
+            )
+            if reason:
+                return self._posture_error(reason)
+
+            imu_stabilization = getattr(self, "imu_state", {}).get(
+                "imu_stabilization", True
+            )
+            if imu_enabled is not None:
+                imu_stabilization = bool(imu_enabled)
+
+            # Commit only after the complete request has passed validation.
+            self.gait, self.intensity = new_gait, new_intensity
+            self.posture = Posture(
+                new_height, new_roll, new_pitch, new_yaw
+            )
             self.posture_state = {
-                "height_z": height_z if height_z is not None else getattr(self, "posture_state", {}).get("height_z", 105.0),
-                "gait_type": gait_type or getattr(self, "posture_state", {}).get("gait_type", "trot"),
-                "pace": pace or getattr(self, "posture_state", {}).get("pace", "normal"),
+                "height_z": commanded_z,
+                "gait_type": new_gait.value,
+                "pace": PACE_FOR_INTENSITY[new_intensity],
             }
             self.imu_state = {
-                "roll": roll if roll is not None else getattr(self, "imu_state", {}).get("roll", 0.0),
-                "pitch": pitch if pitch is not None else getattr(self, "imu_state", {}).get("pitch", 0.0),
-                "yaw": yaw if yaw is not None else getattr(self, "imu_state", {}).get("yaw", 0.0),
-                "imu_stabilization": imu_enabled if imu_enabled is not None else getattr(self, "imu_state", {}).get("imu_stabilization", True),
+                "roll": new_roll,
+                "pitch": new_pitch,
+                "yaw": new_yaw,
+                "imu_stabilization": imu_stabilization,
             }
-            h_preset = HeightPreset.LOW if self.posture_state["height_z"] <= 85.0 else (HeightPreset.HIGH if self.posture_state["height_z"] >= 110.0 else HeightPreset.MEDIUM)
-            self.posture = Posture(h_preset, self.imu_state["roll"], self.imu_state["pitch"], self.imu_state["yaw"])
+            if preset is not None and str(preset).strip().lower() in (
+                "stand",
+                "reset",
+                "default",
+            ):
+                self.moving = False
+            self.last_command = f"posture:{preset or 'custom'}"
             return {
                 "success": True,
                 "message": "Simulated posture updated.",
                 "telemetry": self.get_status(),
             }
+
+    def _posture_error(self, message: str) -> Dict[str, Any]:
+        return {"success": False, "message": message, "telemetry": self.get_status()}
+
+    @staticmethod
+    def _nearest_height(z: float) -> HeightPreset:
+        return min(HEIGHT_PRESETS_Z, key=lambda height: abs(HEIGHT_PRESETS_Z[height] - z))
 
     def list_actions(self) -> List[ActionInfo]:
         """Only the approved allowlist (never 255/reset)."""

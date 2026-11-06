@@ -189,6 +189,51 @@ def test_request_bodies(client, pi):
     assert len(pi.by_path("/api/v1/actions/16")) == 1
 
 
+def test_legacy_posture_maps_gait_and_pace_to_movement_style(client, pi):
+    result = client.set_posture(gait_type="walk", pace="high")
+    assert result["success"] is True
+    request = pi.by_path(protocol.PATH_MOVEMENT_STYLE)[0]
+    assert json.loads(request.content) == {"intensity": "high", "gait": "walk"}
+    assert protocol.SESSION_HEADER in request.headers
+    assert protocol.SEQ_HEADER in request.headers
+    assert protocol.SENT_AT_HEADER in request.headers
+    assert pi.by_path(protocol.PATH_POSTURE) == []
+
+
+@pytest.mark.parametrize(
+    "preset,style,posture",
+    [
+        ("obstacle_crossing", {"intensity": "low", "gait": "high_walk"},
+         {"height": "medium", "roll": 0.0, "pitch": 0.0, "yaw": 0.0}),
+        ("crouch", {"intensity": "low", "gait": "trot"},
+         {"height": "low", "roll": 0.0, "pitch": 0.0, "yaw": 0.0}),
+        ("stand", {"intensity": "medium", "gait": "trot"},
+         {"height": "medium", "roll": 0.0, "pitch": 0.0, "yaw": 0.0}),
+    ],
+)
+def test_legacy_posture_presets(client, pi, preset, style, posture):
+    result = client.set_posture(preset=preset)
+    assert result["success"] is True
+    assert json.loads(pi.by_path(protocol.PATH_MOVEMENT_STYLE)[0].content) == style
+    assert json.loads(pi.by_path(protocol.PATH_POSTURE)[0].content) == posture
+
+
+@pytest.mark.parametrize(
+    "kwargs,message",
+    [
+        ({"gait_type": "gallop"}, "Invalid gait_type"),
+        ({"pace": "turbo"}, "Invalid pace"),
+        ({"preset": "sit"}, "Unknown posture preset"),
+        ({"imu_enabled": True}, "not supported in remote mode"),
+    ],
+)
+def test_legacy_posture_rejects_invalid_or_unsupported_before_sending(client, pi, kwargs, message):
+    result = client.set_posture(**kwargs)
+    assert result["success"] is False
+    assert message in result["message"]
+    assert pi.requests == []
+
+
 def test_bad_action_id_rejected_locally(client, pi):
     assert client.perform_action(True).status == CommandStatus.REJECTED
     assert pi.requests == []

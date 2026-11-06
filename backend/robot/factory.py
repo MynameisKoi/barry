@@ -35,8 +35,12 @@ def create_robot(
     :raises ValueError: for an unknown mode.
     """
     if isinstance(config, str):
+        if mode is not None:
+            raise ValueError("Pass either config as a mode string or mode, not both")
         mode = config
         config = None
+    elif config is not None and mode is not None:
+        raise ValueError("mode cannot be combined with a RobotConfig")
 
     if config is None:
         env = dict(os.environ)

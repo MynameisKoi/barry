@@ -14,7 +14,7 @@ from backend.robot.config import (
     check_combination,
 )
 from backend.robot.interface import (
-    ActionInfo, CommandResult, CommandStatus, ControlState, Direction, Intensity,
+    ActionInfo, CommandResult, CommandStatus, ControlState, Direction, Gait, HeightPreset, Intensity,
     MotionCommand, MovementStyle, Orientation, Posture, RobotInterface,
     RobotMode, Telemetry, apply_dead_zone,
 )
@@ -42,14 +42,16 @@ class DogzillaController(RobotInterface):
         self._sdk = sdk
         self.dog = sdk
         self.driver = sdk
-        self.max_speed = max_speed or 1.0
+        self.max_speed = 1.0 if max_speed is None else max_speed
         self._connected = sdk is not None
         self._initialization_error: Optional[str] = None
         self._state = ControlState()
-        self.height_z = 105.0
-        self.gait_type = "trot"
-        self.pace = "normal"
         self.imu_stabilization = True
+        # Cached telemetry, written only by _refresh_hardware_telemetry.
+        self.battery_level: Optional[float] = None
+        self.roll = 0.0
+        self.pitch = 0.0
+        self.yaw = 0.0
         if sdk is None:
             try:
                 from DOGZILLALib import DOGZILLA  # type: ignore[import-not-found]
@@ -325,37 +327,46 @@ class DogzillaController(RobotInterface):
             )
 
     def emergency_stop(self) -> Dict[str, Any]:
-        """Attempt SDK stop regardless of health, then latch software e-stop."""
+        """Attempt SDK stop, latch the software e-stop, then go limp.
+
+        No motion command (e.g. ``reset``) is ever issued here: the robot must
+        not move before the motors are unloaded.
+        """
         with self._lock:
             result = self.stop()
             self._state.emergency_stopped = True
             self._state.moving = False
             self._state.last_command = "emergency_stop"
-            if self.dog is not None:
+            unload = getattr(self.dog, "unload_allmotor", None) if self.dog is not None else None
+            if callable(unload):
                 try:
-                    if hasattr(self.dog, "reset"):
-                        self.dog.reset()
-                    if hasattr(self.dog, "unload_allmotor"):
-                        self.dog.unload_allmotor()
+                    unload()
                 except Exception:
-                    pass
+                    self._connected = False
+                    logger.exception("DOGZILLA unload_allmotor failed during emergency stop")
             return {"success": result.ok, "message": "Emergency stop latched",
                     "telemetry": self.get_status()}
 
     def reset_emergency_stop(self) -> Dict[str, Any]:
-        """Clear the software latch and reload motors."""
+        """Reload motors and clear the latch; never commands motion.
+
+        If reloading fails the latch stays set. The tracked posture is left
+        untouched; call ``reset()`` afterwards to restore the default stance.
+        """
         with self._lock:
+            load = getattr(self.dog, "load_allmotor", None) if self.dog is not None else None
+            if callable(load):
+                try:
+                    load()
+                except Exception as exc:
+                    self._connected = False
+                    logger.exception("DOGZILLA load_allmotor failed; e-stop stays latched")
+                    return {"success": False,
+                            "message": f"Emergency stop NOT cleared: {exc}",
+                            "telemetry": self.get_status()}
             self._state.emergency_stopped = False
             self._state.moving = False
-            self._state.last_command = "stop"
-            if self.dog is not None:
-                try:
-                    if hasattr(self.dog, "load_allmotor"):
-                        self.dog.load_allmotor()
-                    if hasattr(self.dog, "reset"):
-                        self.dog.reset()
-                except Exception:
-                    pass
+            self._state.last_command = "emergency_stop_cleared"
             return {"success": True, "message": "Emergency stop cleared",
                     "telemetry": self.get_status()}
 
@@ -398,6 +409,18 @@ class DogzillaController(RobotInterface):
         return {"success": result.ok, "message": result.message or result.status.value,
                 "telemetry": self.get_status()}
 
+    def _legacy_result(self, success: bool, message: str,
+                       error_code: Optional[str] = None) -> Dict[str, Any]:
+        out: Dict[str, Any] = {"success": success, "message": message}
+        if error_code:
+            out["error_code"] = error_code
+        out["telemetry"] = self.get_status()
+        return out
+
+    @staticmethod
+    def _nearest_height(z: float) -> HeightPreset:
+        return min(HEIGHT_PRESETS_Z, key=lambda h: abs(HEIGHT_PRESETS_Z[h] - z))
+
     def _set_posture_legacy(
         self,
         *,
@@ -410,175 +433,136 @@ class DogzillaController(RobotInterface):
         imu_enabled: Optional[bool] = None,
         preset: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Controls DOGZILLA body height, camera/body attitude, gait, pace, or obstacle-crossing preset."""
-        if self.emergency_stopped:
-            return {
-                "success": False,
-                "error_code": "ESTOP_ACTIVE",
-                "message": "Posture change blocked: Emergency stop is active.",
-                "telemetry": self.get_status(),
-            }
-        if not self.connected or self.dog is None:
-            return {
-                "success": False,
-                "error_code": "OFFLINE",
-                "message": "Cannot set posture: Physical DOGZILLA hardware is offline.",
-                "telemetry": self.get_status(),
-            }
+        """Keyword posture path. Validates everything, then sends, then records.
 
+        Nothing is sent to the SDK unless the whole request validates, and the
+        resulting values are stored in ``self._state`` (never loose attributes).
+        """
         with self._lock:
+            if self._state.emergency_stopped:
+                return self._legacy_result(False, "Posture change blocked: Emergency stop is active.",
+                                           "ESTOP_ACTIVE")
+            if not self._connected or self._sdk is None:
+                return self._legacy_result(False, "Cannot set posture: Physical DOGZILLA hardware is offline.",
+                                           "OFFLINE")
+
+            st = self._state
+            gait, intensity = st.gait, st.intensity
+            height = st.posture.height
+            r, p, y = st.posture.roll, st.posture.pitch, st.posture.yaw
+            ops: list[Callable[[Any], Any]] = []
+            pace_to_intensity = {v: k for k, v in PACE_FOR_INTENSITY.items()}
+
             try:
-                if preset:
-                    p_clean = preset.strip().lower()
-                    if p_clean == "obstacle_crossing":
-                        # Matches joystick_dogzilla.py __obstacle_crossing()
-                        self.dog.gait_type("high_walk")
-                        self.dog.pace("slow")
-                        self.dog.translation("z", 95)
-                        self.gait_type = "high_walk"
-                        self.pace = "slow"
-                        self.height_z = 95.0
-                    elif p_clean == "crouch":
-                        self.dog.pace("slow")
-                        self.dog.translation("z", self.MIN_HEIGHT_Z)
-                        self.pace = "slow"
-                        self.height_z = float(self.MIN_HEIGHT_Z)
-                    elif p_clean in ("stand", "reset", "default"):
-                        self.dog.reset()
-                        self.dog.pace("normal")
-                        self.dog.translation("z", self.DEFAULT_HEIGHT_Z)
-                        self.gait_type = "trot"
-                        self.pace = "normal"
-                        self.height_z = float(self.DEFAULT_HEIGHT_Z)
-                        self.roll = 0.0
-                        self.pitch = 0.0
-                        self.yaw = 0.0
+                if preset is not None:
+                    name = str(preset).strip().lower()
+                    if name == "obstacle_crossing":
+                        gait, intensity, height = Gait.HIGH_WALK, Intensity.LOW, HeightPreset.MEDIUM
+                        ops += [lambda d: d.gait_type("high_walk"), lambda d: d.pace("slow"),
+                                lambda d, z=HEIGHT_PRESETS_Z[height]: d.translation("z", z)]
+                    elif name == "crouch":
+                        intensity, height = Intensity.LOW, HeightPreset.LOW
+                        ops += [lambda d: d.pace("slow"),
+                                lambda d, z=HEIGHT_PRESETS_Z[height]: d.translation("z", z)]
+                    elif name in ("stand", "reset", "default"):
+                        gait, intensity, height = Gait.TROT, Intensity.MEDIUM, HeightPreset.MEDIUM
+                        r = p = y = 0.0
+                        ops += [lambda d: d.reset(), lambda d: d.pace("normal"),
+                                lambda d: d.gait_type("trot"),
+                                lambda d, z=HEIGHT_PRESETS_Z[height]: d.translation("z", z)]
                     else:
-                        return {
-                            "success": False,
-                            "message": f"Unknown posture preset '{preset}'.",
-                            "telemetry": self.get_status(),
-                        }
+                        return self._legacy_result(False, f"Unknown posture preset '{preset}'.")
 
                 if height_z is not None:
-                    clamped_z = max(self.MIN_HEIGHT_Z, min(self.MAX_HEIGHT_Z, round(height_z)))
-                    self.dog.translation("z", clamped_z)
-                    self.height_z = float(clamped_z)
+                    z = float(height_z)
+                    lo, hi = min(HEIGHT_PRESETS_Z.values()), max(HEIGHT_PRESETS_Z.values())
+                    if not math.isfinite(z):
+                        return self._legacy_result(False, "height_z must be a finite number.")
+                    z = max(lo, min(hi, round(z)))
+                    height = self._nearest_height(z)
+                    ops.append(lambda d, z=z: d.translation("z", z))
 
                 if roll is not None:
-                    lim_r = 20.0
-                    clamped_r = max(-lim_r, min(lim_r, float(roll)))
-                    self.dog.attitude("r", clamped_r)
-                    self.roll = clamped_r
-
+                    r = float(roll)
+                    ops.append(lambda d, v=r: d.attitude("r", v))
                 if pitch is not None:
-                    lim_p = 15.0
-                    clamped_p = max(-lim_p, min(lim_p, float(pitch)))
-                    self.dog.attitude("p", clamped_p)
-                    self.pitch = clamped_p
-
+                    p = float(pitch)
+                    ops.append(lambda d, v=p: d.attitude("p", v))
                 if yaw is not None:
-                    lim_y = 11.0
-                    clamped_y = max(-lim_y, min(lim_y, float(yaw)))
-                    self.dog.attitude("y", clamped_y)
-                    self.yaw = clamped_y
+                    y = float(yaw)
+                    ops.append(lambda d, v=y: d.attitude("y", v))
 
                 if gait_type is not None:
-                    g_clean = gait_type.strip().lower()
-                    if g_clean not in ("trot", "walk", "high_walk"):
-                        return {
-                            "success": False,
-                            "message": f"Invalid gait_type '{gait_type}'. Must be trot, walk, or high_walk.",
-                            "telemetry": self.get_status(),
-                        }
-                    self.dog.gait_type(g_clean)
-                    self.gait_type = g_clean
+                    try:
+                        gait = Gait(str(gait_type).strip().lower())
+                    except ValueError:
+                        return self._legacy_result(
+                            False, f"Invalid gait_type '{gait_type}'. Must be trot, walk, or high_walk.")
+                    ops.append(lambda d, v=gait.value: d.gait_type(v))
 
                 if pace is not None:
-                    pace_clean = pace.strip().lower()
-                    if pace_clean not in ("slow", "normal", "high"):
-                        return {
-                            "success": False,
-                            "message": f"Invalid pace '{pace}'. Must be slow, normal, or high.",
-                            "telemetry": self.get_status(),
-                        }
-                    self.dog.pace(pace_clean)
-                    self.pace = pace_clean
+                    pace_clean = str(pace).strip().lower()
+                    if pace_clean not in pace_to_intensity:
+                        return self._legacy_result(
+                            False, f"Invalid pace '{pace}'. Must be slow, normal, or high.")
+                    intensity = pace_to_intensity[pace_clean]
+                    ops.append(lambda d, v=pace_clean: d.pace(v))
+            except (TypeError, ValueError) as exc:
+                return self._legacy_result(False, f"Invalid posture value: {exc}")
 
-                if imu_enabled is not None:
-                    self.dog.imu(1 if imu_enabled else 0)
-                    self.imu_enabled = bool(imu_enabled)
+            reason = check_attitude(r, p, y) or check_combination(gait, intensity, height)
+            if reason:
+                return self._legacy_result(False, reason)
 
-                self.last_command = f"posture:{preset or 'custom'}"
-            except Exception as exc:
-                logger.error("DOGZILLA set_posture error: %s", exc)
-                return {
-                    "success": False,
-                    "message": f"DOGZILLA posture command failed: {exc}",
-                    "telemetry": self.get_status(),
-                }
+            if imu_enabled is not None:
+                ops.append(lambda d: d.imu(1 if imu_enabled else 0))
 
-        return {
-            "success": True,
-            "message": "DOGZILLA posture updated.",
-            "telemetry": self.get_status(),
-        }
+            failed = self._call("set_posture", lambda dog: [op(dog) for op in ops])
+            if failed:
+                return self._legacy_result(False, f"DOGZILLA posture command failed: {failed.message}")
+
+            st.gait, st.intensity = gait, intensity
+            st.posture = Posture(height, r, p, y)
+            if imu_enabled is not None:
+                self.imu_stabilization = bool(imu_enabled)
+            if preset is not None and str(preset).strip().lower() in ("stand", "reset", "default"):
+                st.moving = False
+            st.last_command = f"posture:{preset or 'custom'}"
+            return self._legacy_result(True, "DOGZILLA posture updated.")
 
     def _refresh_hardware_telemetry(self) -> None:
-        """Polls battery and IMU roll/pitch/yaw from DOGZILLALib under serial lock."""
-        if not self.connected or self.dog is None:
-            return
+        """Poll battery and IMU roll/pitch/yaw into the cache under the SDK lock."""
         with self._lock:
+            if not self._connected or self._sdk is None:
+                return
             try:
-                bat = self.dog.read_battery()
+                bat = self._sdk.read_battery()
                 if isinstance(bat, (int, float)) and 0 <= bat <= 100:
                     self.battery_level = float(bat)
-                self.roll = float(self.dog.read_roll())
-                self.pitch = float(self.dog.read_pitch())
-                self.yaw = float(self.dog.read_yaw())
+                self.roll = float(self._sdk.read_roll())
+                self.pitch = float(self._sdk.read_pitch())
+                self.yaw = float(self._sdk.read_yaw())
             except Exception as exc:
                 logger.debug("Telemetry poll skipped: %s", exc)
 
     def get_status(self) -> Dict[str, Any]:
-        """Return the legacy status shape using application-tracked state."""
+        """Return the legacy status shape from tracked state plus cached telemetry."""
+        self._refresh_hardware_telemetry()
         state = self.get_control_state()
-        batt = getattr(self.driver, "battery", None)
-        if callable(batt):
-            try:
-                batt = batt()
-            except Exception:
-                batt = None
-        try:
-            batt_val = float(batt) if batt is not None else None
-        except (TypeError, ValueError):
-            batt_val = None
-
-        roll = getattr(self.driver, "roll", 0.0)
-        pitch = getattr(self.driver, "pitch", 0.0)
-        yaw = getattr(self.driver, "yaw", 0.0)
-        try:
-            roll = float(roll() if callable(roll) else (roll or 0.0))
-        except Exception:
-            roll = 0.0
-        try:
-            pitch = float(pitch() if callable(pitch) else (pitch or 0.0))
-        except Exception:
-            pitch = 0.0
-        try:
-            yaw = float(yaw() if callable(yaw) else (yaw or 0.0))
-        except Exception:
-            yaw = 0.0
-
+        with self._lock:
+            connected = self._connected
+            battery, roll, pitch, yaw = self.battery_level, self.roll, self.pitch, self.yaw
+            imu_stabilization = self.imu_stabilization
         return {
-            "connected": self.connected,
+            "connected": connected,
             "mode": "dogzilla",
-            "battery_level": batt_val,
+            "battery_level": battery,
             "position": {"x": 0.0, "y": 0.0, "heading": yaw},
             "imu": {
                 "roll": roll,
                 "pitch": pitch,
                 "yaw": yaw,
-                "imu_stabilization": getattr(self, "imu_stabilization", True),
+                "imu_stabilization": imu_stabilization,
             },
             "speed": 1.0 if state.moving else 0.0,
             "last_command": state.last_command,

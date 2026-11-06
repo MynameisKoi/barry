@@ -59,50 +59,6 @@ class PostureRequest(BaseModel):
     yaw: float = Field(0.0, allow_inf_nan=False)
 
 
-class PostureUpdateRequest(BaseModel):
-    """Request schema for updating DOGZILLA body height, IMU attitude, gait, or pace."""
-
-    height_z: Optional[float] = Field(default=None, ge=75.0, le=115.0)
-    roll: Optional[float] = Field(default=None, ge=-20.0, le=20.0)
-    pitch: Optional[float] = Field(default=None, ge=-15.0, le=15.0)
-    yaw: Optional[float] = Field(default=None, ge=-11.0, le=11.0)
-    gait_type: Optional[str] = Field(default=None, description="trot, walk, or high_walk")
-    pace: Optional[str] = Field(default=None, description="slow, normal, or high")
-    imu_enabled: Optional[bool] = None
-    preset: Optional[str] = Field(
-        default=None, description="stand, crouch, or obstacle_crossing"
-    )
-
-
-class WatchdogController:
-    """Tracks last movement command timestamp and auto-stops the robot if the link drops."""
-
-    def __init__(self, robot: Any, timeout_ms: int = 500) -> None:
-        self.robot = robot
-        self.timeout_sec = max(0.1, timeout_ms / 1000.0)
-        self.last_command_ts: float = 0.0
-        self.is_moving: bool = False
-
-    def feed(self, action: str) -> None:
-        action_clean = str(action).lower().strip()
-        if action_clean in ("stop", "emergency_stop"):
-            self.is_moving = False
-        else:
-            self.last_command_ts = time.monotonic()
-            self.is_moving = True
-
-    def check_and_stop_if_expired(self) -> bool:
-        if self.is_moving and (time.monotonic() - self.last_command_ts) > self.timeout_sec:
-            self.robot.stop()
-            self.is_moving = False
-            return True
-        return False
-
-
-pi_config = RobotConfig.from_env()
-
-
-
 @dataclass
 class _Session:
     session_id: str
@@ -379,4 +335,16 @@ def _build_default_app() -> FastAPI:
     return create_app(create_robot(config), config)
 
 
-app = _build_default_app()
+_default_app: Optional[FastAPI] = None
+
+
+async def app(scope: dict[str, Any], receive: Callable[..., Any], send: Callable[..., Any]) -> None:
+    """Lazy ASGI entry point for ``uvicorn backend.robot.server:app``.
+
+    Importing this module is side-effect free: environment validation and robot
+    construction happen only when the ASGI server first invokes the app.
+    """
+    global _default_app
+    if _default_app is None:
+        _default_app = _build_default_app()
+    await _default_app(scope, receive, send)

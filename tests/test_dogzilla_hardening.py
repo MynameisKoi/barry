@@ -3,7 +3,6 @@ Raspberry Pi Robot Server + Watchdog, and AI Orchestrator DOGZILLA telemetry rul
 """
 
 import struct
-import time
 from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
@@ -14,7 +13,8 @@ from backend.robot.DOGZILLALib import Byte2Float, PARAM, conver2float, conver2u8
 from backend.robot.dogzilla import DogzillaController
 from backend.robot.factory import create_robot
 from backend.robot.remote import RemoteRobotClient
-from backend.robot.server import WatchdogController, app as pi_app, pi_config
+from backend.robot.config import RobotConfig
+from backend.robot.server import create_app
 
 
 class FakeDogzillaDriver:
@@ -140,42 +140,43 @@ def test_dogzilla_controller_scaling_posture_and_estop():
     assert ("imu", (1,)) in driver.calls
     assert ("attitude", ("p", 10.0)) in driver.calls
 
-    # 6. Emergency stop via move("emergency_stop") halts, resets, and unloads all 12 motors
+    # 6. Emergency stop halts and unloads all 12 motors without any reset motion
+    calls_before = len(driver.calls)
     res_estop = ctrl.move("emergency_stop")
     assert res_estop["success"] is True
     assert ctrl.emergency_stopped is True
     assert ("unload_allmotor", ()) in driver.calls
+    assert ("reset", ()) not in driver.calls[calls_before:]
 
     # Subsequent moves blocked while E-stop active
     blocked = ctrl.move("forward", speed=0.4)
     assert blocked["success"] is False
     assert blocked["error_code"] == "ESTOP_ACTIVE"
 
-    # Reset E-stop reloads motors and restores standing posture
+    # Reset E-stop reloads motors only; it never commands motion
+    calls_before = len(driver.calls)
     res_reset = ctrl.reset_emergency_stop()
+    assert ("reset", ()) not in driver.calls[calls_before:]
     assert res_reset["success"] is True
     assert ctrl.emergency_stopped is False
     assert ("load_allmotor", ()) in driver.calls
 
 
-def test_pi_robot_server_auth_speed_cap_and_watchdog():
-    sim_robot = create_robot("simulation")
-    wd = WatchdogController(sim_robot, timeout_ms=100)
-
-    sim_robot.move("forward", speed=0.4)
-    wd.feed("forward")
-    assert wd.is_moving is True
-    assert sim_robot.get_status()["speed"] == 0.4
-
-    time.sleep(0.12)
-    expired = wd.check_and_stop_if_expired()
-    assert expired is True
-    assert wd.is_moving is False
-    assert sim_robot.get_status()["speed"] == 0.0
-
+def test_pi_robot_server_healthz_unauthenticated():
+    # The deadman watchdog lives in server._State.watchdog and is covered by
+    # tests/test_robot_server.py; this only checks the unauthenticated probe.
+    config = RobotConfig(api_key="secret")
+    pi_app = create_app(create_robot(config), config)
     with TestClient(pi_app) as client:
-        # Unauthenticated /healthz works
         assert client.get("/healthz").status_code == 200
+
+
+def test_robot_server_import_has_no_side_effects():
+    import importlib
+    import backend.robot.server as server
+
+    importlib.reload(server)
+    assert server._default_app is None
 
 
 @pytest.mark.asyncio
