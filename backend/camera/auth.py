@@ -1,11 +1,13 @@
 """Browser-compatible authentication for the Camera API (camera_plan.md 11).
 
 A browser ``<img>`` element cannot attach custom headers, so the shared secret
-is accepted from any of (checked in this order):
+is accepted from either of:
 
 1. ``X-Camera-Key`` request header  (laptop relay, scripts, curl)
 2. ``?token=...`` query parameter   (``<img src=".../stream?token=...">``)
-3. ``camera_token`` cookie          (browser session)
+
+The request is accepted if ANY presented credential verifies, so a stale value
+in one place never blocks a valid one in the other. No cookie/session is used.
 
 The secret comes from the ``CAMERA_API_KEY`` environment variable and is never
 stored in source. Comparison is constant-time. Fail-closed: when no key is
@@ -13,7 +15,7 @@ configured every request is refused (503), so the camera can never be exposed
 unauthenticated by forgetting a setting.
 
 Note: a query token can appear in access logs and browser history; prefer the
-header or cookie when the client can set them, and use HTTPS or a trusted LAN.
+header when the client can set it, and use HTTPS or a trusted LAN.
 """
 
 from __future__ import annotations
@@ -27,7 +29,6 @@ from fastapi import HTTPException, Request, status
 API_KEY_ENV = "CAMERA_API_KEY"
 HEADER_NAME = "X-Camera-Key"
 QUERY_PARAM = "token"
-COOKIE_NAME = "camera_token"
 
 
 class CameraAuth:
@@ -61,12 +62,14 @@ class CameraAuth:
                 status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="camera authentication is not configured",
             )
+        # Any presented credential may satisfy auth; verify every one (no
+        # short-circuit on the first non-empty value, so a stale header cannot
+        # mask a valid ?token=).
         presented = (
-            request.headers.get(HEADER_NAME)
-            or request.query_params.get(QUERY_PARAM)
-            or request.cookies.get(COOKIE_NAME)
+            request.headers.get(HEADER_NAME),
+            *request.query_params.getlist(QUERY_PARAM),
         )
-        if not self.verify(presented):
+        if not any([self.verify(c) for c in presented]):
             raise HTTPException(
                 status.HTTP_401_UNAUTHORIZED,
                 detail="invalid or missing camera token",

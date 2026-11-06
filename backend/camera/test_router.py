@@ -44,12 +44,25 @@ def test_auth_rejected_without_or_with_wrong_token(env):
         assert client.get(f"/api/v1/camera/{path}?token=bad").status_code == 401
 
 
-def test_auth_header_query_and_cookie(env):
+def test_auth_header_and_query(env):
     client, _ = env
     assert client.get("/api/v1/camera/status", headers=H).status_code == 200
     assert client.get(f"/api/v1/camera/status?token={KEY}").status_code == 200
+
+
+def test_any_valid_credential_wins_over_stale_one(env):
+    client, _ = env
+    bad = {"X-Camera-Key": "stale"}
+    assert client.get(f"/api/v1/camera/status?token={KEY}", headers=bad).status_code == 200
+    assert client.get("/api/v1/camera/status?token=stale", headers=H).status_code == 200
+    assert client.get(f"/api/v1/camera/status?token=stale&token={KEY}").status_code == 200
+    assert client.get("/api/v1/camera/status?token=stale", headers=bad).status_code == 401
+
+
+def test_cookie_is_not_a_credential(env):
+    client, _ = env
     client.cookies.set("camera_token", KEY)
-    assert client.get("/api/v1/camera/status").status_code == 200
+    assert client.get("/api/v1/camera/status").status_code == 401
 
 
 def test_unconfigured_key_fails_closed():

@@ -32,7 +32,7 @@ from backend.api.missions import router as missions_router
 from backend.auth.authorization import auth_service
 from backend.auth.flipper_listener import FlipperListener
 from backend.camera.auth import CameraAuth
-from backend.camera.config import CameraConfig
+from backend.camera.config import CameraConfig, CameraConfigError
 from backend.camera.factory import build_camera_service
 from backend.camera.interface import CameraUnavailableError
 from backend.camera.router import create_camera_router
@@ -153,14 +153,22 @@ async def lifespan(app: FastAPI):
     # Camera Feed API (v1): one shared capture service for all viewers.
     # A missing or failed camera must not take the whole backend down; the
     # status endpoint reports it as disconnected instead.
-    camera_config = CameraConfig.from_env()
+    try:
+        camera_config = CameraConfig.from_env()
+    except CameraConfigError as exc:
+        # A typo in a CAMERA_* variable must not stop robot, missions or auth.
+        logger.error("Invalid camera configuration, camera disabled: %s", exc)
+        camera_config = CameraConfig(enabled=False)
     app.state.camera = build_camera_service(camera_config)
     if camera_config.enabled:
         try:
-            # start() blocks while it retries, so keep it off the event loop.
-            await asyncio.to_thread(app.state.camera.start)
+            # start() can block while it opens the device, so keep it off the
+            # event loop and do not let a hung device hold up app startup.
+            await asyncio.wait_for(asyncio.to_thread(app.state.camera.start), timeout=10.0)
         except CameraUnavailableError as exc:
             logger.warning("Camera unavailable at startup: %s", exc)
+        except asyncio.TimeoutError:
+            logger.error("Camera did not start within 10 s; continuing without it")
 
     yield
 

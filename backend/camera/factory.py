@@ -7,7 +7,7 @@ from typing import Optional
 from .config import CameraConfig
 from .service import CameraService
 from .source import FrameSource
-from .test_source import SyntheticSource
+from .synthetic import SyntheticSource
 from .yahboom import YahboomSource
 
 

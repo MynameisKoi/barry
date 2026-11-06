@@ -49,9 +49,10 @@ namespace Barry.VR
                     continue;
                 }
 
-                string url = $"{BarryNetworkManager.Instance.backendHttpUrl.TrimEnd('/')}/api/camera/snapshot";
+                string url = $"{BarryNetworkManager.Instance.backendHttpUrl.TrimEnd('/')}/api/v1/camera/snapshot";
                 using (UnityWebRequest req = UnityWebRequestTexture.GetTexture(url))
                 {
+                    req.SetRequestHeader("X-Camera-Key", BarryNetworkManager.Instance.cameraApiKey);
                     yield return req.SendWebRequest();
 
                     if (req.result == UnityWebRequest.Result.Success)

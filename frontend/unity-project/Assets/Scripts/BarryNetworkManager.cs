@@ -70,6 +70,9 @@ namespace Barry.VR
         [Tooltip("Laptop LAN IP running FastAPI (e.g., http://192.168.1.150:8000)")]
         public string backendHttpUrl = "http://localhost:8000";
 
+        [Tooltip("Shared secret for the camera API (backend CAMERA_API_KEY). Sent as the X-Camera-Key header.")]
+        public string cameraApiKey = "";
+
         [Tooltip("Laptop LAN WebSocket URL (e.g., ws://192.168.1.150:8000/ws)")]
         public string backendWsUrl = "ws://localhost:8000/ws";
 

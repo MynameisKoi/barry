@@ -31,6 +31,7 @@ class CameraConfig(BaseModel):
     target_fps: float = Field(20, gt=0, le=60)
     jpeg_quality: int = Field(75, ge=1, le=100)
     max_viewers: int = Field(3, ge=1, le=32)
+    stall_timeout_s: float = Field(2.0, gt=0, le=60)
 
     @field_validator("device", mode="before")
     @classmethod
@@ -56,7 +57,8 @@ class CameraConfig(BaseModel):
         """Build a config from ``CAMERA_*`` variables (defaults if unset).
 
         Variables: CAMERA_ENABLED, CAMERA_DEVICE, CAMERA_WIDTH, CAMERA_HEIGHT,
-        CAMERA_TARGET_FPS, CAMERA_JPEG_QUALITY, CAMERA_MAX_VIEWERS.
+        CAMERA_TARGET_FPS, CAMERA_JPEG_QUALITY, CAMERA_MAX_VIEWERS,
+        CAMERA_STALL_TIMEOUT_S.
 
         Raises:
             CameraConfigError: if any value fails validation.
@@ -70,6 +72,7 @@ class CameraConfig(BaseModel):
             "target_fps": "CAMERA_TARGET_FPS",
             "jpeg_quality": "CAMERA_JPEG_QUALITY",
             "max_viewers": "CAMERA_MAX_VIEWERS",
+            "stall_timeout_s": "CAMERA_STALL_TIMEOUT_S",
         }
         raw = {f: env[v] for f, v in names.items() if env.get(v, "").strip() != ""}
         if "enabled" in raw:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import threading
 import time
 
 import numpy as np
@@ -189,7 +190,7 @@ def test_runtime_failure_reconnects_and_stream_ends_cleanly() -> None:
         while service.status().connected and time.monotonic() < deadline:
             time.sleep(0.01)
         assert not service.status().connected
-        with pytest.raises(StopIteration):
+        with pytest.raises(CameraUnavailableError, match="stalled or failed"):
             next(stream)
 
         deadline = time.monotonic() + 2
@@ -228,6 +229,92 @@ def test_frame_timing_is_debug_logged_and_rate_limited(caplog) -> None:
     assert "read_ms=" in timing_records[0].message
     assert "encode_ms=" in timing_records[0].message
     assert "frame_gap_ms=" in timing_records[0].message
+
+
+class BlockingSource(FrameSource):
+    def __init__(self) -> None:
+        self.read_calls = 0
+        self.close_calls = 0
+        self.block_call: int | None = None
+        self.read_blocked = threading.Event()
+        self.release_read = threading.Event()
+
+    @property
+    def name(self) -> str:
+        return "blocking"
+
+    def open(self) -> None:
+        pass
+
+    def read(self) -> np.ndarray:
+        self.read_calls += 1
+        call = self.read_calls
+        if call == self.block_call:
+            self.read_blocked.set()
+            self.release_read.wait()
+        return np.full((12, 16, 3), call % 255, dtype=np.uint8)
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+def test_hung_read_marks_down_and_releases_waiting_viewer() -> None:
+    source = BlockingSource()
+    source.block_call = 2
+    service = CameraService(source, _config(stall_timeout_s=0.1))
+    service.start()
+    stream = service.stream()
+    next(stream)
+    try:
+        assert source.read_blocked.wait(0.5)
+        deadline = time.monotonic() + 0.5
+        while service.status().connected and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        status = service.status()
+        assert not status.connected
+        assert not status.capturing
+        with pytest.raises(CameraUnavailableError):
+            service.snapshot()
+        with pytest.raises(CameraUnavailableError, match="stalled or failed"):
+            next(stream)
+        assert service.status().active_viewers == 0
+    finally:
+        source.release_read.set()
+        stream.close()
+        service.stop()
+
+
+def test_stop_start_ignores_old_blocked_read_and_old_finally() -> None:
+    source = BlockingSource()
+    source.block_call = 2
+    service = CameraService(source, _config(stall_timeout_s=0.5))
+    service.start()
+    assert source.read_blocked.wait(0.5)
+
+    before = time.monotonic()
+    service.stop()
+    assert time.monotonic() - before < 0.25
+    closes_after_stop = source.close_calls
+
+    service.start()
+    try:
+        restarted_frame = service.latest_frame()
+        assert restarted_frame.sequence >= 2
+        source.release_read.set()
+        time.sleep(0.1)
+        assert service.status().connected
+        assert service.status().capturing
+        # The abandoned generation's finally block must not close the new one.
+        assert source.close_calls == closes_after_stop
+    finally:
+        source.release_read.set()
+        service.stop()
+
+
+def test_stall_timeout_is_configurable_from_environment() -> None:
+    config = CameraConfig.from_env({"CAMERA_STALL_TIMEOUT_S": "0.25"})
+    assert config.stall_timeout_s == 0.25
 
 
 class StubService:
