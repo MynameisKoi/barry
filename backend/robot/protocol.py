@@ -11,6 +11,9 @@ Authentication
 Control session (single active operator)
     ``POST   /api/v1/session``  acquires the lease and returns
     ``{"session_id": str, "ttl_s": float}``. 409 if another live session holds it.
+    If the request carries ``X-Control-Session`` equal to the active session,
+    the lease is renewed (200) instead of refused, so a client that hit a
+    stale-seq 409 can recover without waiting for the TTL.
     ``DELETE /api/v1/session``  releases the lease and stops the robot.
     Every *mutating* route except stop / emergency-stop requires
     ``X-Control-Session`` to match the active session (else 409). Each
