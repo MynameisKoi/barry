@@ -1,7 +1,10 @@
 """Central BARRY AI Intelligence Engine Orchestrator.
 
-Coordinates provider invocation, fallback resilience, Pydantic schema validation,
-SQLite persistence in `ai_analyses`, and structured mission report generation.
+Coordinates:
+- Sliding-window temporal mission context enrichment (`recent_mission_context`)
+- Primary + fallback provider invocation with schema validation inside the retry boundary
+- SQLite persistence in `ai_analyses`
+- Comprehensive post-inspection `MissionReport` and `MissionSummary` generation
 """
 
 from datetime import datetime, timezone
@@ -26,7 +29,9 @@ logger = logging.getLogger("barry.ai.orchestrator")
 
 
 class AIOrchestrator:
-    """Coordinates LLM analysis, fallback execution, and SQLite storage."""
+    """Coordinates LLM analysis, temporal context enrichment, fallback execution, and SQLite storage."""
+
+    CONTEXT_WINDOW_SIZE: int = 5
 
     def __init__(
         self,
@@ -52,6 +57,60 @@ class AIOrchestrator:
             return None
         return get_fallback_provider()
 
+    def _build_recent_mission_context(
+        self,
+        mission_id: Optional[str],
+        exclude_event_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetches the last N inspection events and their risk levels for temporal correlation."""
+        if not mission_id:
+            return []
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            if exclude_event_id is not None:
+                cursor.execute(
+                    """
+                    SELECT ie.id, ie.source, ie.event_type, ie.event_data, ie.timestamp,
+                           aa.risk_level, aa.analysis_json
+                    FROM inspection_events ie
+                    LEFT JOIN ai_analyses aa ON aa.event_id = ie.id
+                    WHERE ie.mission_id = ? AND ie.id != ?
+                    ORDER BY ie.id DESC LIMIT ?
+                    """,
+                    (mission_id.strip(), exclude_event_id, self.CONTEXT_WINDOW_SIZE),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT ie.id, ie.source, ie.event_type, ie.event_data, ie.timestamp,
+                           aa.risk_level, aa.analysis_json
+                    FROM inspection_events ie
+                    LEFT JOIN ai_analyses aa ON aa.event_id = ie.id
+                    WHERE ie.mission_id = ?
+                    ORDER BY ie.id DESC LIMIT ?
+                    """,
+                    (mission_id.strip(), self.CONTEXT_WINDOW_SIZE),
+                )
+            rows = cursor.fetchall()
+
+        context: List[Dict[str, Any]] = []
+        for r in reversed(rows):
+            try:
+                edata = json.loads(r["event_data"] or "{}")
+            except Exception:
+                edata = {}
+            context.append(
+                {
+                    "event_id": r["id"],
+                    "source": r["source"],
+                    "event_type": r["event_type"],
+                    "data": edata,
+                    "risk_level": r["risk_level"],
+                    "timestamp": r["timestamp"],
+                }
+            )
+        return context
+
     async def analyze_inspection_event(
         self,
         event_payload: Dict[str, Any],
@@ -60,8 +119,9 @@ class AIOrchestrator:
     ) -> AIAnalysisRecord:
         """Analyzes an inspection event using the primary provider with fallback protection.
 
-        Never raises unhandled provider exceptions so event ingestion and mission state
-        are never interrupted.
+        Enriches payload with recent mission history for multi-event correlation,
+        validates schema inside the try/fallback boundary, and never raises unhandled
+        provider exceptions.
         """
         resolved_mission_id = mission_id or event_payload.get("mission_id")
         resolved_event_id = (
@@ -70,18 +130,29 @@ class AIOrchestrator:
             else event_payload.get("id") or event_payload.get("event_id")
         )
 
+        # Enrich payload with sliding window of recent events in the same mission
+        enriched_payload = dict(event_payload)
+        if resolved_mission_id and "recent_mission_context" not in enriched_payload:
+            recent_ctx = self._build_recent_mission_context(
+                mission_id=resolved_mission_id,
+                exclude_event_id=resolved_event_id,
+            )
+            if recent_ctx:
+                enriched_payload["recent_mission_context"] = recent_ctx
+
         primary = self._get_primary()
         fallback = self._get_fallback()
 
         start_ts = time.perf_counter()
         status = "completed"
         error_message: Optional[str] = None
-        raw_result: Optional[Dict[str, Any]] = None
+        validated: Optional[MissionAnalysis] = None
         provider_name = getattr(primary, "provider_name", "unknown")
         model_name = getattr(primary, "model_name", get_settings().LLM_MODEL)
 
         try:
-            raw_result = await primary.analyze_mission(event_payload)
+            raw_result = await primary.analyze_mission(enriched_payload)
+            validated = MissionAnalysis.model_validate(raw_result)
         except Exception as primary_exc:
             logger.warning(
                 "Primary LLM provider (%s) failed: %s", provider_name, primary_exc
@@ -93,7 +164,8 @@ class AIOrchestrator:
                 and getattr(fallback, "provider_name", None) != provider_name
             ):
                 try:
-                    raw_result = await fallback.analyze_mission(event_payload)
+                    raw_fallback = await fallback.analyze_mission(enriched_payload)
+                    validated = MissionAnalysis.model_validate(raw_fallback)
                     provider_name = getattr(fallback, "provider_name", "fallback")
                     model_name = getattr(fallback, "model_name", "fallback-model")
                     status = "fallback"
@@ -106,10 +178,8 @@ class AIOrchestrator:
 
         latency_ms = round((time.perf_counter() - start_ts) * 1000.0, 2)
 
-        if raw_result is not None:
-            validated = MissionAnalysis.model_validate(raw_result)
-        else:
-            # Safe degraded intelligence object when all AI providers are unreachable
+        if validated is None:
+            # Safe degraded intelligence object when all AI providers are unreachable or invalid
             validated = MissionAnalysis(
                 risk_level="medium",
                 summary="AI analysis unavailable due to provider error; manual operator verification required.",
@@ -339,6 +409,7 @@ class AIOrchestrator:
 
         try:
             assessment_raw = await primary.analyze_mission(mission_payload)
+            validated_assessment = MissionAnalysis.model_validate(assessment_raw)
             report_md = await primary.generate_report(mission_payload)
         except Exception as exc:
             logger.warning(
@@ -347,9 +418,9 @@ class AIOrchestrator:
             provider_name = getattr(fallback, "provider_name", "mock")
             model_name = getattr(fallback, "model_name", "barry-mock-v1")
             assessment_raw = await fallback.analyze_mission(mission_payload)
+            validated_assessment = MissionAnalysis.model_validate(assessment_raw)
             report_md = await fallback.generate_report(mission_payload)
 
-        validated_assessment = MissionAnalysis.model_validate(assessment_raw)
         for obj in validated_assessment.detected_objects:
             if obj not in detected_objects:
                 detected_objects.append(obj)

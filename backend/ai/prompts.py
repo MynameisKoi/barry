@@ -1,11 +1,12 @@
 """Prompt Templates for BARRY Intelligence Engine.
 
 Centralizes system and user prompts for inspection event analysis and
-mission report generation while enforcing strict safety boundaries and
-DOGZILLA S1/S2 kinematic/telemetry awareness.
+mission report generation while enforcing strict safety boundaries,
+XML delimiter breakout sanitization, and DOGZILLA S1/S2 kinematic/telemetry awareness.
 """
 
 import json
+import re
 from typing import Any, Dict, List
 
 ANALYSIS_SYSTEM_PROMPT = """You are BARRY, an AI inspection intelligence assistant for an industrial quadruped robotic inspection system (DOGZILLA S1/S2).
@@ -16,10 +17,12 @@ SAFETY AND SECURITY RULES:
 3. Never invent observations, locations, timestamps, or sensor readings not present in the provided data.
 4. Clearly distinguish observed facts from interpretations and recommendations.
 5. Avoid claiming a confirmed security incident has occurred when evidence is incomplete; instead recommend operator verification.
+6. Correlate with `recent_mission_context` when present: if multiple medium-risk anomalies or repeated warnings occur in the same mission, escalate `risk_level` to "high" and explain the multi-event correlation in `reasoning_summary`.
 
 DOGZILLA S1/S2 HARDWARE & KINEMATIC CONTEXT (for advisory recommendations only):
 - Body Height (`z`): 75 mm (crouch / low center of gravity) to 115 mm (standing default 105 mm).
 - Attitude limits: Roll [-20°, +20°], Pitch [-15°, +15°], Yaw [-11°, +11°]. Roll >= 15° or Pitch >= 12° indicates high tip-over/slope instability risk (recommend enabling `imu(1)` self-stabilization and crouching to `z=75mm`).
+- Servo joint limits (`MOTOR_LIMIT`): Lower [-73°, +57°], Middle [-66°, +93°], Upper [-31°, +31°].
 - Gaits & Paces: `trot`, `walk`, `high_walk` (obstacle crossing mode uses `high_walk` + `slow` pace + `z=95mm`).
 - Camera inspection: Operator can pitch (`-15°..+15°`) or yaw (`-11°..+11°`) the body with feet stationary to inspect anomalies before moving closer.
 
@@ -44,9 +47,19 @@ RULES:
 5. Format the output in clean, readable Markdown."""
 
 
+def sanitize_untrusted_payload(raw_json: str) -> str:
+    """Neutralizes XML/tag breakout attempts inside untrusted sensor/OCR strings."""
+    return re.sub(
+        r"</?\s*untrusted_(?:observation|mission_data)\s*>",
+        "[REDACTED_DELIMITER_TAG]",
+        raw_json,
+        flags=re.IGNORECASE,
+    )
+
+
 def build_analysis_messages(payload: Dict[str, Any]) -> List[Dict[str, str]]:
     """Builds chat messages for analyzing an inspection event or mission snapshot."""
-    serialized = json.dumps(payload, indent=2, default=str)
+    serialized = sanitize_untrusted_payload(json.dumps(payload, indent=2, default=str))
     user_content = (
         "Analyze the following robotic inspection observation and return the JSON assessment:\n"
         f"<untrusted_observation>\n{serialized}\n</untrusted_observation>"
@@ -59,7 +72,7 @@ def build_analysis_messages(payload: Dict[str, Any]) -> List[Dict[str, str]]:
 
 def build_report_messages(mission_data: Dict[str, Any]) -> List[Dict[str, str]]:
     """Builds chat messages for generating a comprehensive Markdown mission report."""
-    serialized = json.dumps(mission_data, indent=2, default=str)
+    serialized = sanitize_untrusted_payload(json.dumps(mission_data, indent=2, default=str))
     user_content = (
         "Generate a structured Markdown inspection report for the following mission record. "
         "Include: Mission Overview, Inspected Zones, Recorded Event Timeline (Facts), "
