@@ -74,6 +74,64 @@ def test_robot_emergency_stop_lifecycle():
     assert res_resumed["success"] is True
 
 
+def test_robot_simulator_stop_actions_via_move():
+    """'stop' and 'emergency_stop' sent through move() behave like the dedicated methods."""
+    sim = RobotSimulator()
+    sim.move("forward", speed=0.5)
+
+    res_stop = sim.move("stop")
+    assert res_stop["success"] is True
+    assert sim.speed == 0.0
+
+    res_estop = sim.move("emergency_stop")
+    assert res_estop["success"] is True
+    assert sim.emergency_stopped is True
+
+    # Stop is still accepted while e-stopped and keeps the e-stop marker
+    res_stop_again = sim.move("stop")
+    assert res_stop_again["success"] is True
+    assert sim.last_command == "emergency_stop"
+    assert sim.emergency_stopped is True
+
+
+def test_robot_simulator_rejects_bad_input():
+    """Unknown actions, non-string actions, and invalid speeds are rejected without moving."""
+    sim = RobotSimulator()
+
+    assert sim.move("jump")["success"] is False
+    assert sim.move(None)["success"] is False  # type: ignore[arg-type]
+    assert sim.move("forward", speed=float("nan"))["success"] is False
+    assert sim.move("forward", speed="fast")["success"] is False  # type: ignore[arg-type]
+
+    assert (sim.x, sim.y, sim.heading) == (0.0, 0.0, 0.0)
+
+
+def test_robot_simulator_clamps_speed_and_wraps_heading():
+    """Speed is clamped to 0..1 and heading wraps around 360 degrees."""
+    sim = RobotSimulator()
+
+    res = sim.move("forward", speed=5.0)
+    assert res["success"] is True
+    assert sim.speed == 1.0
+    assert sim.x == 1.0
+
+    sim.move("right")
+    assert sim.heading == 345.0
+
+
+def test_robot_simulator_battery_depleted_blocks_movement():
+    """With an empty battery the simulator refuses to move."""
+    sim = RobotSimulator(battery_level=0.05)
+
+    assert sim.move("forward", speed=0.5)["success"] is True  # drains to 0
+    assert sim.battery_level == 0.0
+
+    res = sim.move("forward", speed=0.5)
+    assert res["success"] is False
+    assert "battery" in res["message"].lower()
+    assert sim.speed == 0.0
+
+
 def test_robot_api_endpoints():
     """Tests FastAPI /api/robot/status and /api/robot/command endpoints."""
     with TestClient(app) as client:
