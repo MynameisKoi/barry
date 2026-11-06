@@ -568,6 +568,27 @@ async def get_ai_provider_status():
     return await ai_orchestrator.get_provider_status()
 
 
+@app.get("/api/ai/call-logs", tags=["AI Inspection"])
+async def get_ai_call_logs(limit: int = Query(50, ge=1, le=500)):
+    """Returns transparent audit logs of all outbound LLM API calls."""
+    logs_file = Path(__file__).resolve().parent.parent / "logs" / "ai_calls.jsonl"
+    if not logs_file.exists():
+        return []
+    records = []
+    try:
+        with open(logs_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line_str = line.strip()
+                if line_str:
+                    try:
+                        records.append(json.loads(line_str))
+                    except Exception:
+                        pass
+    except Exception as exc:
+        logger.warning("Error reading ai_calls.jsonl: %s", exc)
+    return records[-limit:]
+
+
 @app.get("/api/ai/analyses", tags=["AI Inspection"])
 async def list_ai_analyses(
     mission_id: Optional[str] = Query(None, description="Filter by mission ID"),

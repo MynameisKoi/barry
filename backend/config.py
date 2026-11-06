@@ -5,10 +5,10 @@ from pathlib import Path
 from typing import Any
 from dotenv import load_dotenv
 
-# Load .env file if present
-load_dotenv()
-
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load .env file from project root if present
+load_dotenv(BASE_DIR / ".env")
 
 
 class Settings:
