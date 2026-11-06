@@ -51,11 +51,9 @@ from backend.models import (
     RobotCommandRequest,
     RobotStatusResponse,
 )
-from backend.robot.dogzilla import DogzillaController
 from backend.robot.factory import create_robot
 from backend.robot.interface import RobotInterface
 from backend.robot.schemas import PostureUpdateRequest
-from backend.robot.simulator import RobotSimulator
 from backend.services.mission import mission_service
 
 # Logging setup
@@ -98,10 +96,21 @@ ws_manager = ConnectionManager()
 
 # Core Services Initialization
 ROBOT_MODE = os.getenv("ROBOT_MODE", "simulation").lower()
-robot: RobotInterface = create_robot(mode=ROBOT_MODE)
+# Built in lifespan() so importing this module never opens the serial port.
+# Tests may assign a robot before startup; lifespan keeps an existing one.
+robot: Optional[RobotInterface] = None
 event_logger = EventLogger(db_manager=db)
 ai_orchestrator = AIOrchestrator(db_manager=db)
-logger.info("BARRY initialized with robot controller mode: %s", ROBOT_MODE)
+
+
+def get_robot() -> RobotInterface:
+    """Return the shared robot, or 503 if the backend has not started it yet."""
+    if robot is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Robot controller is not initialized.",
+        )
+    return robot
 
 
 # Background Telemetry Task
@@ -113,7 +122,7 @@ async def telemetry_broadcaster():
             if ws_manager.active_connections:
                 status_payload = {
                     "type": "telemetry",
-                    "telemetry": robot.get_status(),
+                    "telemetry": get_robot().get_status(),
                     "mission": mission_service.get_status(),
                 }
                 await ws_manager.broadcast(status_payload)
@@ -142,8 +151,12 @@ def on_flipper_tag_scanned(raw_uid: str):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global main_event_loop
+    global main_event_loop, robot
     main_event_loop = asyncio.get_running_loop()
+
+    if robot is None:
+        robot = create_robot(mode=ROBOT_MODE)
+    logger.info("BARRY initialized with robot controller mode: %s", ROBOT_MODE)
 
     # Startup: ensure DB tables, start telemetry and Flipper listener
     db.init_db()
@@ -164,6 +177,20 @@ async def lifespan(app: FastAPI):
             logger.warning("Camera unavailable at startup: %s", exc)
 
     yield
+
+    # Shutdown: halt the robot first so it never keeps walking after the
+    # backend exits, then release its transport if it has one.
+    if robot is not None:
+        try:
+            await asyncio.to_thread(robot.stop)
+        except Exception:
+            logger.exception("Robot stop failed during shutdown")
+        close = getattr(robot, "close", None)
+        if callable(close):
+            try:
+                await asyncio.to_thread(close)
+            except Exception:
+                logger.exception("Robot close failed during shutdown")
 
     await asyncio.to_thread(app.state.camera.stop)
 
@@ -212,7 +239,7 @@ async def root():
     return {
         "system": "BARRY - AI-Powered Immersive Robotic Inspection System",
         "status": "online",
-        "mode": robot.get_status()["mode"],
+        "mode": get_robot().get_status()["mode"],
         "version": "1.0.0",
         "cockpit_url": "/cockpit",
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -297,7 +324,7 @@ async def stop_mission(payload: MissionStopRequest = MissionStopRequest()):
     stop_info = mission_service.stop_mission(reason=payload.reason or "Normal completion")
 
     # Halt robot locomotion upon mission end
-    robot.stop()
+    get_robot().stop()
 
     await ws_manager.broadcast({"type": "mission_update", "mission": stop_info})
     return stop_info
@@ -316,14 +343,14 @@ async def get_mission_status():
 @app.get("/api/robot/status", response_model=RobotStatusResponse, tags=["Robot"])
 async def get_robot_status():
     """Returns robot connection, battery, coordinates, and operating status."""
-    return robot.get_status()
+    return get_robot().get_status()
 
 
 @app.post("/api/robot/command", tags=["Robot"])
 async def send_robot_command(command: RobotCommandRequest):
     """Sends movement command (forward, backward, left, right, stop, emergency_stop)."""
     action = command.action.lower().strip()
-    result = robot.move(action=action, speed=command.speed)
+    result = get_robot().move(action=action, speed=command.speed)
 
     # Log command or emergency stop event
     event_type = "emergency_stop" if action == "emergency_stop" else "robot_command"
@@ -355,31 +382,31 @@ async def send_robot_command(command: RobotCommandRequest):
 @app.post("/api/robot/reset-emergency", tags=["Robot"])
 async def reset_emergency_stop():
     """Clears the emergency stop lock on the robot."""
-    result = robot.reset_emergency_stop()
+    result = get_robot().reset_emergency_stop()
     mission_service.log_event(
         event_type="emergency_stop_reset",
         description="Emergency stop lock cleared by operator.",
     )
-    await ws_manager.broadcast({"type": "robot_status", "telemetry": robot.get_status()})
+    await ws_manager.broadcast({"type": "robot_status", "telemetry": get_robot().get_status()})
     return result
 
 
 @app.post("/api/robot/stop", tags=["Robot"])
 async def stop_robot_endpoint():
     """Brings the robot to a controlled stop."""
-    result = robot.stop()
+    result = get_robot().stop()
     mission_service.log_event(
         event_type="robot_command",
         description="Action: stop (controlled stop)",
     )
-    await ws_manager.broadcast({"type": "robot_status", "telemetry": robot.get_status()})
+    await ws_manager.broadcast({"type": "robot_status", "telemetry": get_robot().get_status()})
     return result
 
 
 @app.post("/api/robot/posture", tags=["Robot"])
 async def set_robot_posture(payload: PostureUpdateRequest):
     """Updates DOGZILLA body height (z), attitude (roll/pitch/yaw), gait_type, pace, or preset."""
-    result = robot.set_posture(
+    result = get_robot().set_posture(
         height_z=payload.height_z,
         roll=payload.roll,
         pitch=payload.pitch,
@@ -393,7 +420,7 @@ async def set_robot_posture(payload: PostureUpdateRequest):
         event_type="robot_posture",
         description=f"Posture update: {payload.model_dump(exclude_none=True)}, Success: {result.get('success')}",
     )
-    await ws_manager.broadcast({"type": "robot_status", "telemetry": robot.get_status()})
+    await ws_manager.broadcast({"type": "robot_status", "telemetry": get_robot().get_status()})
     if not result.get("success"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -672,7 +699,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 {
                     "type": "welcome",
                     "message": "Connected to BARRY Inspection Gateway",
-                    "telemetry": robot.get_status(),
+                    "telemetry": get_robot().get_status(),
                     "mission": mission_service.get_status(),
                 }
             )
@@ -688,7 +715,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 if msg_type == "robot_command":
                     action = msg.get("action", "stop")
                     speed = float(msg.get("speed", 0.2))
-                    res = robot.move(action=action, speed=speed)
+                    res = get_robot().move(action=action, speed=speed)
                     mission_service.log_event(
                         event_type="robot_command_ws",
                         description=f"WS Action: {action}, Speed: {speed}",
@@ -704,7 +731,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     )
 
                 elif msg_type == "emergency_stop":
-                    res = robot.emergency_stop()
+                    res = get_robot().emergency_stop()
                     mission_service.log_event(
                         event_type="emergency_stop",
                         description="Emergency stop triggered via WebSocket.",
