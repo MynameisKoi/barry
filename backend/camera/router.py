@@ -8,7 +8,8 @@ No camera object lives at module level; the app supplies it via
 
 from __future__ import annotations
 
-from typing import AsyncIterator, Callable
+from contextlib import suppress
+from typing import AsyncIterator, Callable, Iterator
 
 from anyio import to_thread
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -26,6 +27,32 @@ from .stream import mjpeg_generator
 
 NO_STORE = {"Cache-Control": "no-store"}
 MJPEG_MEDIA_TYPE = "multipart/x-mixed-replace; boundary=frame"
+
+
+class _ViewerStreamingResponse(StreamingResponse):
+    """StreamingResponse that always releases its viewer slot.
+
+    The slot is taken when the frame iterator is first advanced (before the
+    200 is sent, so 429/503 can still be returned). Cleanup therefore must not
+    depend on the body generator having started or finished: ``__call__``
+    closes both the body generator and the frame iterator on every exit path
+    (normal end, client disconnect, send error, cancellation).
+    """
+
+    def __init__(self, body: AsyncIterator[bytes], chunks: Iterator[bytes], **kwargs):
+        super().__init__(body, **kwargs)
+        self._chunks = chunks
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            with suppress(Exception):
+                await self.body_iterator.aclose()
+            # ValueError only if a worker thread is still inside next();
+            # anyio waits for it on cancellation, so this is a safe no-op guard.
+            with suppress(ValueError):
+                self._chunks.close()
 
 
 def create_camera_router(
@@ -108,6 +135,8 @@ def create_camera_router(
             finally:
                 chunks.close()
 
-        return StreamingResponse(body(), media_type=MJPEG_MEDIA_TYPE, headers=NO_STORE)
+        return _ViewerStreamingResponse(
+            body(), chunks, media_type=MJPEG_MEDIA_TYPE, headers=NO_STORE
+        )
 
     return router
