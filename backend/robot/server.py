@@ -51,6 +51,24 @@ class MovementStyleRequest(BaseModel):
     gait: Gait
 
 
+class PostureUpdateRequest(BaseModel):
+    """Legacy laptop posture request (``backend/main.py`` ``POST /api/robot/posture``).
+
+    Kept for compatibility; the v1 Pi route uses ``PostureRequest``. Ranges are
+    the SDK limits; ``backend.robot.legacy`` additionally applies Barry's safe
+    limits and maps ``height_z`` onto the nearest calibrated height preset.
+    """
+
+    height_z: Optional[float] = Field(default=None, ge=75.0, le=115.0)
+    roll: Optional[float] = Field(default=None, ge=-20.0, le=20.0)
+    pitch: Optional[float] = Field(default=None, ge=-15.0, le=15.0)
+    yaw: Optional[float] = Field(default=None, ge=-11.0, le=11.0)
+    gait_type: Optional[str] = Field(default=None, description="trot, walk, or high_walk")
+    pace: Optional[str] = Field(default=None, description="slow, normal, or high")
+    imu_enabled: Optional[bool] = None
+    preset: Optional[str] = Field(default=None, description="stand, crouch, or obstacle_crossing")
+
+
 class PostureRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     height: HeightPreset
@@ -335,4 +353,20 @@ def _build_default_app() -> FastAPI:
     return create_app(create_robot(config), config)
 
 
-app = _build_default_app()
+_default_app: Optional[FastAPI] = None
+
+
+def __getattr__(name: str) -> Any:
+    """Builds ``app`` lazily on first access (PEP 562).
+
+    ``uvicorn backend.robot.server:app`` still works, but merely importing this
+    module (``backend/main.py`` imports ``PostureUpdateRequest`` from it) no
+    longer creates a robot from the environment or fails in ``dogzilla`` mode
+    without ``ROBOT_API_KEY``.
+    """
+    global _default_app
+    if name == "app":
+        if _default_app is None:
+            _default_app = _build_default_app()
+        return _default_app
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

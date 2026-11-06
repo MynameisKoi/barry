@@ -1,4 +1,4 @@
-"""Robot Simulator for BARRY (`backend/robot/simulator.py`).
+"""Robot Simulator for BARRY.
 
 A fake DOGZILLA that implements the full v1 ``RobotInterface`` but only
 updates numbers in memory (position, heading, battery, tracked style/posture).
@@ -67,6 +67,7 @@ from backend.robot.config import (
     check_attitude,
     check_combination,
 )
+from backend.robot.legacy import legacy_status_blocks
 from backend.robot.interface import (
     ActionInfo,
     CommandResult,
@@ -116,7 +117,7 @@ class _LegacyStopResult(CommandResult):
 
 
 class RobotSimulator(RobotInterface):
-    """Simulates DOGZILLA quadruped movement, posture, IMU, and telemetry."""
+    """Simulates DOGZILLA quadruped movement and telemetry."""
 
     def __init__(
         self,
@@ -152,6 +153,7 @@ class RobotSimulator(RobotInterface):
         self.gait = MovementStyle().gait
         self.posture: Posture = Posture()
         self.moving: bool = False
+        self._imu_enabled: bool = False
 
         #: SDK-level values of the last dispatched motion, for tests/debugging:
         #: ``{"move_x": int, "move_y": int, "turn": int}``.
@@ -300,8 +302,13 @@ class RobotSimulator(RobotInterface):
                 self.intensity,
             )
 
-    def set_posture(self, posture: Posture) -> CommandResult:
+    def set_posture(self, posture: Optional[Posture] = None, **legacy: Any) -> Any:
         """Stores height/attitude. Never touches style; rejects unsafe values."""
+        if posture is None:
+            # Legacy keyword form used by backend/main.py (see backend/robot/legacy.py).
+            from backend.robot.legacy import apply_legacy_posture
+
+            return apply_legacy_posture(self, **legacy)
         with self._lock:
             if self.emergency_stopped:
                 return self._estop_rejection("posture")
@@ -349,6 +356,18 @@ class RobotSimulator(RobotInterface):
             self.posture = Posture()  # neutral: medium height, zero attitude
             self.last_command = "reset"
             return CommandResult(CommandStatus.ACCEPTED, "reset", "Robot reset.", self.intensity)
+
+    @property
+    def imu_enabled(self) -> bool:
+        return self._imu_enabled
+
+    def set_imu(self, enabled: bool) -> CommandResult:
+        """Tracks the IMU self-stabilization flag (nothing to stabilize in simulation)."""
+        with self._lock:
+            if self.emergency_stopped:
+                return self._estop_rejection("imu")
+            self._imu_enabled = bool(enabled)
+            return CommandResult(CommandStatus.ACCEPTED, "imu", f"IMU stabilization {'on' if enabled else 'off'}.", self.intensity)
 
     # ------------------------------------------------------------------
     # v1 state
@@ -473,6 +492,7 @@ class RobotSimulator(RobotInterface):
                 "last_command": self.last_command,
                 "emergency_stopped": self.emergency_stopped,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                **legacy_status_blocks(self),
             }
 
     # ------------------------------------------------------------------
