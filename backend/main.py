@@ -47,7 +47,9 @@ from backend.models import (
     RobotStatusResponse,
 )
 from backend.robot.dogzilla import DogzillaController
+from backend.robot.factory import create_robot
 from backend.robot.interface import RobotInterface
+from backend.robot.server import PostureUpdateRequest
 from backend.robot.simulator import RobotSimulator
 from backend.services.mission import mission_service
 
@@ -91,7 +93,7 @@ ws_manager = ConnectionManager()
 
 # Core Services Initialization
 ROBOT_MODE = os.getenv("ROBOT_MODE", "simulation").lower()
-robot: RobotInterface = RobotSimulator() if ROBOT_MODE == "simulation" else DogzillaController()
+robot: RobotInterface = create_robot(mode=ROBOT_MODE)
 event_logger = EventLogger(db_manager=db)
 ai_orchestrator = AIOrchestrator(db_manager=db)
 logger.info("BARRY initialized with robot controller mode: %s", ROBOT_MODE)
@@ -337,6 +339,44 @@ async def reset_emergency_stop():
         description="Emergency stop lock cleared by operator.",
     )
     await ws_manager.broadcast({"type": "robot_status", "telemetry": robot.get_status()})
+    return result
+
+
+@app.post("/api/robot/stop", tags=["Robot"])
+async def stop_robot_endpoint():
+    """Brings the robot to a controlled stop."""
+    result = robot.stop()
+    mission_service.log_event(
+        event_type="robot_command",
+        description="Action: stop (controlled stop)",
+    )
+    await ws_manager.broadcast({"type": "robot_status", "telemetry": robot.get_status()})
+    return result
+
+
+@app.post("/api/robot/posture", tags=["Robot"])
+async def set_robot_posture(payload: PostureUpdateRequest):
+    """Updates DOGZILLA body height (z), attitude (roll/pitch/yaw), gait_type, pace, or preset."""
+    result = robot.set_posture(
+        height_z=payload.height_z,
+        roll=payload.roll,
+        pitch=payload.pitch,
+        yaw=payload.yaw,
+        gait_type=payload.gait_type,
+        pace=payload.pace,
+        imu_enabled=payload.imu_enabled,
+        preset=payload.preset,
+    )
+    mission_service.log_event(
+        event_type="robot_posture",
+        description=f"Posture update: {payload.model_dump(exclude_none=True)}, Success: {result.get('success')}",
+    )
+    await ws_manager.broadcast({"type": "robot_status", "telemetry": robot.get_status()})
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.get("message", "Posture update failed."),
+        )
     return result
 
 

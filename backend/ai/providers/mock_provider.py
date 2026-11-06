@@ -1,10 +1,11 @@
 """Deterministic Mock LLM Provider for BARRY Development & Testing.
 
 Allows full application startup, event analysis, report generation, and
-automated testing without requiring external API keys.
+automated testing without requiring external API keys. Incorporates
+DOGZILLA S1/S2 hardware telemetry & kinematic stability rules from DOGZILLALib.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from backend.ai.interface import LLMProvider
 from backend.ai.schemas import MissionAnalysis
 
@@ -18,6 +19,8 @@ HIGH_RISK_KEYWORDS = {
     "breach",
     "critical",
     "radiation",
+    "tip_over",
+    "motor_stall",
 }
 MEDIUM_RISK_KEYWORDS = {
     "person",
@@ -40,10 +43,30 @@ class MockProvider(LLMProvider):
         self.provider_name = "mock"
         self.model_name = model_name
 
+    @staticmethod
+    def _extract_numeric(container: Dict[str, Any], *keys: str) -> Optional[float]:
+        for k in keys:
+            val = container.get(k)
+            if isinstance(val, (int, float)):
+                return float(val)
+        telem = container.get("telemetry")
+        if isinstance(telem, dict):
+            for k in keys:
+                val = telem.get(k)
+                if isinstance(val, (int, float)):
+                    return float(val)
+            imu = telem.get("imu")
+            if isinstance(imu, dict):
+                for k in keys:
+                    val = imu.get(k)
+                    if isinstance(val, (int, float)):
+                        return float(val)
+        return None
+
     async def analyze_mission(
         self, mission_data: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Deterministically analyzes an inspection event or mission snapshot."""
+        """Deterministically analyzes an inspection event or mission snapshot, including DOGZILLA IMU/battery telemetry."""
         data = mission_data.get("data", {})
         if not isinstance(data, dict):
             data = {"value": str(data)}
@@ -74,6 +97,25 @@ class MockProvider(LLMProvider):
                         if obj_name not in detected:
                             detected.append(obj_name)
 
+        # Check DOGZILLA hardware IMU tilt (ATTITUDE_LIMIT: Roll ±20°, Pitch ±15°) & Battery (0..100%)
+        roll_deg = self._extract_numeric(data, "roll", "imu_roll")
+        pitch_deg = self._extract_numeric(data, "pitch", "imu_pitch")
+        battery_pct = self._extract_numeric(data, "battery", "battery_level")
+
+        imu_hazard = False
+        if (roll_deg is not None and abs(roll_deg) >= 15.0) or (
+            pitch_deg is not None and abs(pitch_deg) >= 12.0
+        ):
+            imu_hazard = True
+            if "imu_tilt_instability" not in detected:
+                detected.append("imu_tilt_instability")
+
+        low_battery_hazard = False
+        if battery_pct is not None and battery_pct <= 15.0:
+            low_battery_hazard = True
+            if "critical_low_battery" not in detected:
+                detected.append("critical_low_battery")
+
         combined_tokens = {t.lower() for t in detected}
         combined_tokens.add(event_type.lower())
         for k, v in data.items():
@@ -81,14 +123,40 @@ class MockProvider(LLMProvider):
                 combined_tokens.add(v.lower())
 
         # Determine risk level
-        if combined_tokens & HIGH_RISK_KEYWORDS:
+        if imu_hazard:
+            risk_level = "high"
+            requires_review = True
+            summary = (
+                f"DOGZILLA IMU instability warning in {zone} "
+                f"(roll={roll_deg}°, pitch={pitch_deg}° approaching ATTITUDE_LIMIT [±20°, ±15°])."
+            )
+            recommended_action = (
+                "Halt locomotion immediately, enable onboard IMU self-stabilization (imu=1), "
+                "and lower body posture to crouch height (z=75mm, pace=slow) to prevent tip-over."
+            )
+            reasoning = (
+                f"Observed fact: DOGZILLA IMU reported roll={roll_deg}°, pitch={pitch_deg}° in {zone}. "
+                "Interpretation: Exceeds safe quadruped stability margin near hardware limits (±20° roll, ±15° pitch)."
+            )
+        elif low_battery_hazard:
+            risk_level = "high"
+            requires_review = True
+            summary = f"Critical DOGZILLA battery depletion ({battery_pct}%) reported in {zone}."
+            recommended_action = (
+                "Suspend inspection patrol, switch to normal standing posture, and return robot to charging station."
+            )
+            reasoning = (
+                f"Observed fact: Battery register (0x01) reported {battery_pct}% in {zone}. "
+                "Interpretation: Insufficient reserve for sustained 12-servo locomotion."
+            )
+        elif combined_tokens & HIGH_RISK_KEYWORDS:
             risk_level = "high"
             requires_review = True
             obj_desc = ", ".join(detected) if detected else event_type
             summary = f"High-priority hazard or anomaly ({obj_desc}) detected in {zone}."
             recommended_action = (
                 "Immediately halt forward progression, maintain safe standoff distance, "
-                "and escalate to human safety supervisor for verification."
+                "pitch camera body (attitude pitch/yaw) for remote visual confirmation, and escalate to safety supervisor."
             )
             reasoning = (
                 f"Observed fact: Event '{event_type}' reported '{obj_desc}' in {zone}"
@@ -100,7 +168,16 @@ class MockProvider(LLMProvider):
             requires_review = True
             obj_desc = ", ".join(detected) if detected else event_type
             summary = f"A {obj_desc} was detected in {zone}."
-            recommended_action = "Request operator verification via VR camera feed before continuing patrol."
+            if "obstacle" in combined_tokens:
+                recommended_action = (
+                    "Verify clearance via VR feed; if passable, use DOGZILLA obstacle_crossing preset "
+                    "(gait_type='high_walk', pace='slow', height_z=95mm) or strafe around the obstacle."
+                )
+            else:
+                recommended_action = (
+                    "Request operator verification via VR camera feed (adjust body attitude pitch/yaw if needed) "
+                    "before continuing patrol."
+                )
             reasoning = (
                 f"Observed fact: Sensor reported '{obj_desc}' in {zone}"
                 + (f" (confidence: {confidence})." if confidence is not None else ".")
@@ -114,7 +191,7 @@ class MockProvider(LLMProvider):
             recommended_action = "Continue standard inspection mission."
             reasoning = (
                 f"Observed fact: Event '{event_type}' logged in {zone}. "
-                "Interpretation: No hazardous objects or unauthorized indicators were present in the observation."
+                "Interpretation: No hazardous objects, IMU instability, or unauthorized indicators were present."
             )
 
         validated = MissionAnalysis(
@@ -187,5 +264,5 @@ class MockProvider(LLMProvider):
             "provider": self.provider_name,
             "model": self.model_name,
             "available": True,
-            "details": "MockProvider active and operational (deterministic mode).",
+            "details": "MockProvider active and operational (deterministic mode with DOGZILLA telemetry rules).",
         }
