@@ -21,9 +21,11 @@ class Settings:
         self.LOG_LEVEL: str = os.getenv("LOG_LEVEL", "info")
 
         # Database
-        self.DATABASE_PATH: str = os.getenv(
-            "DATABASE_PATH", str(BASE_DIR / "barry.db")
-        )
+        raw_db_path = os.getenv("DATABASE_PATH", str(BASE_DIR / "barry.db"))
+        p = Path(raw_db_path)
+        if not p.is_absolute():
+            p = (BASE_DIR / p).resolve()
+        self.DATABASE_PATH: str = str(p)
 
         # Robot Mode
         self.ROBOT_MODE: str = os.getenv("ROBOT_MODE", "simulation").lower()

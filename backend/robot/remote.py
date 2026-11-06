@@ -112,6 +112,10 @@ class RemoteRobotClient(RobotInterface):
     # ------------------------------------------------------------------
 
     @property
+    def emergency_stopped(self) -> bool:
+        return self._state.emergency_stopped
+
+    @property
     def robot_mode(self) -> RobotMode:
         return RobotMode.REMOTE
 
@@ -160,17 +164,57 @@ class RemoteRobotClient(RobotInterface):
             self._track(intensity=style.intensity, gait=style.gait)
         return result
 
-    def set_posture(self, posture: Posture) -> CommandResult:
-        body = {
-            "height": posture.height.value,
-            "roll": posture.roll,
-            "pitch": posture.pitch,
-            "yaw": posture.yaw,
+    def set_posture(
+        self,
+        posture: Optional[Posture] = None,
+        *,
+        height_z: Optional[float] = None,
+        roll: Optional[float] = None,
+        pitch: Optional[float] = None,
+        yaw: Optional[float] = None,
+        gait_type: Optional[str] = None,
+        pace: Optional[str] = None,
+        imu_enabled: Optional[bool] = None,
+        preset: Optional[str] = None,
+    ) -> Any:
+        if posture is not None:
+            body = {
+                "height": posture.height.value,
+                "roll": posture.roll,
+                "pitch": posture.pitch,
+                "yaw": posture.yaw,
+            }
+            result = self._command("posture", protocol.PATH_POSTURE, body)
+            if result.ok:
+                self._track(posture=posture)
+            return result
+
+        # Legacy kwargs dispatch for main.py / backward compatibility
+        payload = {
+            k: v
+            for k, v in {
+                "height_z": height_z,
+                "roll": roll,
+                "pitch": pitch,
+                "yaw": yaw,
+                "gait_type": gait_type,
+                "pace": pace,
+                "imu_enabled": imu_enabled,
+                "preset": preset,
+            }.items()
+            if v is not None
         }
-        result = self._command("posture", protocol.PATH_POSTURE, body)
-        if result.ok:
-            self._track(posture=posture)
-        return result
+        resp, error = self._call("POST", "/api/robot/posture", json=payload)
+        if resp is not None and resp.status_code == 200:
+            data = resp.json()
+            if "telemetry" not in data:
+                data["telemetry"] = self.get_status()
+            return data
+        return {
+            "success": False,
+            "message": error or (resp.text if resp else "Pi API unreachable"),
+            "telemetry": self.get_status(),
+        }
 
     def list_actions(self) -> List[ActionInfo]:
         """Approved actions from the Pi; an empty list if the Pi is unreachable."""
@@ -485,6 +529,17 @@ class RemoteRobotClient(RobotInterface):
             "mode": "remote",
             "battery_level": float(telemetry.battery) if telemetry.battery is not None else 0.0,
             "position": {"x": 0.0, "y": 0.0, "heading": 0.0},
+            "imu": {
+                "roll": telemetry.orientation.roll if telemetry.orientation else 0.0,
+                "pitch": telemetry.orientation.pitch if telemetry.orientation else 0.0,
+                "yaw": telemetry.orientation.yaw if telemetry.orientation else 0.0,
+                "imu_stabilization": True,
+            },
+            "posture": {
+                "height_z": 105.0 if state.posture.height.value == "medium" else (75.0 if state.posture.height.value == "low" else 115.0),
+                "gait_type": state.gait.value,
+                "pace": state.intensity.value,
+            },
             "speed": 0.0,
             "last_command": state.last_command,
             "emergency_stopped": state.emergency_stopped,

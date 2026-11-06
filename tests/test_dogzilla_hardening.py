@@ -13,6 +13,7 @@ from backend.main import app as main_app
 from backend.robot.DOGZILLALib import Byte2Float, PARAM, conver2float, conver2u8
 from backend.robot.dogzilla import DogzillaController
 from backend.robot.factory import create_robot
+from backend.robot.remote import RemoteRobotClient
 from backend.robot.server import WatchdogController, app as pi_app, pi_config
 
 
@@ -265,3 +266,17 @@ def test_main_api_robot_posture_endpoint():
         assert telem["posture"]["height_z"] == 95.0
         assert telem["imu"]["imu_stabilization"] is True
         assert telem["imu"]["pitch"] == -8.0
+
+
+def test_remote_robot_client_offline_fallback():
+    """Verify RemoteRobotClient returns offline telemetry safely when server unreachable."""
+    client = RemoteRobotClient(base_url="http://127.0.0.1:59999", timeout=0.2)
+    status = client.get_status()
+    assert status["connected"] is False
+    assert status["mode"] == "remote"
+
+    move_res = client.move("forward", 0.3)
+    assert move_res["success"] is False
+    assert move_res["error_code"] == "OFFLINE"
+    assert move_res["telemetry"]["connected"] is False
+

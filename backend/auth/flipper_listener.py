@@ -72,12 +72,17 @@ class FlipperListener:
     def stop(self) -> None:
         """Stops monitoring thread and closes serial connection."""
         self.running = False
-        if self.ser and self.ser.is_open:
+        if self.ser:
             try:
                 self.ser.close()
             except Exception:
                 pass
         self.ser = None
+        if self.thread and self.thread.is_alive():
+            try:
+                self.thread.join(timeout=1.5)
+            except Exception:
+                pass
 
     def _run_loop(self) -> None:
         """Main connection and reading loop with auto-reconnect."""
@@ -133,7 +138,9 @@ class FlipperListener:
                         except Exception:
                             pass
 
-            except serial.SerialException as se:
+            except (serial.SerialException, TypeError, OSError) as se:
+                if not self.running:
+                    break
                 logger.debug("Flipper serial disconnected (%s). Retrying...", se)
                 if self.ser:
                     try:
@@ -143,6 +150,8 @@ class FlipperListener:
                     self.ser = None
                 time.sleep(2.0)
             except Exception as e:
+                if not self.running:
+                    break
                 logger.error("Unexpected error in Flipper listener: %s", e)
                 time.sleep(2.0)
 

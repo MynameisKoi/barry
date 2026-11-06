@@ -11,9 +11,11 @@ from pathlib import Path
 import sqlite3
 from typing import Generator
 
-DEFAULT_DB_PATH = os.getenv(
-    "DATABASE_PATH", str(Path(__file__).resolve().parent.parent / "barry.db")
-)
+_raw_db = os.getenv("DATABASE_PATH", "barry.db")
+_p = Path(_raw_db)
+if not _p.is_absolute():
+    _p = (Path(__file__).resolve().parent.parent / _p).resolve()
+DEFAULT_DB_PATH = str(_p)
 
 
 class DatabaseManager:
