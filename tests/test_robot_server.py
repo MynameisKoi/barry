@@ -19,6 +19,7 @@ class RecordingRobot(RobotInterface):
 
     def __init__(self) -> None:
         self.state = ControlState()
+        self.is_connected = True
         self.calls: list[str] = []
         self.motion_started = threading.Event()
         self.release_motion = threading.Event()
@@ -30,7 +31,7 @@ class RecordingRobot(RobotInterface):
 
     @property
     def connected(self) -> bool:
-        return True
+        return self.is_connected
 
     def accepted(self, command: str) -> CommandResult:
         self.calls.append(command)
@@ -125,7 +126,12 @@ def test_stop_and_emergency_stop_need_no_session():
     robot, app = setup()
     with TestClient(app) as client:
         assert client.post("/api/v1/stop", headers=auth()).status_code == 200
-        assert client.post("/api/v1/emergency-stop", headers=auth()).status_code == 200
+        emergency = client.post("/api/v1/emergency-stop", headers=auth())
+        assert emergency.status_code == 200
+        assert emergency.json() == {
+            "status": "stop_dispatched", "command": "emergency_stop",
+            "message": "", "intensity": "medium",
+        }
         assert robot.calls[-2:] == ["stop", "emergency_stop"]
 
 
@@ -179,4 +185,17 @@ def test_emergency_reset_requires_session_and_sequence():
     with TestClient(app) as client:
         assert client.post("/api/v1/emergency-stop/reset", headers=auth()).status_code == 409
         _, headers = session(client)
-        assert client.post("/api/v1/emergency-stop/reset", headers=headers).status_code == 200
+        response = client.post("/api/v1/emergency-stop/reset", headers=headers)
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "accepted", "command": "emergency_reset", "message": "",
+        }
+
+
+def test_disconnected_telemetry_returns_readings_and_errors():
+    robot, app = setup()
+    robot.is_connected = False
+    with TestClient(app) as client:
+        response = client.get("/api/v1/telemetry", headers=auth())
+        assert response.status_code == 200
+        assert response.json()["battery"] == 88.0

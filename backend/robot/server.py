@@ -67,7 +67,13 @@ class _Session:
 
 
 class _State:
-    """Mutable safety state belonging to exactly one app instance."""
+    """Server-owned synchronization, lease, and watchdog state.
+
+    Each ``create_app`` call gets an independent instance, which keeps tests
+    isolated and ensures a Pi process has exactly one serialized dispatcher.
+    ``generation`` invalidates work that was queued or running when a
+    priority stop occurs.
+    """
 
     def __init__(self, robot: RobotInterface, config: RobotConfig) -> None:
         self.robot, self.config = robot, config
@@ -90,6 +96,7 @@ class _State:
         return await run_in_threadpool(self.robot.stop)
 
     async def expire_session(self) -> None:
+        """Expire an idle controller lease and stop any commanded movement."""
         expired = False
         async with self.state_lock:
             if self.session and self.session.expires_at <= time.monotonic():
@@ -101,6 +108,7 @@ class _State:
             await self.stop(invalidate=False)
 
     async def watchdog(self) -> None:
+        """Continuously enforce the Pi-local motion dead-man timeout."""
         interval = min(max(self.config.watchdog_ms / 4000, 0.005), 0.1)
         while True:
             await asyncio.sleep(interval)
@@ -201,12 +209,14 @@ def create_app(robot: RobotInterface, config: RobotConfig) -> FastAPI:
 
     @api.get(PATH_HEALTH)
     async def health() -> dict[str, Any]:
+        """Report process and best-effort robot-link health without auth."""
         return {"status": "ok", "connected": robot.connected}
 
     @api.post(PATH_SESSION, dependencies=[Depends(authenticate)])
     async def acquire_session(
         session_id: Optional[str] = Header(None, alias=SESSION_HEADER),
     ) -> dict[str, Any]:
+        """Acquire the operator lease, or renew it for its current holder."""
         await state.expire_session()
         async with state.state_lock:
             if state.session:
@@ -220,6 +230,7 @@ def create_app(robot: RobotInterface, config: RobotConfig) -> FastAPI:
 
     @api.delete(PATH_SESSION, dependencies=[Depends(authenticate)])
     async def release_session(session_id: Optional[str] = Header(None, alias=SESSION_HEADER)) -> dict[str, Any]:
+        """Release the matching operator lease and dispatch a safe stop."""
         async with state.state_lock:
             if not state.session or not session_id or not hmac.compare_digest(state.session.session_id, session_id):
                 raise HTTPException(409, "A valid control session is required")
@@ -228,62 +239,79 @@ def create_app(robot: RobotInterface, config: RobotConfig) -> FastAPI:
 
     @api.post(PATH_MOTION)
     async def motion(body: MotionRequest, generation: int = Depends(command_context)) -> dict[str, Any]:
+        """Validate and dispatch normalized analog joystick movement."""
         return await dispatch(lambda: robot.move_analog(MotionCommand(body.forward, body.strafe, body.turn)), generation, True)
 
     @api.post(PATH_MOTION_DISCRETE)
     async def discrete(body: DiscreteMotionRequest, generation: int = Depends(command_context)) -> dict[str, Any]:
+        """Dispatch one allowlisted directional movement command."""
         return await dispatch(lambda: robot.move_discrete(body.direction, body.intensity), generation, True)
 
     @api.post(PATH_STOP, dependencies=[Depends(authenticate)])
     async def stop() -> dict[str, Any]:
+        """Dispatch priority stop without requiring a session or sequence."""
         return (await state.stop()).to_dict()
 
     @api.post(PATH_EMERGENCY_STOP, dependencies=[Depends(authenticate)])
     async def emergency_stop() -> dict[str, Any]:
+        """Latch emergency stop and return the standard command-result shape."""
         async with state.state_lock:
             state.generation += 1
             state.watchdog_armed = False
-        return await run_in_threadpool(robot.emergency_stop)
+        await run_in_threadpool(robot.emergency_stop)
+        control = await run_in_threadpool(robot.get_control_state)
+        return CommandResult(
+            CommandStatus.STOP_DISPATCHED,
+            "emergency_stop",
+            intensity=control.intensity,
+        ).to_dict()
 
     @api.post(PATH_EMERGENCY_RESET)
     async def emergency_reset(generation: int = Depends(command_context)) -> dict[str, Any]:
+        """Clear the emergency latch for a fresh sequenced session command."""
         async with state.dispatch_lock:
             async with state.state_lock:
                 if generation != state.generation:
                     raise HTTPException(409, "Command invalidated by stop")
-            return await run_in_threadpool(robot.reset_emergency_stop)
+            await run_in_threadpool(robot.reset_emergency_stop)
+            return CommandResult(CommandStatus.ACCEPTED, "emergency_reset").to_dict()
 
     @api.post(PATH_MOVEMENT_STYLE)
     async def movement_style(body: MovementStyleRequest, generation: int = Depends(command_context)) -> dict[str, Any]:
+        """Set validated intensity and gait without coupling body height."""
         return await dispatch(lambda: robot.set_movement_style(MovementStyle(body.intensity, body.gait)), generation)
 
     @api.post(PATH_POSTURE)
     async def posture(body: PostureRequest, generation: int = Depends(command_context)) -> dict[str, Any]:
+        """Set a validated height preset and body attitude."""
         return await dispatch(lambda: robot.set_posture(Posture(body.height, body.roll, body.pitch, body.yaw)), generation)
 
     @api.get(PATH_ACTIONS, dependencies=[Depends(authenticate)])
     async def actions() -> dict[str, Any]:
+        """List only the configured safe preset actions."""
         values = await run_in_threadpool(robot.list_actions)
         return {"actions": [{"id": value.id, "name": value.name} for value in values]}
 
     @api.post(PATH_ACTION)
     async def action(action_id: int, generation: int = Depends(command_context)) -> dict[str, Any]:
+        """Dispatch one allowlisted preset action."""
         if action_id not in APPROVED_ACTIONS:
             raise HTTPException(422, "Unknown action ID")
         return await dispatch(lambda: robot.perform_action(action_id), generation)
 
     @api.post(PATH_RESET)
     async def reset(generation: int = Depends(command_context)) -> dict[str, Any]:
+        """Perform an explicit full robot reset under the operator lease."""
         return await dispatch(robot.reset, generation)
 
     @api.get(PATH_TELEMETRY, dependencies=[Depends(authenticate)])
     async def telemetry() -> dict[str, Any]:
-        if not robot.connected:
-            raise HTTPException(503, "Robot is disconnected")
+        """Return measured fields and read errors even when disconnected."""
         return (await run_in_threadpool(robot.read_telemetry)).to_dict()
 
     @api.get(PATH_STATUS, dependencies=[Depends(authenticate)])
     async def status() -> dict[str, Any]:
+        """Report link, lease, watchdog, and application-tracked state."""
         await state.expire_session()
         control = robot.get_control_state()
         async with state.state_lock:
@@ -300,38 +328,11 @@ def create_app(robot: RobotInterface, config: RobotConfig) -> FastAPI:
 
 
 def _build_default_app() -> FastAPI:
-    """Construct the uvicorn app; factory import stays lazy for Pi-only code."""
+    """Construct the single-worker uvicorn app through the robot factory."""
+    from backend.robot.factory import create_robot
+
     config = RobotConfig.from_env()
-    try:
-        from backend.robot.factory import create_robot  # type: ignore[attr-defined]
-    except ImportError:
-        create_robot = None
-    if create_robot is not None:
-        robot = create_robot(config)
-    elif config.mode == RobotMode.SIMULATOR:
-        from backend.robot.simulator import RobotSimulator
-        try:
-            robot = RobotSimulator()
-        except TypeError:
-            # TODO: remove once the v1 simulator/factory integration lands.
-            # The legacy simulator on the contract branch is abstract under
-            # the new interface, so keep imports and health checks safe while
-            # refusing all hardware operations.
-            class FactoryPendingRobot:
-                robot_mode = RobotMode.SIMULATOR
-                connected = False
-
-                def stop(self) -> CommandResult:
-                    return CommandResult(CommandStatus.FAILED, "stop", "Robot factory is unavailable")
-
-                def get_control_state(self):
-                    from backend.robot.interface import ControlState
-                    return ControlState()
-
-            robot = FactoryPendingRobot()
-    else:
-        raise RuntimeError("Robot factory is unavailable for non-simulator mode")
-    return create_app(robot, config)
+    return create_app(create_robot(config), config)
 
 
 app = _build_default_app()
