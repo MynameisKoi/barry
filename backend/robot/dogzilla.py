@@ -47,10 +47,12 @@ class DogzillaController(RobotInterface):
 
     @property
     def robot_mode(self) -> RobotMode:
+        """Return the real-hardware deployment mode."""
         return RobotMode.DOGZILLA
 
     @property
     def connected(self) -> bool:
+        """Return best-effort SDK health, updated after every attempted call."""
         with self._lock:
             return self._connected
 
@@ -59,17 +61,30 @@ class DogzillaController(RobotInterface):
                 intensity: Optional[Intensity] = None) -> CommandResult:
         return CommandResult(status, command, message, intensity)
 
-    def _call(self, command: str, operation: Callable[[object], Any]) -> Optional[CommandResult]:
-        """Make one logical SDK operation under the SDK-wide lock."""
+    def _call(self, command: str, operation: Callable[[object], Any],
+              *, stop_on_failure: bool = False) -> Optional[CommandResult]:
+        """Make one logical SDK operation under the SDK-wide lock.
+
+        An existing SDK object is always retried even after a transient error.
+        Motion failures trigger a best-effort stop before the failed result is
+        returned because an earlier call in a multi-axis operation may already
+        have started the robot.
+        """
         with self._lock:
-            if not self._connected or self._sdk is None:
+            if self._sdk is None:
                 detail = f": {self._initialization_error}" if self._initialization_error else ""
                 return self._result(CommandStatus.FAILED, command, f"DOGZILLA is disconnected{detail}")
             try:
                 operation(self._sdk)
+                self._connected = True
             except Exception as exc:
                 self._connected = False
                 logger.exception("DOGZILLA %s failed", command)
+                if stop_on_failure:
+                    try:
+                        self._sdk.stop()
+                    except Exception:
+                        logger.exception("Best-effort stop after %s failure also failed", command)
                 return self._result(CommandStatus.FAILED, command, str(exc))
         return None
 
@@ -80,6 +95,12 @@ class DogzillaController(RobotInterface):
         return self._result(CommandStatus.REJECTED, command, reason) if reason else None
 
     def move_analog(self, command: MotionCommand) -> CommandResult:
+        """Send scaled move_x/move_y/turn calls for normalized joystick axes.
+
+        Scaling constants and intensity factors are UNCALIBRATED pending real
+        hardware verification. The SDK promotes nonzero turns below 30 to 30,
+        so Barry sends zero in that range to prevent a sudden yaw jump.
+        """
         with self._lock:
             rejected = self._motion_rejection("move_analog")
             if rejected:
@@ -96,7 +117,7 @@ class DogzillaController(RobotInterface):
                 yaw = 0
             failed = self._call("move_analog", lambda dog: (
                 dog.move_x(x), dog.move_y(y), dog.turn(yaw)
-            ))
+            ), stop_on_failure=True)
             if failed:
                 return failed
             self._state.moving = bool(x or y or yaw)
@@ -105,6 +126,7 @@ class DogzillaController(RobotInterface):
 
     def move_discrete(self, direction: Direction,
                       intensity: Optional[Intensity] = None) -> CommandResult:
+        """Call one directional SDK method with an UNCALIBRATED preset step."""
         try:
             direction = Direction(direction)
             selected = Intensity(intensity) if intensity is not None else self._state.intensity
@@ -123,7 +145,10 @@ class DogzillaController(RobotInterface):
                 Direction.TURN_LEFT: ("turnleft", steps["turn"]),
                 Direction.TURN_RIGHT: ("turnright", steps["turn"]),
             }[direction]
-            failed = self._call("move_discrete", lambda dog: getattr(dog, method)(step))
+            failed = self._call(
+                "move_discrete", lambda dog: getattr(dog, method)(step),
+                stop_on_failure=True,
+            )
             if failed:
                 return failed
             self._state.moving = True
@@ -131,6 +156,7 @@ class DogzillaController(RobotInterface):
             return self._result(CommandStatus.ACCEPTED, "move_discrete")
 
     def stop(self) -> CommandResult:
+        """Always attempt SDK stop when an SDK object exists; preserve style."""
         with self._lock:
             intensity = self._state.intensity
             failed = self._call("stop", lambda dog: dog.stop())
@@ -143,6 +169,7 @@ class DogzillaController(RobotInterface):
             return self._result(CommandStatus.STOP_DISPATCHED, "stop", intensity=intensity)
 
     def set_movement_style(self, style: MovementStyle) -> CommandResult:
+        """Validate then call pace and gait_type without changing body height."""
         with self._lock:
             if self._state.emergency_stopped:
                 return self._result(CommandStatus.REJECTED, "set_movement_style", "Emergency stop is latched")
@@ -160,6 +187,7 @@ class DogzillaController(RobotInterface):
             return self._result(CommandStatus.ACCEPTED, "set_movement_style")
 
     def set_posture(self, posture: Posture) -> CommandResult:
+        """Apply UNCALIBRATED height and safe roll/pitch/yaw SDK commands."""
         with self._lock:
             if self._state.emergency_stopped:
                 return self._result(CommandStatus.REJECTED, "set_posture", "Emergency stop is latched")
@@ -180,9 +208,11 @@ class DogzillaController(RobotInterface):
             return self._result(CommandStatus.ACCEPTED, "set_posture")
 
     def list_actions(self) -> list[ActionInfo]:
+        """Return only the configured, hardware-unverified action allowlist."""
         return [ActionInfo(number, name) for number, name in APPROVED_ACTIONS.items()]
 
     def perform_action(self, action_id: int) -> CommandResult:
+        """Call action only for an allowlisted ID while safely stationary."""
         with self._lock:
             if action_id not in APPROVED_ACTIONS:
                 return self._result(CommandStatus.REJECTED, "perform_action", "Action is not approved")
@@ -196,6 +226,7 @@ class DogzillaController(RobotInterface):
             return self._result(CommandStatus.ACCEPTED, "perform_action")
 
     def reset(self) -> CommandResult:
+        """Call SDK reset, then restore the tracked pace and gait."""
         with self._lock:
             if self._state.emergency_stopped:
                 return self._result(CommandStatus.REJECTED, "reset", "Emergency stop is latched")
@@ -211,6 +242,7 @@ class DogzillaController(RobotInterface):
             return self._result(CommandStatus.ACCEPTED, "reset")
 
     def read_telemetry(self) -> Telemetry:
+        """Read each measured value separately, recording failures as None."""
         values: Dict[str, Any] = {}
         errors: list[str] = []
         readers = {
@@ -225,6 +257,7 @@ class DogzillaController(RobotInterface):
                     continue
                 try:
                     values[name] = getattr(self._sdk, method)()
+                    self._connected = True
                 except Exception as exc:
                     values[name] = None
                     errors.append(f"{name}: {exc}")
@@ -236,6 +269,7 @@ class DogzillaController(RobotInterface):
         )
 
     def get_control_state(self) -> ControlState:
+        """Return a detached copy of application-tracked command state."""
         with self._lock:
             return ControlState(
                 intensity=self._state.intensity, gait=self._state.gait,
@@ -245,6 +279,7 @@ class DogzillaController(RobotInterface):
             )
 
     def emergency_stop(self) -> Dict[str, Any]:
+        """Attempt SDK stop regardless of health, then latch software e-stop."""
         with self._lock:
             result = self.stop()
             self._state.emergency_stopped = True
@@ -254,6 +289,7 @@ class DogzillaController(RobotInterface):
                     "telemetry": self.get_status()}
 
     def reset_emergency_stop(self) -> Dict[str, Any]:
+        """Clear the software latch without issuing any movement command."""
         with self._lock:
             self._state.emergency_stopped = False
             self._state.moving = False
@@ -262,6 +298,7 @@ class DogzillaController(RobotInterface):
                     "telemetry": self.get_status()}
 
     def move(self, action: str, speed: float = 0.2) -> Dict[str, Any]:
+        """Serve the legacy API; left/right mean turn as in other backends."""
         if not isinstance(action, str):
             return {"success": False, "message": "Invalid action", "telemetry": self.get_status()}
         clean = action.strip().lower()
@@ -272,7 +309,7 @@ class DogzillaController(RobotInterface):
         else:
             directions = {
                 "forward": Direction.FORWARD, "backward": Direction.BACKWARD,
-                "left": Direction.LEFT, "right": Direction.RIGHT,
+                "left": Direction.TURN_LEFT, "right": Direction.TURN_RIGHT,
             }
             if clean not in directions:
                 return {"success": False, "message": f"Unknown movement action: {action}",
@@ -290,6 +327,7 @@ class DogzillaController(RobotInterface):
                 "telemetry": self.get_status()}
 
     def get_status(self) -> Dict[str, Any]:
+        """Return the legacy status shape using application-tracked state."""
         state = self.get_control_state()
         return {
             "connected": self.connected, "mode": "dogzilla", "battery_level": None,

@@ -16,6 +16,7 @@ class FakeDOGZILLA:
         self.active = 0
         self.overlap = False
         self.fail_read = set()
+        self.fail_once = set()
 
     def _record(self, name, *args):
         self.active += 1
@@ -24,6 +25,9 @@ class FakeDOGZILLA:
         time.sleep(0.001)
         self.calls.append((name, *args))
         self.active -= 1
+        if name in self.fail_once:
+            self.fail_once.remove(name)
+            raise OSError(f"{name} failed")
 
     def __getattr__(self, name):
         if name.startswith("read_"):
@@ -139,3 +143,34 @@ def test_estop_latches_and_stop_remains_allowed():
     assert robot.stop().status is CommandStatus.STOP_DISPATCHED
     robot.reset_emergency_stop()
     assert robot.move_discrete(Direction.FORWARD).ok
+
+
+def test_partial_motion_failure_best_effort_stops_and_can_reconnect():
+    """A second-axis failure must stop motion; a later stop retries the SDK."""
+    sdk = FakeDOGZILLA()
+    sdk.fail_once.add("move_y")
+    robot = DogzillaController(
+        RobotConfig(dead_zone=0.1, max_motion_scale=1.0), sdk
+    )
+
+    result = robot.move_analog(MotionCommand(0.8, 0.5, 0))
+
+    assert result.status is CommandStatus.FAILED
+    assert sdk.calls[-1] == ("stop",)
+    assert robot.connected is False
+
+    sdk.calls.clear()
+    assert robot.stop().status is CommandStatus.STOP_DISPATCHED
+    assert sdk.calls == [("stop",)]
+    assert robot.connected is True
+
+
+def test_legacy_left_and_right_turn_instead_of_strafe():
+    sdk = FakeDOGZILLA()
+    robot = DogzillaController(sdk=sdk)
+    assert robot.move("left", 0.5)["success"]
+    assert robot.stop().ok
+    assert robot.move("right", 0.5)["success"]
+    assert ("turnleft", 40) in sdk.calls
+    assert ("turnright", 40) in sdk.calls
+    assert not any(call[0] in {"left", "right"} for call in sdk.calls)
