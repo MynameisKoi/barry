@@ -34,14 +34,22 @@ sequence" from "wrong session" is not specified in ``protocol.py``, so every
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
+from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
 from backend.robot import protocol
-from backend.robot.config import RobotConfig
+from backend.robot.config import (
+    HEIGHT_PRESETS_Z,
+    PACE_FOR_INTENSITY,
+    RobotConfig,
+    check_attitude,
+    check_combination,
+)
 from backend.robot.interface import (
     ActionInfo,
     CommandResult,
@@ -90,22 +98,13 @@ class RemoteRobotClient(RobotInterface):
             ``httpx.MockTransport`` so no network is needed.
         """
         if config is None:
-            cfg = RobotConfig.from_env()
-            if base_url:
-                config = RobotConfig(
-                    mode=cfg.mode,
-                    remote_url=base_url,
-                    api_key=api_key or cfg.api_key,
-                    remote_timeout_s=timeout or cfg.remote_timeout_s,
-                )
-            else:
-                config = cfg
-        elif base_url:
-            config = RobotConfig(
-                mode=config.mode,
+            config = RobotConfig.from_env()
+        if base_url is not None:
+            config = replace(
+                config,
                 remote_url=base_url,
-                api_key=api_key or config.api_key,
-                remote_timeout_s=timeout or config.remote_timeout_s,
+                api_key=api_key if api_key is not None else config.api_key,
+                remote_timeout_s=timeout if timeout is not None else config.remote_timeout_s,
             )
         self.config = config
         headers = {protocol.AUTH_HEADER: config.api_key} if config.api_key else {}
@@ -214,32 +213,84 @@ class RemoteRobotClient(RobotInterface):
                 self._track(posture=posture)
             return result
 
-        # Legacy kwargs dispatch for main.py / backward compatibility
-        payload = {
-            k: v
-            for k, v in {
-                "height_z": height_z,
-                "roll": roll,
-                "pitch": pitch,
-                "yaw": yaw,
-                "gait_type": gait_type,
-                "pace": pace,
-                "imu_enabled": imu_enabled,
-                "preset": preset,
-            }.items()
-            if v is not None
-        }
-        resp, error = self._call("POST", "/api/robot/posture", json=payload)
-        if resp is not None and resp.status_code == 200:
-            data = resp.json()
-            if "telemetry" not in data:
-                data["telemetry"] = self.get_status()
-            return data
-        return {
-            "success": False,
-            "message": error or (resp.text if resp else "Pi API unreachable"),
-            "telemetry": self.get_status(),
-        }
+        # Legacy kwargs dispatch for main.py / backward compatibility. Build
+        # and validate the complete target state before sending either v1
+        # command, so an invalid later field cannot leave a partial update.
+        if imu_enabled is not None:
+            return self._legacy_failure("imu_enabled is not supported in remote mode.")
+
+        state = self.get_control_state()
+        height = state.posture.height
+        r, p, y = state.posture.roll, state.posture.pitch, state.posture.yaw
+        gait, intensity = state.gait, state.intensity
+        style_changed = gait_type is not None or pace is not None
+        posture_changed = any(value is not None for value in (height_z, roll, pitch, yaw, preset))
+
+        if preset is not None:
+            name = str(preset).strip().lower()
+            style_changed = posture_changed = True
+            if name == "obstacle_crossing":
+                gait, intensity, height = Gait.HIGH_WALK, Intensity.LOW, HeightPreset.MEDIUM
+            elif name == "crouch":
+                intensity, height = Intensity.LOW, HeightPreset.LOW
+            elif name in {"stand", "reset", "default"}:
+                gait, intensity, height = Gait.TROT, Intensity.MEDIUM, HeightPreset.MEDIUM
+                r = p = y = 0.0
+            else:
+                return self._legacy_failure(f"Unknown posture preset '{preset}'.")
+
+        try:
+            if height_z is not None:
+                z = float(height_z)
+                if not math.isfinite(z):
+                    raise ValueError("height_z must be a finite number")
+                low, high = min(HEIGHT_PRESETS_Z.values()), max(HEIGHT_PRESETS_Z.values())
+                z = max(low, min(high, round(z)))
+                height = min(HEIGHT_PRESETS_Z, key=lambda value: abs(HEIGHT_PRESETS_Z[value] - z))
+            if roll is not None:
+                r = float(roll)
+            if pitch is not None:
+                p = float(pitch)
+            if yaw is not None:
+                y = float(yaw)
+            if not all(math.isfinite(value) for value in (r, p, y)):
+                raise ValueError("attitude values must be finite numbers")
+        except (TypeError, ValueError) as exc:
+            return self._legacy_failure(f"Invalid posture value: {exc}.")
+
+        if gait_type is not None:
+            try:
+                gait = Gait(str(gait_type).strip().lower())
+            except ValueError:
+                return self._legacy_failure(
+                    f"Invalid gait_type '{gait_type}'. Must be trot, walk, or high_walk."
+                )
+        if pace is not None:
+            pace_clean = str(pace).strip().lower()
+            pace_to_intensity = {value: key for key, value in PACE_FOR_INTENSITY.items()}
+            if pace_clean not in pace_to_intensity:
+                return self._legacy_failure(f"Invalid pace '{pace}'. Must be slow, normal, or high.")
+            intensity = pace_to_intensity[pace_clean]
+
+        reason = check_attitude(r, p, y) or check_combination(gait, intensity, height)
+        if reason:
+            return self._legacy_failure(reason)
+
+        result: CommandResult
+        if style_changed:
+            result = self.set_movement_style(MovementStyle(intensity, gait))
+            if not result.ok:
+                return self._legacy_result(result)
+        if posture_changed or not style_changed:
+            target = Posture(height, r, p, y)
+            result = self._command(
+                "posture",
+                protocol.PATH_POSTURE,
+                {"height": height.value, "roll": r, "pitch": p, "yaw": y},
+            )
+            if result.ok:
+                self._track(posture=target)
+        return self._legacy_result(result)
 
     def list_actions(self) -> List[ActionInfo]:
         """Approved actions from the Pi; an empty list if the Pi is unreachable."""
@@ -561,7 +612,7 @@ class RemoteRobotClient(RobotInterface):
                 "imu_stabilization": True,
             },
             "posture": {
-                "height_z": 105.0 if state.posture.height.value == "medium" else (75.0 if state.posture.height.value == "low" else 115.0),
+                "height_z": float(HEIGHT_PRESETS_Z[state.posture.height]),
                 "gait_type": state.gait.value,
                 "pace": state.intensity.value,
             },

@@ -2,12 +2,15 @@
 import threading
 import time
 
+import pytest
+
 from backend.robot.config import RobotConfig
 from backend.robot.dogzilla import DogzillaController
 from backend.robot.interface import (
     CommandStatus, Direction, Gait, HeightPreset, Intensity, MotionCommand,
     MovementStyle, Posture,
 )
+from backend.robot.simulator import RobotSimulator
 
 
 class FakeDOGZILLA:
@@ -174,3 +177,120 @@ def test_legacy_left_and_right_turn_instead_of_strafe():
     assert ("turnleft", 40) in sdk.calls
     assert ("turnright", 40) in sdk.calls
     assert not any(call[0] in {"left", "right"} for call in sdk.calls)
+
+
+def _names(sdk):
+    return [c[0] for c in sdk.calls]
+
+
+def test_legacy_posture_presets_work_and_update_state():
+    sdk = FakeDOGZILLA()
+    robot = DogzillaController(sdk=sdk)
+    assert robot.set_posture(preset="crouch")["success"]
+    assert ("translation", "z", 85) in sdk.calls
+    state = robot.get_control_state()
+    assert state.posture.height is HeightPreset.LOW and state.intensity is Intensity.LOW
+    assert robot.set_posture(preset="stand")["success"]
+    assert ("reset",) in sdk.calls
+    state = robot.get_control_state()
+    assert state.posture.height is HeightPreset.MEDIUM and state.gait is Gait.TROT
+    assert robot.set_posture(height_z=500)["success"]
+    assert ("translation", "z", 105) in sdk.calls
+    assert robot.get_control_state().posture.height is HeightPreset.HIGH
+
+
+@pytest.mark.parametrize(
+    "preset", ["obstacle_crossing", "crouch", "stand", "reset", "default"]
+)
+def test_legacy_posture_presets_match_simulator(preset):
+    hardware = DogzillaController(sdk=FakeDOGZILLA())
+    simulator = RobotSimulator()
+
+    assert hardware.set_posture(preset=preset)["success"]
+    assert simulator.set_posture(preset=preset)["success"]
+
+    hardware_state = hardware.get_control_state()
+    simulator_state = simulator.get_control_state()
+    assert simulator_state.posture == hardware_state.posture
+    assert simulator_state.gait is hardware_state.gait
+    assert simulator_state.intensity is hardware_state.intensity
+
+
+def test_legacy_posture_validates_before_sending_anything():
+    sdk = FakeDOGZILLA()
+    robot = DogzillaController(sdk=sdk)
+    out = robot.set_posture(height_z=85, roll=99)
+    assert not out["success"]
+    out = robot.set_posture(preset="stand", pace="bogus")
+    assert not out["success"]
+    # unsafe combination: high_walk at high pace
+    out = robot.set_posture(gait_type="high_walk", pace="high")
+    assert not out["success"]
+    assert sdk.calls == [c for c in sdk.calls if c[0].startswith("read_")]
+    assert robot.get_control_state().posture == Posture()
+
+
+def test_legacy_posture_updates_state_and_motion_checks_use_it():
+    sdk = FakeDOGZILLA()
+    robot = DogzillaController(sdk=sdk)
+    assert robot.set_posture(gait_type="high_walk", pace="slow")["success"]
+    state = robot.get_control_state()
+    assert state.gait is Gait.HIGH_WALK and state.intensity is Intensity.LOW
+    # now height low + high_walk is unsafe and must be rejected
+    assert not robot.set_posture(height_z=85)["success"]
+    robot.reset()
+    assert robot.get_control_state().gait is Gait.TROT or sdk.calls[-1][0] == "gait_type"
+
+
+def test_estop_issues_no_motion_and_unloads():
+    sdk = FakeDOGZILLA()
+    robot = DogzillaController(sdk=sdk)
+    robot.emergency_stop()
+    names = _names(sdk)
+    assert "reset" not in names
+    assert "unload_allmotor" in names
+    assert names.index("stop") < names.index("unload_allmotor")
+
+
+def test_reset_estop_does_not_move_and_failure_keeps_latch(caplog):
+    sdk = FakeDOGZILLA()
+    robot = DogzillaController(sdk=sdk)
+    robot.emergency_stop()
+    sdk.calls.clear()
+    assert robot.reset_emergency_stop()["success"]
+    assert [n for n in _names(sdk) if not n.startswith("read_")] == ["load_allmotor"]
+    assert not robot.emergency_stopped
+    robot.emergency_stop()
+    sdk.fail_once.add("load_allmotor")
+    out = robot.reset_emergency_stop()
+    assert not out["success"] and robot.emergency_stopped
+    assert "load_allmotor failed" in caplog.text
+
+
+def test_estop_logs_unload_failure(caplog):
+    sdk = FakeDOGZILLA()
+    sdk.fail_once.add("unload_allmotor")
+    robot = DogzillaController(sdk=sdk)
+    assert robot.emergency_stop()["message"]
+    assert robot.emergency_stopped
+    assert "unload_allmotor failed" in caplog.text
+
+
+def test_get_status_uses_cached_sdk_telemetry():
+    sdk = FakeDOGZILLA()
+    robot = DogzillaController(sdk=sdk)
+    status = robot.get_status()
+    assert status["battery_level"] == 87.0
+    assert (status["imu"]["roll"], status["imu"]["pitch"], status["imu"]["yaw"]) == (1.0, 2.0, 3.0)
+
+
+def test_imu_toggle_reflected_in_status():
+    sdk = FakeDOGZILLA()
+    robot = DogzillaController(sdk=sdk)
+    assert robot.set_posture(imu_enabled=False)["telemetry"]["imu"]["imu_stabilization"] is False
+    assert ("imu", 0) in sdk.calls
+
+
+def test_max_speed_zero_is_preserved():
+    assert DogzillaController(sdk=FakeDOGZILLA(), max_speed=0).max_speed == 0
+    assert DogzillaController(sdk=FakeDOGZILLA()).max_speed == 1.0

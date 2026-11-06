@@ -54,7 +54,7 @@ from backend.models import (
 from backend.robot.dogzilla import DogzillaController
 from backend.robot.factory import create_robot
 from backend.robot.interface import RobotInterface
-from backend.robot.server import PostureUpdateRequest
+from backend.robot.schemas import PostureUpdateRequest
 from backend.robot.simulator import RobotSimulator
 from backend.services.mission import mission_service
 
