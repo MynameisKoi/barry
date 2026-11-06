@@ -45,8 +45,6 @@ def create_robot(config: Optional[RobotConfig] = None) -> RobotInterface:
     if config.mode == RobotMode.DOGZILLA:
         from backend.robot.dogzilla import DogzillaController
 
-        # The current controller takes the serial device as ``device_endpoint``.
-        # Hardware-controller task may change this signature; keep in sync.
-        return DogzillaController(device_endpoint=config.dogzilla_port)
+        return DogzillaController(config)
 
     raise ValueError(f"Unsupported robot mode: {config.mode!r}")
