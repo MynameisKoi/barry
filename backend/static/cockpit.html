@@ -474,7 +474,7 @@
                     <span id="cam-resolution">640x480 MJPEG</span>
                 </div>
                 <div class="video-container">
-                    <img id="camera-stream-img" class="video-stream" src="/api/camera/stream" alt="BARRY Camera Stream">
+                    <img id="camera-stream-img" class="video-stream" src="" alt="BARRY Camera Stream">
                     <div class="video-overlay-banner" id="video-overlay">AI TRACKING: ACTIVE</div>
                     <div class="video-controls">
                         <button onclick="triggerSimulatedAIAlert()">Trigger AI Anomaly</button>
@@ -852,9 +852,29 @@
             }
         }
 
+        // Camera API v1 needs CAMERA_API_KEY. Pass it once as /cockpit?camera_token=KEY
+        // (it is then kept in localStorage and removed from the address bar).
+        function getCameraToken() {
+            const params = new URLSearchParams(window.location.search);
+            const fromUrl = params.get('camera_token');
+            if (fromUrl) {
+                localStorage.setItem('barry_camera_token', fromUrl);
+                params.delete('camera_token');
+                const rest = params.toString();
+                history.replaceState(null, '', window.location.pathname + (rest ? '?' + rest : ''));
+            }
+            return localStorage.getItem('barry_camera_token') || '';
+        }
+
         function reloadStream() {
             const img = document.getElementById('camera-stream-img');
-            img.src = '/api/camera/stream?t=' + Date.now();
+            const token = getCameraToken();
+            if (!token) {
+                logEvent('Camera token missing: open /cockpit?camera_token=<CAMERA_API_KEY>', 'system');
+                return;
+            }
+            img.onerror = () => logEvent('Camera stream unavailable or token rejected', 'system');
+            img.src = '/api/v1/camera/stream?token=' + encodeURIComponent(token) + '&t=' + Date.now();
         }
 
         function logEvent(text, cls = 'system') {

@@ -8,7 +8,7 @@ import pytest
 
 from .config import CameraConfig
 from .interface import CameraUnavailableError, FrameCaptureError
-from .test_source import SyntheticSource
+from .synthetic import SyntheticSource
 from .yahboom import YahboomSource
 
 

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse
 
 from backend.ai.detection import detection_service
 from backend.ai.orchestrator import AIOrchestrator
@@ -32,11 +32,10 @@ from backend.api.missions import router as missions_router
 from backend.auth.authorization import auth_service
 from backend.auth.flipper_listener import FlipperListener
 from backend.camera.auth import CameraAuth
-from backend.camera.config import CameraConfig
+from backend.camera.config import CameraConfig, CameraConfigError
 from backend.camera.factory import build_camera_service
 from backend.camera.interface import CameraUnavailableError
 from backend.camera.router import create_camera_router
-from backend.camera.streamer import camera_streamer
 from backend.database import db
 from backend.events.logger import EventLogger
 from backend.models import (
@@ -165,14 +164,22 @@ async def lifespan(app: FastAPI):
     # Camera Feed API (v1): one shared capture service for all viewers.
     # A missing or failed camera must not take the whole backend down; the
     # status endpoint reports it as disconnected instead.
-    camera_config = CameraConfig.from_env()
+    try:
+        camera_config = CameraConfig.from_env()
+    except CameraConfigError as exc:
+        # A typo in a CAMERA_* variable must not stop robot, missions or auth.
+        logger.error("Invalid camera configuration, camera disabled: %s", exc)
+        camera_config = CameraConfig(enabled=False)
     app.state.camera = build_camera_service(camera_config)
     if camera_config.enabled:
         try:
-            # start() blocks while it retries, so keep it off the event loop.
-            await asyncio.to_thread(app.state.camera.start)
+            # start() can block while it opens the device, so keep it off the
+            # event loop and do not let a hung device hold up app startup.
+            await asyncio.wait_for(asyncio.to_thread(app.state.camera.start), timeout=10.0)
         except CameraUnavailableError as exc:
             logger.warning("Camera unavailable at startup: %s", exc)
+        except asyncio.TimeoutError:
+            logger.error("Camera did not start within 10 s; continuing without it")
 
     yield
 
@@ -195,7 +202,6 @@ async def lifespan(app: FastAPI):
     # Shutdown: stop background listeners
     telemetry_task.cancel()
     flipper.stop()
-    camera_streamer.close()
     try:
         await telemetry_task
     except asyncio.CancelledError:
@@ -588,20 +594,9 @@ async def trigger_simulated_detection(zone: Optional[str] = None):
 # 6. Camera Streaming & Video Feeds
 # ============================================================================
 
-@app.get("/api/camera/stream", tags=["Camera"])
-async def stream_camera():
-    """Real-time MJPEG video stream for Meta Quest 3S VR command center."""
-    return StreamingResponse(
-        camera_streamer.stream_generator(),
-        media_type="multipart/x-mixed-replace; boundary=frame",
-    )
-
-
-@app.get("/api/camera/snapshot", tags=["Camera"])
-async def get_camera_snapshot():
-    """Returns single JPEG frame for lightweight previews or snapshot analysis."""
-    jpeg = camera_streamer.get_jpeg_bytes()
-    return Response(content=jpeg, media_type="image/jpeg")
+# Camera: served by the token-protected Camera Feed API v1 mounted above
+# (GET /api/v1/camera/{stream,snapshot,status}); the old unauthenticated
+# /api/camera/* routes were removed.
 
 
 # ============================================================================

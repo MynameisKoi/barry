@@ -44,12 +44,25 @@ def test_auth_rejected_without_or_with_wrong_token(env):
         assert client.get(f"/api/v1/camera/{path}?token=bad").status_code == 401
 
 
-def test_auth_header_query_and_cookie(env):
+def test_auth_header_and_query(env):
     client, _ = env
     assert client.get("/api/v1/camera/status", headers=H).status_code == 200
     assert client.get(f"/api/v1/camera/status?token={KEY}").status_code == 200
+
+
+def test_any_valid_credential_wins_over_stale_one(env):
+    client, _ = env
+    bad = {"X-Camera-Key": "stale"}
+    assert client.get(f"/api/v1/camera/status?token={KEY}", headers=bad).status_code == 200
+    assert client.get("/api/v1/camera/status?token=stale", headers=H).status_code == 200
+    assert client.get(f"/api/v1/camera/status?token=stale&token={KEY}").status_code == 200
+    assert client.get("/api/v1/camera/status?token=stale", headers=bad).status_code == 401
+
+
+def test_cookie_is_not_a_credential(env):
+    client, _ = env
     client.cookies.set("camera_token", KEY)
-    assert client.get("/api/v1/camera/status").status_code == 200
+    assert client.get("/api/v1/camera/status").status_code == 401
 
 
 def test_unconfigured_key_fails_closed():
@@ -120,6 +133,42 @@ def test_client_disconnect_releases_viewer_on_real_server():
         server.should_exit = True
         thread.join(timeout=5)
         service.stop()
+
+
+def test_response_dropped_before_iteration_releases_viewer(env):
+    """A client that vanishes before the body starts must not leak a slot."""
+    import asyncio
+
+    client, service = env
+    app = client.app
+
+    async def run():
+        sent = []
+
+        async def receive():
+            await asyncio.sleep(10)  # never disconnects by itself
+
+        async def send(message):
+            sent.append(message["type"])
+            if message["type"] == "http.response.start":
+                raise OSError("client went away")  # vanished before the body starts
+
+        scope = {
+            "type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"},
+            "http_version": "1.1", "method": "GET", "scheme": "http",
+            "path": "/api/v1/camera/stream", "raw_path": b"/api/v1/camera/stream",
+            "query_string": b"", "root_path": "", "server": ("test", 80),
+            "client": ("test", 1), "app": app,
+            "headers": [(b"x-camera-key", KEY.encode())],
+        }
+        with pytest.raises(Exception) as excinfo:
+            await app(scope, receive, send)
+        # excinfo keeps the traceback (and the response) alive, so the slot
+        # must have been released deterministically, not by garbage collection.
+        assert service.status().active_viewers == 0
+        assert excinfo.value is not None
+
+    asyncio.run(run())
 
 
 def test_viewer_limit_returns_429(env):

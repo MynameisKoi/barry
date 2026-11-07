@@ -198,8 +198,11 @@ Lists stored AI analysis records from `ai_analyses`.
 - `GET /api/robot/status` — Returns battery, coordinates, mode, and emergency stop state.
 - `POST /api/robot/command` — Sends movement command (`forward`, `backward`, `left`, `right`, `stop`, `emergency_stop`).
 - `POST /api/robot/reset-emergency` — Clears emergency stop lock.
-- `GET /api/camera/stream` — Multipart MJPEG video stream for VR headset.
-- `GET /api/camera/snapshot` — Single JPEG frame snapshot.
+- `GET /api/v1/camera/stream` — Multipart MJPEG video stream for VR headset.
+- `GET /api/v1/camera/snapshot` — Single JPEG frame snapshot.
+- `GET /api/v1/camera/status` — Camera connection, capture state, FPS and viewer count.
+
+The camera endpoints require `CAMERA_API_KEY`: send it as the `X-Camera-Key` header, or as `?token=` for `<img>` tags. They return `401` for a missing or wrong key, `503` if the key is not configured or the camera is unavailable, and `429` when the viewer limit is reached. The old unauthenticated `/api/camera/*` routes were removed.
 
 ---
 

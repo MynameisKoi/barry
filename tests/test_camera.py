@@ -1,4 +1,6 @@
-"""Tests for camera streaming, snapshot generation, and AI visual detection."""
+"""Tests for the legacy synthetic streamer and AI visual detection.
+
+The HTTP camera API is covered by backend/camera/test_router.py."""
 
 import pytest
 from fastapi.testclient import TestClient
@@ -6,15 +8,6 @@ from backend.ai.detection import detection_service
 from backend.auth.flipper_listener import UID_REGEX
 from backend.camera.streamer import camera_streamer
 from backend.main import app
-
-
-def test_camera_snapshot_endpoint():
-    """Verifies /api/camera/snapshot returns valid JPEG image."""
-    with TestClient(app) as client:
-        resp = client.get("/api/camera/snapshot")
-        assert resp.status_code == 200
-        assert resp.headers["content-type"] == "image/jpeg"
-        assert len(resp.content) > 1000  # Frame must contain image data
 
 
 def test_camera_stream_chunk_generator():
