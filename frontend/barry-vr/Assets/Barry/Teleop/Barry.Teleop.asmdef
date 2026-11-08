@@ -1,0 +1,9 @@
+{
+  "name": "Barry.Teleop",
+  "rootNamespace": "Barry.Teleop",
+  "references": ["Barry.Api"],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "autoReferenced": true
+}

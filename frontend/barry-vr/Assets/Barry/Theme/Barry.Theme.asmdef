@@ -1,0 +1,6 @@
+{
+  "name": "Barry.Theme",
+  "rootNamespace": "Barry.Theme",
+  "references": ["Barry.Config", "Unity.TextMeshPro", "UnityEngine.UI"],
+  "autoReferenced": true
+}

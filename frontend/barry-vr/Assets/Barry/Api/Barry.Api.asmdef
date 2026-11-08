@@ -1,0 +1,9 @@
+{
+  "name": "Barry.Api",
+  "rootNamespace": "Barry.Api",
+  "references": [],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "autoReferenced": true
+}

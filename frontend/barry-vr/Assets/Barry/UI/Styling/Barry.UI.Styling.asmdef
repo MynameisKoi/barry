@@ -1,0 +1,9 @@
+{
+  "name": "Barry.UI.Styling",
+  "rootNamespace": "Barry.UI.Styling",
+  "references": ["Barry.Theme", "UnityEngine.UI"],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "autoReferenced": true
+}

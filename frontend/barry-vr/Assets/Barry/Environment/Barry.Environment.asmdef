@@ -1,0 +1,9 @@
+{
+  "name": "Barry.Environment",
+  "rootNamespace": "Barry.Environment",
+  "references": ["Barry.Theme"],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "autoReferenced": true
+}

@@ -1,0 +1,9 @@
+{
+  "name": "Barry.XR",
+  "rootNamespace": "Barry.XR",
+  "references": ["Barry.Teleop","Unity.XR.Interaction.Toolkit","Unity.InputSystem"],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "autoReferenced": true
+}
