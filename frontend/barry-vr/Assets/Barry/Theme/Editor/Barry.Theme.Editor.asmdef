@@ -1,0 +1,7 @@
+{
+  "name": "Barry.Theme.Editor",
+  "rootNamespace": "Barry.Theme.Editor",
+  "references": ["Barry.Config", "Barry.Theme", "Unity.TextMeshPro", "Unity.TextMeshPro.Editor"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": false
+}

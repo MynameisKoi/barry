@@ -1,0 +1,58 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8348bab0ccdbe4331b95a886d5c60692, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Barry.Theme::Barry.Theme.ThemeTokens
+  id: 0
+  envSky: {r: 0.039215688, g: 0.05882353, b: 0.17254902, a: 1}
+  nebulaA: {r: 0.4862745, g: 0.36078432, b: 1, a: 0.45}
+  nebulaB: {r: 0.18039216, g: 0.77254903, b: 0.9019608, a: 0.22}
+  planetLight: {r: 0.7254902, g: 0.6509804, b: 1, a: 1}
+  planetMid: {r: 0.35686275, g: 0.24705882, b: 0.8509804, a: 1}
+  planetDark: {r: 0.11764706, g: 0.08627451, b: 0.3764706, a: 1}
+  planetRing: {r: 0.7882353, g: 0.74509805, b: 1, a: 1}
+  starColor: {r: 1, g: 1, b: 1, a: 1}
+  starMinAlpha: 0.35
+  floor: {r: 0.050980393, g: 0.07450981, b: 0.21960784, a: 1}
+  floorGrid: {r: 0.36862746, g: 0.88235295, b: 1, a: 0.28}
+  platformFill: {r: 0.08235294, g: 0.105882354, b: 0.2901961, a: 1}
+  platformRim: {r: 0.4862745, g: 0.36078432, b: 1, a: 1}
+  platformRingDashed: {r: 0.36862746, g: 0.88235295, b: 1, a: 0.6}
+  panelBg: {r: 1, g: 1, b: 1, a: 0.94}
+  panelBorder: {r: 0.7882353, g: 0.74509805, b: 1, a: 1}
+  panelGlow: {r: 0.4862745, g: 0.36078432, b: 1, a: 0.35}
+  cameraGlowAlpha: 0.55
+  useSoftShadowInsteadOfGlow: 0
+  textPrimary: {r: 0.12156863, g: 0.11764706, b: 0.105882354, a: 1}
+  textSecondary: {r: 0.36862746, g: 0.3647059, b: 0.34901962, a: 1}
+  brand: {r: 0.16470589, g: 0.12156863, b: 0.47843137, a: 1}
+  accent: {r: 0.35686275, g: 0.24705882, b: 0.8509804, a: 1}
+  accentSoft: {r: 0.9254902, g: 0.9098039, b: 0.99215686, a: 1}
+  rayCore: {r: 0.56078434, g: 0.9372549, b: 1, a: 1}
+  rayGlow: {r: 0.36862746, g: 0.88235295, b: 1, a: 0.35}
+  cursorFill: {r: 1, g: 1, b: 1, a: 1}
+  okText: {r: 0.07450981, g: 0.47843137, b: 0.24313726, a: 1}
+  okBg: {r: 0.9019608, g: 0.95686275, b: 0.9254902, a: 1}
+  warnText: {r: 0.5411765, g: 0.29411766, b: 0.023529412, a: 1}
+  warnBg: {r: 0.99607843, g: 0.9529412, b: 0.8862745, a: 1}
+  warnBorder: {r: 0.8509804, g: 0.5411765, b: 0.07058824, a: 1}
+  dangerSolid: {r: 0.76862746, g: 0.16862746, b: 0.16862746, a: 1}
+  dangerText: {r: 0.6392157, g: 0.1254902, b: 0.12156863, a: 1}
+  dangerSoft: {r: 0.99215686, g: 0.9254902, b: 0.9254902, a: 1}
+  stopText: {r: 1, g: 1, b: 1, a: 1}
+  neutralFill: {r: 0.9529412, g: 0.94509804, b: 0.9254902, a: 1}
+  neutralBorder: {r: 0.85490197, g: 0.8352941, b: 0.79607844, a: 1}
+  videoBg: {r: 0.105882354, g: 0.12156863, b: 0.18039216, a: 1}
+  overlayDim: {r: 0.03137255, g: 0.039215688, b: 0.13333334, a: 0.72}
+  fontBody: {fileID: 11400000, guid: d37fbccb9f4a942d09a0acb3adb7ded7, type: 2}
+  fontMono: {fileID: 11400000, guid: ca1190f245a024a119d5a0aa91cf1924, type: 2}
+  fontBrand: {fileID: 11400000, guid: fa86d14d5d71e400b9c644e5c7181758, type: 2}

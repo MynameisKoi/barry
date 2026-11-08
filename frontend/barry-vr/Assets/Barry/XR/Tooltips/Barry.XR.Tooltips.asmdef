@@ -1,0 +1,9 @@
+{
+  "name": "Barry.XR.Tooltips",
+  "rootNamespace": "Barry.XR.Tooltips",
+  "references": ["Barry.Theme", "Barry.UI.Styling", "Unity.TextMeshPro", "UnityEngine.UI"],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "autoReferenced": true
+}

@@ -1,0 +1,9 @@
+{
+  "name": "Barry.App",
+  "rootNamespace": "Barry.App",
+  "references": ["Barry.Api","Barry.Teleop","Barry.XR","Barry.UI","Barry.Config","Barry.Theme","Unity.TextMeshPro","UnityEngine.UI","Unity.InputSystem"],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "autoReferenced": true
+}
