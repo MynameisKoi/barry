@@ -1,0 +1,14 @@
+{
+    "name": "Barry.Build.Editor",
+    "rootNamespace": "Barry.Build.Editor",
+    "references": [
+        "Barry.Config",
+        "Unity.XR.Management",
+        "Unity.XR.Management.Editor",
+        "Unity.XR.OpenXR",
+        "Unity.XR.OpenXR.Editor",
+        "Unity.XR.OpenXR.Features.MetaQuestSupport"
+    ],
+    "includePlatforms": [ "Editor" ],
+    "autoReferenced": false
+}
