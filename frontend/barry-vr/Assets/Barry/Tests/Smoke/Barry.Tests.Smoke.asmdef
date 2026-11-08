@@ -1,0 +1,9 @@
+{
+  "name": "Barry.Tests.Smoke",
+  "rootNamespace": "Barry.Tests.Smoke",
+  "references": ["Barry.Api"],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "autoReferenced": false
+}
