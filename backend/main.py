@@ -48,8 +48,11 @@ from backend.models import (
     MissionStopRequest,
     OperatorResponse,
 )
+from backend.robot.config import RobotConfig
 from backend.robot.factory import create_robot
 from backend.robot.interface import RobotInterface
+from backend.robot.relay import RobotApiRelay
+from backend.robot.relay_router import create_robot_relay_router
 from backend.robot.router import create_robot_router
 from backend.services.mission import mission_service
 
@@ -154,6 +157,7 @@ async def lifespan(app: FastAPI):
     if robot is None:
         robot = create_robot(mode=ROBOT_MODE)
     logger.info("BARRY initialized with robot controller mode: %s", ROBOT_MODE)
+    app.state.robot_relay = RobotApiRelay(RobotConfig.from_env())
 
     # Startup: ensure DB tables, start telemetry and Flipper listener
     db.init_db()
@@ -182,6 +186,8 @@ async def lifespan(app: FastAPI):
             logger.error("Camera did not start within 10 s; continuing without it")
 
     yield
+
+    await app.state.robot_relay.aclose()
 
     # Shutdown: halt the robot first so it never keeps walking after the
     # backend exits, then release its transport if it has one.
@@ -229,6 +235,14 @@ app.include_router(missions_router)
 # Camera Feed API v1: /api/v1/camera/{stream,snapshot,status}, token-protected
 # via CAMERA_API_KEY (fails closed with 503 if unset).
 app.include_router(create_camera_router(lambda: app.state.camera, CameraAuth.from_env()))
+# Quest Robot API v1: transparent laptop-to-Pi relay.  This intentionally
+# coexists with /api/robot/* and the /api/v1/camera/* routes.
+app.include_router(
+    create_robot_relay_router(
+        lambda: app.state.robot_relay,
+        lambda **kw: mission_service.log_event(**kw),
+    )
+)
 # Lambdas resolve at call time, so tests can swap the robot or broadcaster.
 app.include_router(
     create_robot_router(
