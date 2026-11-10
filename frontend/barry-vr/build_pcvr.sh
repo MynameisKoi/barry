@@ -10,7 +10,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BACKEND_URL="${BARRY_BACKEND_URL:-http://192.168.137.1:8000}"
+BACKEND_URL="${BARRY_BACKEND_URL:-http://192.168.0.156:8000}"
 UNITY_BIN="${UNITY_EXECUTABLE:-unity-editor}"
 
 echo "=== Barry PC-VR Standalone Setup ==="
@@ -23,15 +23,19 @@ if ! command -v "${UNITY_BIN}" &>/dev/null; then
     echo "    UNITY_EXECUTABLE='/path/to/Unity' ./build_pcvr.sh"
     echo ""
     echo "    Or open 'frontend/barry-vr' in the Unity Editor and select:"
-    echo "    Barry > Configure PC-VR Standalone Build from the top menu."
+    echo "    Barry > Build PC-VR (Windows) from the top menu."
     exit 0
 fi
 
-echo "[*] Configuring Standalone PC-VR OpenXR build via Unity batchmode..."
+OUTPUT="${BARRY_PCVR_OUTPUT:-${SCRIPT_DIR}/Builds/PCVR/Barry.exe}"
+echo "Output       : ${OUTPUT}"
+echo "[*] Building Windows PC-VR player via Unity batchmode (close the Editor first)..."
 BARRY_BACKEND_URL="${BACKEND_URL}" "${UNITY_BIN}" \
     -batchmode \
     -quit \
     -projectPath "${SCRIPT_DIR}" \
-    -executeMethod Barry.Build.Editor.QuestBuildSetup.RunStandalone
+    -executeMethod Barry.Build.Editor.QuestBuildSetup.BuildPCVR \
+    -buildOutput "${OUTPUT}" \
+    -logFile "${SCRIPT_DIR}/Builds/pcvr-build.log"
 
-echo "[+] PC-VR Standalone configuration complete!"
+echo "[+] PC-VR build complete: zip $(dirname "${OUTPUT}") and send the whole folder."
