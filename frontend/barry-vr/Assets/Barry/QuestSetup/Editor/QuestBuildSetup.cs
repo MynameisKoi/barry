@@ -49,12 +49,60 @@ namespace Barry.Build.Editor
             Debug.Log("Barry: Quest build configured (Android, OpenXR + Meta Quest, IL2CPP/ARM64, Vulkan, min API 32, Dashboard scene).");
         }
 
+        const string PcvrDefaultOutput = "Builds/PCVR/Barry.exe";
+
+        /// <summary>
+        /// Configure + build the Windows PC-VR player (Option 3: Quest Link / Air Link).
+        /// Always Windows x64 + Mono so it can be cross-built from a Mac Editor
+        /// (needs the "Windows Build Support (Mono)" module). Batch mode:
+        ///   Unity -batchmode -quit -projectPath frontend/barry-vr
+        ///         -executeMethod Barry.Build.Editor.QuestBuildSetup.BuildPCVR [-buildOutput path/Barry.exe]
+        /// </summary>
+        [MenuItem("Barry/Build PC-VR (Windows)")]
+        public static void BuildPCVR()
+        {
+            if (!BuildPipeline.IsBuildTargetSupported(BuildTargetGroup.Standalone, BuildTarget.StandaloneWindows64))
+                Fail("Windows Build Support (Mono) is not installed for this Unity version. Add it in Unity Hub → Installs → Add modules.");
+
+            RunStandalone();
+
+            var output = PcvrDefaultOutput;
+            var args = Environment.GetCommandLineArgs();
+            for (int i = 0; i < args.Length - 1; i++)
+                if (args[i] == "-buildOutput") output = args[i + 1];
+
+            var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
+            {
+                scenes = new[] { DashboardScene },
+                locationPathName = output,
+                target = BuildTarget.StandaloneWindows64,
+                targetGroup = BuildTargetGroup.Standalone,
+                options = BuildOptions.None,
+            });
+            var summary = report.summary;
+            if (summary.result != UnityEditor.Build.Reporting.BuildResult.Succeeded)
+                Fail($"PC-VR build {summary.result} with {summary.totalErrors} error(s).");
+            Debug.Log($"Barry: PC-VR build succeeded → {output} ({summary.totalSize / (1024 * 1024)} MB). Zip the whole folder, not just the .exe.");
+        }
+
+        static void Fail(string message)
+        {
+            Debug.LogError("Barry: " + message);
+            if (Application.isBatchMode) EditorApplication.Exit(1);
+            throw new InvalidOperationException(message);
+        }
+
         [MenuItem("Barry/Configure PC-VR Standalone Build")]
         public static void RunStandalone()
         {
-            var target = Application.platform == RuntimePlatform.WindowsEditor ? BuildTarget.StandaloneWindows64 : BuildTarget.StandaloneLinux64;
+            // Quest Link / Air Link run only on Windows, so the PC-VR player is always Win64,
+            // even when configured from a Mac Editor.
+            const BuildTarget target = BuildTarget.StandaloneWindows64;
             if (EditorUserBuildSettings.activeBuildTarget != target)
                 EditorUserBuildSettings.SwitchActiveBuildTarget(BuildTargetGroup.Standalone, target);
+            // IL2CPP can't cross-compile Windows from macOS; Mono works from either host.
+            PlayerSettings.SetScriptingBackend(NamedBuildTarget.Standalone, ScriptingImplementation.Mono2x);
+            PlayerSettings.insecureHttpOption = InsecureHttpOption.AlwaysAllowed;
 
             ConfigureXrLoader();
             UnityEditor.XR.OpenXR.Features.FeatureHelpers.RefreshFeatures(BuildTargetGroup.Standalone);
@@ -72,7 +120,7 @@ namespace Barry.Build.Editor
                 Environment.GetEnvironmentVariable("BARRY_CAMERA_KEY"));
 
             AssetDatabase.SaveAssets();
-            Debug.Log("Barry: PC-VR Standalone build configured (OpenXR, Touch & Touch Plus, Dashboard scene).");
+            Debug.Log("Barry: PC-VR Standalone build configured (Windows x64, Mono, OpenXR, Touch & Touch Plus, Dashboard scene).");
         }
 
         static void ConfigurePlayer()
