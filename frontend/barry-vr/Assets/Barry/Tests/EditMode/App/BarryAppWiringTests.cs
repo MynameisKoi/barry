@@ -10,13 +10,15 @@ namespace Barry.App.Tests
     public sealed class BarryAppWiringTests
     {
         [Test]
-        public void Settings_ReadConnectionAndControlValuesFromConfig_WithEmptyMockAuth()
+        public void Settings_ReadConnectionAndControlValuesFromConfig_WithApiKeys()
         {
             BarryConfig config = ScriptableObject.CreateInstance<BarryConfig>();
             try
             {
                 config.backendUrl = "http://10.0.0.2:8000";
                 config.cameraStreamUrl = "http://10.0.0.2:8000/api/v1/camera/stream";
+                config.robotApiKey = "robot-secret";
+                config.cameraApiKey = "camera-secret";
                 config.deadZone = 0.18f;
                 config.sendRateHz = 15;
 
@@ -24,12 +26,63 @@ namespace Barry.App.Tests
 
                 Assert.That(settings.BackendUrl, Is.EqualTo(config.backendUrl));
                 Assert.That(settings.CameraStreamUrl, Is.EqualTo(config.cameraStreamUrl));
-                Assert.That(settings.ApiKey, Is.Null.Or.Empty);
+                Assert.That(settings.ApiKey, Is.EqualTo("robot-secret"));
+                Assert.That(settings.CameraApiKey, Is.EqualTo("camera-secret"));
                 Assert.That(settings.DeadZone, Is.EqualTo(0.18f));
                 Assert.That(settings.SendRateHz, Is.EqualTo(15f));
             }
             finally
             {
+                UnityEngine.Object.DestroyImmediate(config);
+            }
+        }
+
+        [Test]
+        public void Settings_EmptyApiKeysRemainEmpty()
+        {
+            BarryConfig config = ScriptableObject.CreateInstance<BarryConfig>();
+            try
+            {
+                BarryAppSettings settings = BarryAppSettings.From(config);
+
+                Assert.That(settings.ApiKey, Is.Empty);
+                Assert.That(settings.CameraApiKey, Is.Empty);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(config);
+            }
+        }
+
+        [Test]
+        public void Save_DoesNotPersistApiKeys_AndLoadPreservesConfiguredKeys()
+        {
+            PlayerPrefs.DeleteKey(BarryConfig.PrefsKey);
+            BarryConfig config = ScriptableObject.CreateInstance<BarryConfig>();
+            try
+            {
+                config.robotApiKey = "robot-secret";
+                config.cameraApiKey = "camera-secret";
+                config.backendUrl = "http://saved.example";
+                config.Save();
+
+                string saved = PlayerPrefs.GetString(BarryConfig.PrefsKey);
+                Assert.That(saved, Does.Not.Contain("robot-secret"));
+                Assert.That(saved, Does.Not.Contain("camera-secret"));
+                Assert.That(saved, Does.Not.Contain("robotApiKey"));
+                Assert.That(saved, Does.Not.Contain("cameraApiKey"));
+
+                config.robotApiKey = "asset-robot-key";
+                config.cameraApiKey = "asset-camera-key";
+                config.Load();
+
+                Assert.That(config.backendUrl, Is.EqualTo("http://saved.example"));
+                Assert.That(config.robotApiKey, Is.EqualTo("asset-robot-key"));
+                Assert.That(config.cameraApiKey, Is.EqualTo("asset-camera-key"));
+            }
+            finally
+            {
+                PlayerPrefs.DeleteKey(BarryConfig.PrefsKey);
                 UnityEngine.Object.DestroyImmediate(config);
             }
         }

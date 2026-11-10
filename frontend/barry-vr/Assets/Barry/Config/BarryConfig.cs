@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 
 namespace Barry.Config
@@ -6,15 +7,42 @@ namespace Barry.Config
     public enum TextSize { Small, Medium, Large }
     public enum RobotTarget { Simulator, RealRobot }
 
-    /// <summary>Non-secret runtime settings (HANDOFF §9.5). Never store passwords or API keys here.</summary>
+    /// <summary>Runtime settings. API keys are build-time values and are never persisted with PlayerPrefs.</summary>
     [CreateAssetMenu(menuName = "Barry/Config", fileName = "BarryConfig")]
     public class BarryConfig : ScriptableObject
     {
+        [Serializable]
+        private sealed class SavedSettings
+        {
+            public string backendUrl;
+            public string cameraStreamUrl;
+            public RobotTarget target;
+            public float deadZone;
+            public int sendRateHz;
+            public float cameraDistance;
+            public TextSize textSize;
+            public ThemeId theme;
+
+            public SavedSettings(BarryConfig config)
+            {
+                backendUrl = config.backendUrl;
+                cameraStreamUrl = config.cameraStreamUrl;
+                target = config.target;
+                deadZone = config.deadZone;
+                sendRateHz = config.sendRateHz;
+                cameraDistance = config.cameraDistance;
+                textSize = config.textSize;
+                theme = config.theme;
+            }
+        }
+
         public const string PrefsKey = "barry.config.v1";
 
         [Header("Connection")]
         public string backendUrl = "http://192.168.1.10:8000";
         public string cameraStreamUrl = "http://192.168.1.10:8000/api/v1/camera/stream";
+        public string robotApiKey = "";
+        public string cameraApiKey = "";
         public RobotTarget target = RobotTarget.Simulator;
 
         [Header("Control")]
@@ -26,14 +54,18 @@ namespace Barry.Config
         public TextSize textSize = TextSize.Medium;
         public ThemeId theme = ThemeId.Galactic;
 
-        /// <summary>Persist the non-secret values with PlayerPrefs.</summary>
-        public void Save() => PlayerPrefs.SetString(PrefsKey, JsonUtility.ToJson(this));
+        /// <summary>Persist settings with PlayerPrefs, excluding build-time API keys.</summary>
+        public void Save() => PlayerPrefs.SetString(PrefsKey, JsonUtility.ToJson(new SavedSettings(this)));
 
         /// <summary>Overlay saved values (if any) onto this instance.</summary>
         public void Load()
         {
+            string configuredRobotApiKey = robotApiKey;
+            string configuredCameraApiKey = cameraApiKey;
             if (PlayerPrefs.HasKey(PrefsKey))
                 JsonUtility.FromJsonOverwrite(PlayerPrefs.GetString(PrefsKey), this);
+            robotApiKey = configuredRobotApiKey;
+            cameraApiKey = configuredCameraApiKey;
             Sanitize();
         }
 
