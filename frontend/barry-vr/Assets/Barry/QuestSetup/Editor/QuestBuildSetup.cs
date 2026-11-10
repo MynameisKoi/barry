@@ -19,7 +19,8 @@ namespace Barry.Build.Editor
     /// backend URL. Safe to re-run. Batch mode:
     ///   Unity -batchmode -quit -buildTarget Android -projectPath frontend/barry-vr
     ///         -executeMethod Barry.Build.Editor.QuestBuildSetup.Run
-    /// Optional env BARRY_BACKEND_URL (e.g. http://192.168.0.156:8000) sets BarryConfig.
+    /// Optional env BARRY_BACKEND_URL (e.g. http://192.168.0.156:8000),
+    /// BARRY_ROBOT_KEY and BARRY_CAMERA_KEY set BarryConfig.
     /// </summary>
     public static class QuestBuildSetup
     {
@@ -39,7 +40,10 @@ namespace Barry.Build.Editor
             ConfigureXrLoader();
             ConfigureOpenXrFeatures();
             EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(DashboardScene, true) };
-            ConfigureBackendUrl(Environment.GetEnvironmentVariable("BARRY_BACKEND_URL"));
+            ConfigureBackend(
+                Environment.GetEnvironmentVariable("BARRY_BACKEND_URL"),
+                Environment.GetEnvironmentVariable("BARRY_ROBOT_KEY"),
+                Environment.GetEnvironmentVariable("BARRY_CAMERA_KEY"));
 
             AssetDatabase.SaveAssets();
             Debug.Log("Barry: Quest build configured (Android, OpenXR + Meta Quest, IL2CPP/ARM64, Vulkan, min API 32, Dashboard scene).");
@@ -62,7 +66,10 @@ namespace Barry.Build.Editor
                 EditorUtility.SetDirty(oxr);
             }
             EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(DashboardScene, true) };
-            ConfigureBackendUrl(Environment.GetEnvironmentVariable("BARRY_BACKEND_URL"));
+            ConfigureBackend(
+                Environment.GetEnvironmentVariable("BARRY_BACKEND_URL"),
+                Environment.GetEnvironmentVariable("BARRY_ROBOT_KEY"),
+                Environment.GetEnvironmentVariable("BARRY_CAMERA_KEY"));
 
             AssetDatabase.SaveAssets();
             Debug.Log("Barry: PC-VR Standalone build configured (OpenXR, Touch & Touch Plus, Dashboard scene).");
@@ -133,14 +140,19 @@ namespace Barry.Build.Editor
             EditorUtility.SetDirty(feature);
         }
 
-        static void ConfigureBackendUrl(string backendUrl)
+        static void ConfigureBackend(string backendUrl, string robotApiKey, string cameraApiKey)
         {
-            if (string.IsNullOrWhiteSpace(backendUrl)) return;
-            backendUrl = backendUrl.TrimEnd('/');
+            if (string.IsNullOrWhiteSpace(backendUrl) && robotApiKey == null && cameraApiKey == null) return;
             var config = AssetDatabase.LoadAssetAtPath<BarryConfig>(ConfigPath);
             if (config == null) throw new InvalidOperationException("Missing " + ConfigPath);
-            config.backendUrl = backendUrl;
-            config.cameraStreamUrl = backendUrl + "/api/v1/camera/stream";
+            if (!string.IsNullOrWhiteSpace(backendUrl))
+            {
+                backendUrl = backendUrl.TrimEnd('/');
+                config.backendUrl = backendUrl;
+                config.cameraStreamUrl = backendUrl + "/api/v1/camera/stream";
+            }
+            if (robotApiKey != null) config.robotApiKey = robotApiKey;
+            if (cameraApiKey != null) config.cameraApiKey = cameraApiKey;
             EditorUtility.SetDirty(config);
         }
     }

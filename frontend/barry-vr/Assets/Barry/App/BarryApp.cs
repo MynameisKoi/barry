@@ -73,6 +73,7 @@ namespace Barry.App
         public string BackendUrl { get; }
         public string CameraStreamUrl { get; }
         public string ApiKey { get; }
+        public string CameraApiKey { get; }
         public float DeadZone { get; }
         public float SendRateHz { get; }
 
@@ -80,12 +81,14 @@ namespace Barry.App
             string backendUrl,
             string cameraStreamUrl,
             string apiKey,
+            string cameraApiKey,
             float deadZone,
             float sendRateHz)
         {
             BackendUrl = backendUrl;
             CameraStreamUrl = cameraStreamUrl;
             ApiKey = apiKey;
+            CameraApiKey = cameraApiKey;
             DeadZone = deadZone;
             SendRateHz = sendRateHz;
         }
@@ -98,13 +101,11 @@ namespace Barry.App
             if (string.IsNullOrWhiteSpace(config.cameraStreamUrl))
                 throw new ArgumentException("BarryConfig requires a camera stream URL.", nameof(config));
 
-            // Tom's current auth decision is an empty/mock key. BarryConfig is
-            // deliberately non-secret, so no credential is embedded or persisted.
-            const string mockApiKey = null;
             return new BarryAppSettings(
                 config.backendUrl,
                 config.cameraStreamUrl,
-                mockApiKey,
+                config.robotApiKey,
+                config.cameraApiKey,
                 Mathf.Clamp(config.deadZone, 0f, 0.30f),
                 Mathf.Clamp(config.sendRateHz, 5f, 20f));
         }
@@ -186,7 +187,7 @@ namespace Barry.App
         {
             StatusMonitor.PollNow();
             cameraWatchdog.Reset();
-            cameraStreamSource.StartStream(config.cameraStreamUrl);
+            cameraStreamSource.StartStream(config.cameraStreamUrl, config.cameraApiKey);
         }
 
         private void Update()
