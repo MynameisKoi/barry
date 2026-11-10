@@ -52,7 +52,7 @@ from backend.robot.config import RobotConfig
 from backend.robot.factory import create_robot
 from backend.robot.interface import RobotInterface
 from backend.robot.relay import RobotApiRelay
-from backend.robot.relay_router import create_robot_relay_router
+from backend.robot.relay_router import QuestRelayAuth, create_robot_relay_router
 from backend.robot.router import create_robot_router
 from backend.services.mission import mission_service
 
@@ -241,6 +241,7 @@ app.include_router(
     create_robot_relay_router(
         lambda: app.state.robot_relay,
         lambda **kw: mission_service.log_event(**kw),
+        QuestRelayAuth.from_env(),
     )
 )
 # Lambdas resolve at call time, so tests can swap the robot or broadcaster.
