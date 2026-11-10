@@ -27,6 +27,8 @@ namespace Barry.Build.Editor
         const string ConfigPath = "Assets/Barry/Config/BarryConfig.asset";
         const string XrSettingsPath = "Assets/XR/XRGeneralSettingsPerBuildTarget.asset";
         const string XrSettingsKey = "com.unity.xr.management.loader_settings";
+        internal const string MobilePipelineAsset = "Assets/Settings/Mobile_RPAsset.asset";
+        const string QualitySettingsPath = "ProjectSettings/QualitySettings.asset";
         const string OpenXrLoader = "UnityEngine.XR.OpenXR.OpenXRLoader";
 
         [MenuItem("Barry/Configure Quest Build")]
@@ -38,6 +40,7 @@ namespace Barry.Build.Editor
             ConfigurePlayer();
             ConfigureXrLoader();
             ConfigureOpenXrFeatures();
+            ConfigureQualityForAndroid();
             EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(DashboardScene, true) };
             ConfigureBackendUrl(Environment.GetEnvironmentVariable("BARRY_BACKEND_URL"));
 
@@ -122,7 +125,47 @@ namespace Barry.Build.Editor
             Enable<MetaQuestFeature>(oxr);
             Enable<OculusTouchControllerProfile>(oxr);
             Enable<MetaQuestTouchPlusControllerProfile>(oxr);   // Quest 3 / 3S controllers
+            // Meta Quest feature recommends input polling priority (otherwise the build warns).
+            oxr.latencyOptimization = OpenXRSettings.LatencyOptimization.PrioritizeInputPolling;
             EditorUtility.SetDirty(oxr);
+        }
+
+        /// <summary>
+        /// Keeps every quality level that is not on the Mobile URP asset (PC_RPAsset, whose renderer
+        /// has SSAO) out of Android builds, and makes sure the Mobile level is included. PC_Renderer
+        /// itself is untouched, so desktop / PC-VR keeps SSAO.
+        /// </summary>
+        static void ConfigureQualityForAndroid()
+        {
+            var mobile = AssetDatabase.LoadAssetAtPath<RenderPipelineAsset>(MobilePipelineAsset);
+            if (mobile == null) throw new InvalidOperationException("Missing " + MobilePipelineAsset);
+
+            var assets = AssetDatabase.LoadAllAssetsAtPath(QualitySettingsPath);
+            if (assets == null || assets.Length == 0) throw new InvalidOperationException("Cannot load " + QualitySettingsPath);
+            var so = new SerializedObject(assets[0]);
+            var levels = so.FindProperty("m_QualitySettings");
+            int mobileLevels = 0;
+            for (int i = 0; i < levels.arraySize; i++)
+            {
+                var level = levels.GetArrayElementAtIndex(i);
+                var pipeline = level.FindPropertyRelative("customRenderPipeline").objectReferenceValue;
+                var excluded = level.FindPropertyRelative("excludedTargetPlatforms");
+                int androidIdx = -1;
+                for (int j = 0; j < excluded.arraySize; j++)
+                    if (excluded.GetArrayElementAtIndex(j).stringValue == "Android") androidIdx = j;
+
+                bool isMobile = pipeline == mobile;
+                if (isMobile) mobileLevels++;
+                if (isMobile && androidIdx >= 0) excluded.DeleteArrayElementAtIndex(androidIdx);
+                else if (!isMobile && androidIdx < 0)
+                {
+                    excluded.InsertArrayElementAtIndex(excluded.arraySize);
+                    excluded.GetArrayElementAtIndex(excluded.arraySize - 1).stringValue = "Android";
+                }
+            }
+            if (mobileLevels == 0) throw new InvalidOperationException("No quality level uses " + MobilePipelineAsset);
+            so.ApplyModifiedProperties();
+            AssetDatabase.SaveAssets();
         }
 
         static void Enable<T>(OpenXRSettings oxr) where T : UnityEngine.XR.OpenXR.Features.OpenXRFeature
