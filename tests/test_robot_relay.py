@@ -189,6 +189,20 @@ def test_motion_audit_only_logs_transitions_and_failures():
     assert "motion stopped" in events[1]["description"]
 
 
+def test_stop_resets_motion_audit_state_for_next_drive():
+    def pi(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": "accepted"})
+
+    client, _, events = make_client(pi)
+    motion = {"forward": 0.5, "strafe": 0, "turn": 0}
+    assert client.post(protocol.PATH_MOTION, json=motion).status_code == 200
+    assert client.post(protocol.PATH_STOP).status_code == 200
+    assert client.post(protocol.PATH_MOTION, json=motion).status_code == 200
+
+    assert sum("motion started" in event["description"] for event in events) == 2
+    assert sum("Relayed stop" in event["description"] for event in events) == 1
+
+
 def test_pi_down_returns_503_instead_of_leaking_transport_error():
     def down(_: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("Pi is offline")

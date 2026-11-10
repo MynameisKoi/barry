@@ -84,7 +84,11 @@ def create_robot_relay_router(
 
     @router.delete("/session")
     async def release_session(request: Request):
-        return await forward(request, protocol.PATH_SESSION)
+        nonlocal motion_active
+        response = await forward(request, protocol.PATH_SESSION)
+        if 200 <= response.status_code < 300:
+            motion_active = False
+        return response
 
     @router.post("/motion")
     async def motion(request: Request):
@@ -112,7 +116,11 @@ def create_robot_relay_router(
 
     @router.post("/stop")
     async def stop(request: Request):
-        return await forward(request, protocol.PATH_STOP, "stop")
+        nonlocal motion_active
+        response = await forward(request, protocol.PATH_STOP, "stop")
+        if 200 <= response.status_code < 300:
+            motion_active = False
+        return response
 
     @router.post("/movement-style")
     async def movement_style(request: Request):
