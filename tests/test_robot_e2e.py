@@ -6,6 +6,7 @@ wire contract in ``backend/robot/protocol.py`` is exercised from both sides.
 
 import time
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -16,14 +17,40 @@ from backend.robot.server import create_app
 from backend.robot.simulator import RobotSimulator
 
 
+class _TestClientTransport(httpx.BaseTransport):
+    """Bridges the client's ``httpx`` to a Starlette ``TestClient`` via its public API.
+
+    ``TestClient._transport`` is built on whichever httpx flavour Starlette picked (it switches
+    to ``httpx2`` when that is installed), which the ``httpx``-based RemoteRobotClient rejects.
+    Going through ``TestClient.request`` works with either.
+    """
+
+    def __init__(self, tc: TestClient) -> None:
+        self._tc = tc
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        response = self._tc.request(
+            request.method,
+            str(request.url),
+            content=request.read(),
+            headers=dict(request.headers),
+        )
+        return httpx.Response(
+            response.status_code,
+            headers=[(k, v) for k, v in response.headers.items() if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")],
+            content=response.content,
+            request=request,
+        )
+
+
 @pytest.fixture
 def stack():
     """Yields ``(sim, operator_a, operator_b)`` sharing one in-process Pi server."""
     cfg = RobotConfig(api_key="test-key", watchdog_ms=200, remote_url="http://testserver")
     sim = RobotSimulator(cfg)
     with TestClient(create_app(sim, cfg)) as tc:
-        a = RemoteRobotClient(cfg, transport=tc._transport)
-        b = RemoteRobotClient(cfg, transport=tc._transport)
+        a = RemoteRobotClient(cfg, transport=_TestClientTransport(tc))
+        b = RemoteRobotClient(cfg, transport=_TestClientTransport(tc))
         yield sim, a, b
         a.close()
         b.close()
