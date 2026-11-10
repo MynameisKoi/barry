@@ -45,6 +45,29 @@ namespace Barry.Build.Editor
             Debug.Log("Barry: Quest build configured (Android, OpenXR + Meta Quest, IL2CPP/ARM64, Vulkan, min API 32, Dashboard scene).");
         }
 
+        [MenuItem("Barry/Configure PC-VR Standalone Build")]
+        public static void RunStandalone()
+        {
+            var target = Application.platform == RuntimePlatform.WindowsEditor ? BuildTarget.StandaloneWindows64 : BuildTarget.StandaloneLinux64;
+            if (EditorUserBuildSettings.activeBuildTarget != target)
+                EditorUserBuildSettings.SwitchActiveBuildTarget(BuildTargetGroup.Standalone, target);
+
+            ConfigureXrLoader();
+            UnityEditor.XR.OpenXR.Features.FeatureHelpers.RefreshFeatures(BuildTargetGroup.Standalone);
+            var oxr = OpenXRSettings.GetSettingsForBuildTargetGroup(BuildTargetGroup.Standalone);
+            if (oxr != null)
+            {
+                Enable<OculusTouchControllerProfile>(oxr);
+                Enable<MetaQuestTouchPlusControllerProfile>(oxr);
+                EditorUtility.SetDirty(oxr);
+            }
+            EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(DashboardScene, true) };
+            ConfigureBackendUrl(Environment.GetEnvironmentVariable("BARRY_BACKEND_URL"));
+
+            AssetDatabase.SaveAssets();
+            Debug.Log("Barry: PC-VR Standalone build configured (OpenXR, Touch & Touch Plus, Dashboard scene).");
+        }
+
         static void ConfigurePlayer()
         {
             var android = NamedBuildTarget.Android;
