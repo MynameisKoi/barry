@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>BARRY // 3D Holographic VR Cockpit</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background-color: #050814;
+            color: #d9e6f2;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+        }
+        #webgl-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        #desktop-ui {
+            position: absolute;
+            top: 16px;
+            left: 20px;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            pointer-events: none;
+        }
+        .hud-badge {
+            background: rgba(15, 23, 42, 0.75);
+            border: 1px solid rgba(0, 240, 255, 0.4);
+            color: #00f0ff;
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            backdrop-filter: blur(8px);
+        }
+        #switch-flatscreen {
+            pointer-events: auto;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            color: #fff;
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.2s ease;
+        }
+        #switch-flatscreen:hover {
+            background: rgba(255, 255, 255, 0.2);
+            border-color: #00f0ff;
+        }
+        #keyboard-hint {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 0.8rem;
+            background: rgba(10, 16, 26, 0.8);
+            padding: 6px 16px;
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            pointer-events: none;
+        }
+    </style>
+    <!-- Three.js + WebXR VRButton -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/webxr/VRButton.js"></script>
+</head>
+<body>
+    <canvas id="webgl-canvas"></canvas>
+    <div id="desktop-ui">
+        <div class="hud-badge">BARRY // 3D HOLOGRAPHIC COCKPIT</div>
+        <a id="switch-flatscreen" href="/cockpit">← 2D Flatscreen Mode</a>
+    </div>
+    <div id="keyboard-hint">
+        🎮 <b>Controls:</b> WASD / Arrows to Drive · Space for E-Stop · Click / Drag to Look
+    </div>
+
+    <script>
+        // --- State Management ---
+        const state = {
+            robotConnected: false,
+            robotMode: "remote",
+            battery: 0,
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            rttMs: 12,
+            fps: 20,
+            frameAgeMs: 45,
+            intensity: "MEDIUM",
+            lastCommand: "stop",
+            forward: 0.0,
+            strafe: 0.0,
+            turn: 0.0,
+            emergencyStopped: false
+        };
+
+        // --- Three.js Setup ---
+        const canvas = document.getElementById("webgl-canvas");
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x050814);
+        scene.fog = new THREE.FogExp2(0x050814, 0.015);
+
+        const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 1.4, 0); // Eye level standing inside cockpit
+
+        const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.xr.enabled = true;
+
+        // Add WebXR button to enter immersive VR on Quest 3S
+        const vrButton = VRButton.createButton(renderer);
+        vrButton.style.zIndex = "100";
+        vrButton.style.bottom = "20px";
+        vrButton.style.right = "20px";
+        document.body.appendChild(vrButton);
+
+        // Ambient & Directional Lights
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
+        scene.add(ambientLight);
+        const dirLight = new THREE.DirectionalLight(0xa5b4fc, 0.6);
+        dirLight.position.set(5, 10, 7);
+        scene.add(dirLight);
+        // --- Environment: Starfield ---
+        const starsCount = 2500;
+        const starGeo = new THREE.BufferGeometry();
+        const starCoords = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount * 3; i += 3) {
+            starCoords[i] = (Math.random() - 0.5) * 400;
+            starCoords[i + 1] = Math.random() * 200; // Sky dome
+            starCoords[i + 2] = (Math.random() - 0.5) * 400;
+        }
+        starGeo.setAttribute("position", new THREE.BufferAttribute(starCoords, 3));
+        const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.8, transparent: true, opacity: 0.85 });
+        const starField = new THREE.Points(starGeo, starMat);
+        scene.add(starField);
+
+        // --- Environment: Stylized Purple Saturn Planet with Rings ---
+        const planetGroup = new THREE.Group();
+        planetGroup.position.set(22, 14, -45); // Upper right sky as in teammate screenshot
+        const planetGeo = new THREE.SphereGeometry(6, 32, 32);
+        const planetMat = new THREE.MeshLambertMaterial({
+            color: 0x6d28d9, // Vibrant purple
+            emissive: 0x3b0764,
+            emissiveIntensity: 0.4
+        });
+        const planetMesh = new THREE.Mesh(planetGeo, planetMat);
+        planetGroup.add(planetMesh);
+
+        // Saturn Rings
+        const ringGeo = new THREE.RingGeometry(7.8, 12.5, 64);
+        const ringMat = new THREE.MeshBasicMaterial({
+            color: 0xc4b5fd,
+            side: THREE.DoubleSide,
+            transparent: true,
+            opacity: 0.75
+        });
+        const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+        ringMesh.rotation.x = Math.PI / 2.5;
+        ringMesh.rotation.y = Math.PI / 6;
+        planetGroup.add(ringMesh);
+        scene.add(planetGroup);
+
+        // --- Environment: Retro Cyan Perspective Grid Floor ---
+        const gridHelper = new THREE.GridHelper(160, 80, 0x00f0ff, 0x1e3a5f);
+        gridHelper.position.y = 0;
+        scene.add(gridHelper);
+
+        // Subtle dark plane under grid to block stars beneath floor
+        const floorGeo = new THREE.PlaneGeometry(200, 200);
+        const floorMat = new THREE.MeshBasicMaterial({ color: 0x050814 });
+        const floorMesh = new THREE.Mesh(floorGeo, floorMat);
+        floorMesh.rotation.x = -Math.PI / 2;
+        floorMesh.position.y = -0.02;
+        scene.add(floorMesh);
+        // --- Interactive Holographic Panels ---
+        function createHoloPanel(w, h, canvasWidth, canvasHeight, pos, rotY) {
+            const offscreenCanvas = document.createElement("canvas");
+            offscreenCanvas.width = canvasWidth;
+            offscreenCanvas.height = canvasHeight;
+            const ctx = offscreenCanvas.getContext("2d");
+
+            const texture = new THREE.CanvasTexture(offscreenCanvas);
+            texture.minFilter = THREE.LinearFilter;
+            texture.magFilter = THREE.LinearFilter;
+
+            const geo = new THREE.PlaneGeometry(w, h);
+            const mat = new THREE.MeshBasicMaterial({
+                map: texture,
+                transparent: true,
+                side: THREE.DoubleSide
+            });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.copy(pos);
+            mesh.rotation.y = rotY;
+            scene.add(mesh);
+
+            return { canvas: offscreenCanvas, ctx, texture, mesh };
+        }
+
+        // 1. LEFT PANEL: STATUS & COMMAND SENT
+        const leftPanel = createHoloPanel(
+            1.4, 1.7, 560, 680,
+            new THREE.Vector3(-1.45, 1.35, -1.9),
+            Math.PI / 6.5 // Angled inward
+        );
+
+        function drawLeftPanel() {
+            const { ctx, canvas: c, texture } = leftPanel;
+            ctx.clearRect(0, 0, c.width, c.height);
+
+            // Translucent rounded panel with glowing border
+            ctx.fillStyle = "rgba(10, 16, 28, 0.88)";
+            ctx.strokeStyle = "rgba(220, 230, 255, 0.9)";
+            ctx.lineWidth = 3;
+            roundRect(ctx, 4, 4, c.width - 8, c.height - 8, 16, true, true);
+
+            // STATUS Header
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 24px -apple-system, monospace";
+            ctx.fillText("STATUS", 32, 48);
+
+            // Status Metrics Grid
+            ctx.fillStyle = "#94a3b8";
+            ctx.font = "18px -apple-system, monospace";
+            ctx.fillText("Robot", 32, 90);
+            ctx.fillText("Control", 280, 90);
+
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 20px -apple-system, monospace";
+            ctx.fillText(state.robotConnected ? "ONLINE" : "--", 32, 118);
+            ctx.fillText(state.robotMode.toUpperCase(), 280, 118);
+
+            ctx.fillStyle = "#94a3b8";
+            ctx.font = "18px -apple-system, monospace";
+            ctx.fillText("Camera", 32, 160);
+            ctx.fillText("Backend RTT", 280, 160);
+
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 20px -apple-system, monospace";
+            ctx.fillText(state.robotConnected ? "READY" : "--", 32, 188);
+            ctx.fillText(`${state.rttMs} ms`, 280, 188);
+            // Battery
+            ctx.fillStyle = "#94a3b8";
+            ctx.font = "18px -apple-system, monospace";
+            ctx.fillText("Battery", 32, 230);
+            ctx.fillStyle = state.battery > 20 ? "#00ff88" : "#ff2a4b";
+            ctx.font = "bold 20px -apple-system, monospace";
+            ctx.fillText(state.battery > 0 ? `${Math.round(state.battery)} %` : "-- %", 460, 230);
+
+            // Battery bar
+            ctx.fillStyle = "rgba(255, 255, 255, 0.15)";
+            roundRect(ctx, 32, 246, c.width - 64, 10, 5, true, false);
+            if (state.battery > 0) {
+                ctx.fillStyle = state.battery > 20 ? "#00ff88" : "#ff2a4b";
+                roundRect(ctx, 32, 246, Math.max(10, ((c.width - 64) * state.battery) / 100), 10, 5, true, false);
+            }
+
+            // Divider Line
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(32, 290);
+            ctx.lineTo(c.width - 32, 290);
+            ctx.stroke();
+
+            // COMMAND SENT Header
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 22px -apple-system, monospace";
+            ctx.fillText("COMMAND SENT", 32, 335);
+
+            // Command Sliders: Forward, Strafe, Turn
+            drawCommandSlider(ctx, 32, 365, "Forward", state.forward);
+            drawCommandSlider(ctx, 32, 435, "Strafe", state.strafe);
+            drawCommandSlider(ctx, 32, 505, "Turn", state.turn);
+
+            // Footer info dot
+            ctx.fillStyle = "#6366f1"; // Purple-blue indicator
+            ctx.beginPath();
+            ctx.arc(42, 620, 6, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = "#94a3b8";
+            ctx.font = "15px -apple-system, monospace";
+            ctx.fillText("Accepted by API · not proof of movement", 58, 625);
+
+            texture.needsUpdate = true;
+        }
+
+        function drawCommandSlider(ctx, x, y, label, val) {
+            ctx.fillStyle = "#94a3b8";
+            ctx.font = "16px -apple-system, monospace";
+            ctx.fillText(label, x, y + 14);
+
+            const barX = x + 120;
+            const barW = 280;
+            const barY = y + 4;
+            ctx.fillStyle = "rgba(255, 255, 255, 0.2)";
+            roundRect(ctx, barX, barY, barW, 10, 5, true, false);
+
+            // Slider thumb indicator at center + offset
+            const clamped = Math.max(-1, Math.min(1, val));
+            const thumbX = barX + (barW / 2) + (clamped * (barW / 2));
+            ctx.fillStyle = "#ffffff";
+            roundRect(ctx, thumbX - 4, barY - 4, 8, 18, 4, true, false);
+
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 16px -apple-system, monospace";
+            ctx.fillText(val.toFixed(2), barX + barW + 24, y + 14);
+        }
+        // 2. CENTER PANEL: LIVE ROBOT CAMERA
+        const centerPanel = createHoloPanel(
+            2.2, 1.45, 880, 580,
+            new THREE.Vector3(0, 1.45, -2.15),
+            0 // Directly in front
+        );
+
+        function drawCenterPanel() {
+            const { ctx, canvas: c, texture } = centerPanel;
+            ctx.clearRect(0, 0, c.width, c.height);
+
+            // Outer Frame with glowing white border
+            ctx.fillStyle = "rgba(10, 15, 24, 0.92)";
+            ctx.strokeStyle = "rgba(230, 238, 255, 0.95)";
+            ctx.lineWidth = 3.5;
+            roundRect(ctx, 4, 4, c.width - 8, c.height - 8, 16, true, true);
+
+            // Top Header: BARRY MODE · MANUAL
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 20px -apple-system, monospace";
+            ctx.fillText("BARRY", 28, 42);
+
+            ctx.fillStyle = "#94a3b8";
+            ctx.font = "16px -apple-system, monospace";
+            ctx.fillText("MODE · MANUAL · more modes later", 120, 42);
+
+            ctx.fillText("·· --", c.width - 80, 42);
+
+            // Inner Video Display Area
+            const vidX = 24;
+            const vidY = 62;
+            const vidW = c.width - 48;
+            const vidH = c.height - 86;
+
+            ctx.fillStyle = "#020408";
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.25)";
+            ctx.lineWidth = 1.5;
+            roundRect(ctx, vidX, vidY, vidW, vidH, 8, true, true);
+
+            // Video Top HUD Overlay: fps, frame age, roll, pitch
+            ctx.fillStyle = "#94a3b8";
+            ctx.font = "14px monospace";
+            ctx.fillText(`·-· ${state.fps} fps`, vidX + 16, vidY + 28);
+            ctx.fillText(`frame age ${state.frameAgeMs} ms`, vidX + 130, vidY + 28);
+
+            const attitudeText = `ROLL ${state.roll.toFixed(1)}° · PITCH ${state.pitch.toFixed(1)}°`;
+            ctx.fillText(attitudeText, vidX + vidW - 240, vidY + 28);
+
+            // Center Crosshair Reticle
+            const cx = vidX + vidW / 2;
+            const cy = vidY + vidH / 2 - 10;
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.4)";
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 18, 0, Math.PI * 2);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+            ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
+            ctx.fill();
+
+            // Reticle Label
+            ctx.fillStyle = "#94a3b8";
+            ctx.font = "bold 15px monospace";
+            ctx.textAlign = "center";
+            ctx.fillText("[ LIVE ROBOT CAMERA ]", cx, cy + 54);
+
+            ctx.font = "13px -apple-system, monospace";
+            ctx.fillText("MJPEG stream · frame scales to stream aspect", cx, cy + 78);
+            ctx.textAlign = "left"; // Reset
+
+            texture.needsUpdate = true;
+        }
+        // 3. BOTTOM PANEL: INTENSITY & EMERGENCY STOP DOCK
+        const bottomPanel = createHoloPanel(
+            1.7, 0.45, 680, 180,
+            new THREE.Vector3(0, 0.62, -1.85),
+            0
+        );
+
+        function drawBottomPanel() {
+            const { ctx, canvas: c, texture } = bottomPanel;
+            ctx.clearRect(0, 0, c.width, c.height);
+
+            // Translucent rounded bar with glowing border
+            ctx.fillStyle = "rgba(10, 16, 28, 0.9)";
+            ctx.strokeStyle = "rgba(220, 230, 255, 0.95)";
+            ctx.lineWidth = 3;
+            roundRect(ctx, 4, 4, c.width - 8, c.height - 8, 20, true, true);
+
+            // INTENSITY Label
+            ctx.fillStyle = "#94a3b8";
+            ctx.font = "bold 13px -apple-system, monospace";
+            ctx.fillText("INTENSITY", 28, 40);
+
+            // Intensity Segmented Buttons: LOW, MEDIUM, HIGH
+            drawSegmentBtn(ctx, 24, 56, 68, 54, "LOW", state.intensity === "LOW");
+            drawSegmentBtn(ctx, 92, 56, 88, 54, "MEDIUM", state.intensity === "MEDIUM");
+            drawSegmentBtn(ctx, 180, 56, 74, 54, "HIGH", state.intensity === "HIGH");
+
+            // BIG RED STOP BUTTON
+            const stopX = 280;
+            const stopY = 32;
+            const stopW = 240;
+            const stopH = 88;
+            ctx.fillStyle = state.emergencyStopped ? "#991b1b" : "#dc2626"; // Vibrant red
+            roundRect(ctx, stopX, stopY, stopW, stopH, 14, true, false);
+
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 26px -apple-system, monospace";
+            ctx.textAlign = "center";
+            ctx.fillText("STOP", stopX + stopW / 2, stopY + 44);
+
+            ctx.font = "13px -apple-system, monospace";
+            ctx.fillText("A button · or point + trigger", stopX + stopW / 2, stopY + 70);
+
+            // EXIT VR BUTTON
+            const exitX = 540;
+            const exitY = 48;
+            const exitW = 104;
+            const exitH = 56;
+            ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+            ctx.lineWidth = 1.5;
+            roundRect(ctx, exitX, exitY, exitW, exitH, 10, true, true);
+
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 16px -apple-system, monospace";
+            ctx.fillText("Exit VR", exitX + exitW / 2, exitY + 35);
+            ctx.textAlign = "left"; // Reset
+
+            texture.needsUpdate = true;
+        }
+
+        function drawSegmentBtn(ctx, x, y, w, h, text, active) {
+            ctx.fillStyle = active ? "#6366f1" : "rgba(255, 255, 255, 0.08)";
+            ctx.strokeStyle = active ? "#a5b4fc" : "rgba(255, 255, 255, 0.2)";
+            ctx.lineWidth = 1;
+            roundRect(ctx, x, y, w, h, 8, true, true);
+
+            ctx.fillStyle = active ? "#ffffff" : "#94a3b8";
+            ctx.font = "bold 14px -apple-system, monospace";
+            ctx.textAlign = "center";
+            ctx.fillText(text, x + w / 2, y + h / 2 + 5);
+            ctx.textAlign = "left";
+        }
+        // 4. RIGHT PANEL: ACTIONS BADGE
+        const rightPanel = createHoloPanel(
+            0.55, 0.28, 220, 110,
+            new THREE.Vector3(1.45, 1.35, -1.9),
+            -Math.PI / 6.5
+        );
+
+        function drawRightPanel() {
+            const { ctx, canvas: c, texture } = rightPanel;
+            ctx.clearRect(0, 0, c.width, c.height);
+
+            ctx.fillStyle = "rgba(10, 16, 28, 0.9)";
+            ctx.strokeStyle = "rgba(220, 230, 255, 0.9)";
+            ctx.lineWidth = 2.5;
+            roundRect(ctx, 4, 4, c.width - 8, c.height - 8, 16, true, true);
+
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 18px -apple-system, monospace";
+            ctx.textAlign = "center";
+            ctx.fillText("ACTIONS · B", c.width / 2, c.height / 2 + 6);
+            ctx.textAlign = "left";
+
+            texture.needsUpdate = true;
+        }
+
+        // --- Helper: Canvas Rounded Rectangle ---
+        function roundRect(ctx, x, y, width, height, radius, fill, stroke) {
+            ctx.beginPath();
+            ctx.moveTo(x + radius, y);
+            ctx.lineTo(x + width - radius, y);
+            ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+            ctx.lineTo(x + width, y + height - radius);
+            ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+            ctx.lineTo(x + radius, y + height);
+            ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+            ctx.lineTo(x, y + radius);
+            ctx.quadraticCurveTo(x, y, x + radius, y);
+            ctx.closePath();
+            if (fill) ctx.fill();
+            if (stroke) ctx.stroke();
+        }
+
+        // Render initial panel graphics
+        drawLeftPanel();
+        drawCenterPanel();
+        drawBottomPanel();
+        drawRightPanel();
+
+        // --- Interaction: Raycasting & Click Handling ---
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        async function handleBottomPanelClick(uvX, uvY) {
+            // uvX (0..1), uvY (0..1)
+            // Low button: x [0.038, 0.203], y [0.26, 0.74]
+            // Med button: x [0.219, 0.384], y [0.26, 0.74]
+            // High button: x [0.400, 0.565], y [0.26, 0.74]
+            // Stop button: x [0.638, 0.957], y [0.18, 0.82]
+            if (uvY >= 0.26 && uvY <= 0.74) {
+                if (uvX >= 0.038 && uvX <= 0.203) {
+                    state.intensity = 'LOW';
+                    state.speed = 0.3;
+                    drawBottomPanel();
+                } else if (uvX >= 0.219 && uvX <= 0.384) {
+                    state.intensity = 'MEDIUM';
+                    state.speed = 0.6;
+                    drawBottomPanel();
+                } else if (uvX >= 0.400 && uvX <= 0.565) {
+                    state.intensity = 'HIGH';
+                    state.speed = 1.0;
+                    drawBottomPanel();
+                }
+            }
+            if (uvX >= 0.638 && uvX <= 0.957 && uvY >= 0.18 && uvY <= 0.82) {
+                await triggerEmergencyStop();
+            }
+        }
+
+        window.addEventListener('click', (event) => {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObject(bottomMesh);
+            if (intersects.length > 0) {
+                const uv = intersects[0].uv;
+                handleBottomPanelClick(uv.x, uv.y);
+            }
+        });
+
+        // VR Controller Support
+        const controller1 = renderer.xr.getController(0);
+        scene.add(controller1);
+        const controller2 = renderer.xr.getController(1);
+        scene.add(controller2);
+
+        function handleControllerSelect(controller) {
+            const tempMatrix = new THREE.Matrix4();
+            tempMatrix.identity().extractRotation(controller.matrixWorld);
+            raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+            raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+            const intersects = raycaster.intersectObject(bottomMesh);
+            if (intersects.length > 0) {
+                const uv = intersects[0].uv;
+                handleBottomPanelClick(uv.x, uv.y);
+            }
+        }
+
+        controller1.addEventListener('selectstart', () => handleControllerSelect(controller1));
+        controller2.addEventListener('selectstart', () => handleControllerSelect(controller2));
+
+        // --- Web Audio & Sound Feedback ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playChime(freq = 600, duration = 0.08) {
+            try {
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+                gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start();
+                osc.stop(audioCtx.currentTime + duration);
+            } catch (e) {}
+        }
+
+        // --- Robot Command Dispatcher ---
+        async function sendLocomotion(action, speed = state.speed) {
+            playChime(750, 0.05);
+            try {
+                await fetch('/api/robot/command', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: action, speed: speed })
+                });
+            } catch (e) {
+                console.error("Locomotion dispatch failed", e);
+            }
+        }
+
+        async function triggerEmergencyStop() {
+            playChime(300, 0.25);
+            state.eStopActive = !state.eStopActive;
+            drawBottomPanel();
+            try {
+                if (state.eStopActive) {
+                    await fetch('/api/robot/command', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'emergency_stop', speed: 0.0 })
+                    });
+                } else {
+                    await fetch('/api/robot/reset-emergency', { method: 'POST' });
+                }
+            } catch (e) {
+                console.error("Emergency stop toggle failed", e);
+            }
+        }
+
+        // --- Keyboard Controls (WASD / Arrows / Space) ---
+        window.addEventListener('keydown', (e) => {
+            const key = e.key.toLowerCase();
+            if (key === 'w' || key === 'arrowup') { state.cmdFwd = 1.0; sendLocomotion('forward'); }
+            else if (key === 's' || key === 'arrowdown') { state.cmdFwd = -1.0; sendLocomotion('backward'); }
+            else if (key === 'a' || key === 'arrowleft') { state.cmdStrafe = -1.0; sendLocomotion('strafe_left'); }
+            else if (key === 'd' || key === 'arrowright') { state.cmdStrafe = 1.0; sendLocomotion('strafe_right'); }
+            else if (key === 'q') { state.cmdTurn = -1.0; sendLocomotion('turn_left'); }
+            else if (key === 'e') { state.cmdTurn = 1.0; sendLocomotion('turn_right'); }
+            else if (key === ' ') { triggerEmergencyStop(); }
+            drawLeftPanel();
+        });
+
+        window.addEventListener('keyup', (e) => {
+            const key = e.key.toLowerCase();
+            if (['w', 's', 'arrowup', 'arrowdown'].includes(key)) state.cmdFwd = 0.0;
+            if (['a', 'd', 'arrowleft', 'arrowright'].includes(key)) state.cmdStrafe = 0.0;
+            if (['q', 'e'].includes(key)) state.cmdTurn = 0.0;
+            if (![' '].includes(key)) sendLocomotion('stop');
+            drawLeftPanel();
+        });
+
+        // --- WebSocket Telemetry Loop ---
+        function initWebSocket() {
+            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(`${proto}//${location.host}/ws`);
+            ws.onopen = () => {
+                state.connected = true;
+                drawLeftPanel();
+                drawCenterPanel();
+            };
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'telemetry' && data.telemetry) {
+                        const t = data.telemetry;
+                        if (t.battery_pct !== undefined) state.battery = t.battery_pct;
+                        if (t.roll !== undefined) state.roll = t.roll;
+                        if (t.pitch !== undefined) state.pitch = t.pitch;
+                        if (t.emergency_stopped !== undefined) state.eStopActive = t.emergency_stopped;
+                        drawLeftPanel();
+                        drawCenterPanel();
+                        drawBottomPanel();
+                    }
+                } catch (e) {}
+            };
+            ws.onclose = () => {
+                state.connected = false;
+                drawLeftPanel();
+                setTimeout(initWebSocket, 2000);
+            };
+        }
+        initWebSocket();
+
+        // --- Main Render Loop ---
+        const clock = new THREE.Clock();
+        let frameCount = 0;
+        let lastFpsTime = performance.now();
+
+        renderer.setAnimationLoop(() => {
+            const delta = clock.getDelta();
+            planetGroup.rotation.y += delta * 0.05;
+            starField.rotation.y -= delta * 0.005;
+
+            // Simple FPS counter calculation
+            frameCount++;
+            const now = performance.now();
+            if (now - lastFpsTime >= 1000) {
+                state.fps = Math.round((frameCount * 1000) / (now - lastFpsTime));
+                frameCount = 0;
+                lastFpsTime = now;
+                drawCenterPanel();
+            }
+
+            renderer.render(scene, camera);
+        });
+
+        // --- Window Resize Handling ---
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>

@@ -281,6 +281,15 @@ async def get_cockpit():
     return FileResponse(html_path)
 
 
+@app.get("/cockpit/vr", tags=["Cockpit"], response_class=FileResponse)
+async def get_cockpit_vr():
+    """Serves the immersive 3D WebXR space command cockpit."""
+    html_path = STATIC_DIR / "cockpit_vr.html"
+    if not html_path.exists():
+        raise HTTPException(status_code=404, detail="VR Cockpit UI not found.")
+    return FileResponse(html_path)
+
+
 # ============================================================================
 # 1. NFC Credential Authorization Endpoints
 # ============================================================================
