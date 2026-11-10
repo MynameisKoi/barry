@@ -293,6 +293,32 @@ async def get_cockpit_vr():
     return FileResponse(html_path)
 
 
+@app.get("/api/camera/stream", tags=["Camera"])
+async def stream_camera():
+    """Streams live MJPEG video relayed directly from the DOGZILLA robot camera."""
+    import httpx
+    from fastapi.responses import StreamingResponse
+
+    target_url = "http://192.168.137.236:6500/video_feed"
+
+    async def stream_generator():
+        client = httpx.AsyncClient(timeout=None)
+        try:
+            async with client.stream("GET", target_url) as resp:
+                async for chunk in resp.aiter_bytes():
+                    yield chunk
+        except Exception:
+            pass
+        finally:
+            await client.aclose()
+
+    return StreamingResponse(
+        stream_generator(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"}
+    )
+
+
 # ============================================================================
 # 1. NFC Credential Authorization Endpoints
 # ============================================================================

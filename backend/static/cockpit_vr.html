@@ -79,6 +79,7 @@
     <script src="/static/js/VRButton.js"></script>
 </head>
 <body>
+    <img id="vr-cam-feed" src="/api/camera/stream" crossOrigin="anonymous" style="display:none;" />
     <canvas id="webgl-canvas"></canvas>
     <div id="desktop-ui">
         <div class="hud-badge">BARRY // 3D HOLOGRAPHIC COCKPIT</div>
@@ -362,11 +363,21 @@
             ctx.lineWidth = 1.5;
             roundRect(ctx, vidX, vidY, vidW, vidH, 8, true, true);
 
+            // Live Camera Feed Rendering
+            let hasLiveFrame = false;
+            const vrCamImg = document.getElementById('vr-cam-feed');
+            if (vrCamImg && (vrCamImg.naturalWidth > 0 || vrCamImg.complete)) {
+                try {
+                    ctx.drawImage(vrCamImg, vidX + 2, vidY + 2, vidW - 4, vidH - 4);
+                    hasLiveFrame = true;
+                } catch (e) {}
+            }
+
             // Video Top HUD Overlay: fps, frame age, roll, pitch
-            ctx.fillStyle = "#94a3b8";
-            ctx.font = "14px monospace";
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 14px monospace";
             ctx.fillText(`·-· ${state.fps} fps`, vidX + 16, vidY + 28);
-            ctx.fillText(`frame age ${state.frameAgeMs} ms`, vidX + 130, vidY + 28);
+            ctx.fillText(`DOGZILLA CAM`, vidX + 130, vidY + 28);
 
             const attitudeText = `ROLL ${state.roll.toFixed(1)}° · PITCH ${state.pitch.toFixed(1)}°`;
             ctx.fillText(attitudeText, vidX + vidW - 240, vidY + 28);
@@ -374,7 +385,7 @@
             // Center Crosshair Reticle
             const cx = vidX + vidW / 2;
             const cy = vidY + vidH / 2 - 10;
-            ctx.strokeStyle = "rgba(255, 255, 255, 0.4)";
+            ctx.strokeStyle = "rgba(0, 240, 255, 0.6)";
             ctx.lineWidth = 1.5;
             ctx.beginPath();
             ctx.arc(cx, cy, 18, 0, Math.PI * 2);
@@ -382,18 +393,19 @@
 
             ctx.beginPath();
             ctx.arc(cx, cy, 3, 0, Math.PI * 2);
-            ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
+            ctx.fillStyle = "rgba(0, 240, 255, 0.9)";
             ctx.fill();
 
-            // Reticle Label
-            ctx.fillStyle = "#94a3b8";
-            ctx.font = "bold 15px monospace";
-            ctx.textAlign = "center";
-            ctx.fillText("[ LIVE ROBOT CAMERA ]", cx, cy + 54);
+            if (!hasLiveFrame) {
+                ctx.fillStyle = "#94a3b8";
+                ctx.font = "bold 15px monospace";
+                ctx.textAlign = "center";
+                ctx.fillText("[ DOGZILLA LIVE OPTICS ]", cx, cy + 54);
 
-            ctx.font = "13px -apple-system, monospace";
-            ctx.fillText("MJPEG stream · frame scales to stream aspect", cx, cy + 78);
-            ctx.textAlign = "left"; // Reset
+                ctx.font = "13px -apple-system, monospace";
+                ctx.fillText("Relaying 640x480 MJPEG · Port 6500", cx, cy + 78);
+                ctx.textAlign = "left";
+            }
 
             texture.needsUpdate = true;
         }
@@ -714,24 +726,92 @@
         }
         initWebSocket();
 
+        // --- WebXR Controller Thumbstick / Joystick Teleop ---
+        let lastJoystickSendTime = 0;
+        let isJoystickMoving = false;
+
+        function handleXRThumbsticks() {
+            const session = renderer.xr.getSession();
+            if (!session) return;
+
+            let fwd = 0;
+            let strafe = 0;
+            let turn = 0;
+
+            for (const source of session.inputSources) {
+                if (!source || !source.gamepad) continue;
+                const gp = source.gamepad;
+                const axes = gp.axes;
+                if (!axes || axes.length === 0) continue;
+
+                const joyX = axes.length >= 4 ? axes[2] : (axes[0] || 0);
+                const joyY = axes.length >= 4 ? axes[3] : (axes[1] || 0);
+
+                if (source.handedness === 'left' || source.handedness === 'none') {
+                    if (Math.abs(joyY) > 0.18) fwd = -joyY;
+                    if (Math.abs(joyX) > 0.18) strafe = joyX;
+                } else if (source.handedness === 'right') {
+                    if (Math.abs(joyX) > 0.18) turn = joyX;
+                }
+            }
+
+            state.cmdFwd = fwd;
+            state.cmdStrafe = strafe;
+            state.cmdTurn = turn;
+
+            const now = performance.now();
+            if (now - lastJoystickSendTime >= 120) {
+                if (Math.abs(fwd) > 0.2) {
+                    sendLocomotion(fwd > 0 ? 'forward' : 'backward', Math.abs(fwd) * state.speed);
+                    isJoystickMoving = true;
+                    lastJoystickSendTime = now;
+                    drawLeftPanel();
+                } else if (Math.abs(strafe) > 0.2) {
+                    sendLocomotion(strafe > 0 ? 'strafe_right' : 'strafe_left', Math.abs(strafe) * state.speed);
+                    isJoystickMoving = true;
+                    lastJoystickSendTime = now;
+                    drawLeftPanel();
+                } else if (Math.abs(turn) > 0.2) {
+                    sendLocomotion(turn > 0 ? 'turn_right' : 'turn_left', Math.abs(turn) * state.speed);
+                    isJoystickMoving = true;
+                    lastJoystickSendTime = now;
+                    drawLeftPanel();
+                } else if (isJoystickMoving) {
+                    sendLocomotion('stop', 0.0);
+                    isJoystickMoving = false;
+                    lastJoystickSendTime = now;
+                    drawLeftPanel();
+                }
+            }
+        }
+
         // --- Main Render Loop ---
         const clock = new THREE.Clock();
         let frameCount = 0;
         let lastFpsTime = performance.now();
+        let lastVideoDrawTime = 0;
 
         renderer.setAnimationLoop(() => {
             const delta = clock.getDelta();
             planetGroup.rotation.y += delta * 0.05;
             starField.rotation.y -= delta * 0.005;
 
+            // Handle Quest controller thumbstick teleop in VR
+            handleXRThumbsticks();
+
+            // Refresh video texture at ~25 FPS
+            const now = performance.now();
+            if (now - lastVideoDrawTime >= 40) {
+                drawCenterPanel();
+                lastVideoDrawTime = now;
+            }
+
             // Simple FPS counter calculation
             frameCount++;
-            const now = performance.now();
             if (now - lastFpsTime >= 1000) {
                 state.fps = Math.round((frameCount * 1000) / (now - lastFpsTime));
                 frameCount = 0;
                 lastFpsTime = now;
-                drawCenterPanel();
             }
 
             renderer.render(scene, camera);

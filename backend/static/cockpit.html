@@ -869,13 +869,11 @@
 
         function reloadStream() {
             const img = document.getElementById('camera-stream-img');
-            const token = getCameraToken();
-            if (!token) {
-                logEvent('Camera token missing: open /cockpit?camera_token=<CAMERA_API_KEY>', 'system');
-                return;
-            }
-            img.onerror = () => logEvent('Camera stream unavailable or token rejected', 'system');
-            img.src = '/api/v1/camera/stream?token=' + encodeURIComponent(token) + '&t=' + Date.now();
+            img.onerror = () => {
+                logEvent('Camera relay retrying direct stream...', 'system');
+                img.src = 'http://192.168.137.236:6500/video_feed';
+            };
+            img.src = '/api/camera/stream?t=' + Date.now();
         }
 
         function logEvent(text, cls = 'system') {
@@ -943,6 +941,7 @@
         // Initialize on load
         window.addEventListener('DOMContentLoaded', () => {
             initWebSocket();
+            reloadStream();
         });
     </script>
 </body>
