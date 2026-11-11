@@ -250,7 +250,7 @@ def test_api_gateway_and_websocket_share_the_same_loop_results(monkeypatch):
         service.stop()
 
 
-def test_llm_detection_tool_reads_loop_results_without_running_another_inference():
+def test_llm_look_and_tell_me_what_you_see_uses_the_live_result_through_the_real_gateway():
     service, detector, _ = make_service(detector=CountingDetector(labels=("chair", "person")))
     try:
         wait_for_result(service)
@@ -269,6 +269,24 @@ def test_llm_detection_tool_reads_loop_results_without_running_another_inference
         assert [item["label"] for item in result] == ["chair", "person"]
         assert all("age_s" in item for item in result)
         assert detector.calls == calls_before_llm
+    finally:
+        service.stop()
+
+
+def test_a_detector_that_raises_never_breaks_gateway_detections():
+    service, detector, _ = make_service(detector=CountingDetector(fail=True), fps=30)
+    adapter = CommandGatewayAdapter(gateway_for(LiveDetections(lambda: service)))
+    try:
+        deadline = time.monotonic() + 2
+        while detector.calls == 0 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert detector.calls > 0
+
+        detections = run(adapter.detections())
+        status = run(adapter.status())
+
+        assert detections == []
+        assert status["detector"] == UNAVAILABLE
     finally:
         service.stop()
 
