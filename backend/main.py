@@ -188,7 +188,14 @@ async def lifespan(app: FastAPI):
         except asyncio.TimeoutError:
             logger.error("Camera did not start within 10 s; continuing without it")
 
+    detection_task = asyncio.create_task(detection_service.run_camera(app.state.camera))
     yield
+
+    detection_task.cancel()
+    try:
+        await detection_task
+    except asyncio.CancelledError:
+        pass
 
     await app.state.robot_relay.aclose()
 
@@ -236,7 +243,9 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(missions_router)
 app.include_router(create_voice_router(QuestRelayAuth.from_env()))  # Phase 5 voice prototype, dry run
-app.include_router(create_llm_router(QuestRelayAuth.from_env()))  # Phase 6 LLM planner prototype, dry run
+app.include_router(create_llm_router(
+    QuestRelayAuth.from_env(), detection_provider=detection_service.detections
+))  # LLM receives live YOLO detections; command gateway remains dry-run.
 # Camera Feed API v1: /api/v1/camera/{stream,snapshot,status}, token-protected
 # via CAMERA_API_KEY (fails closed with 503 if unset).
 app.include_router(create_camera_router(lambda: app.state.camera, CameraAuth.from_env()))

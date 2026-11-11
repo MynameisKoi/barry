@@ -7,7 +7,7 @@ at once; poll ``GET /task`` for the steps and the final ``answer``.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -23,14 +23,30 @@ class PlanRequest(BaseModel):
     goal: str = Field(min_length=1, max_length=500)
 
 
+class DetectionContextGateway:
+    """Keep the command adapter while sourcing observations from live camera inference."""
+    def __init__(self, command_gateway: GatewayLike, detection_provider: Callable[[], list[Any]]):
+        self._commands = command_gateway
+        self._detection_provider = detection_provider
+
+    async def detections(self) -> list[Any]:
+        return self._detection_provider()
+
+    def __getattr__(self, name: str):
+        return getattr(self._commands, name)
+
+
 def create_llm_router(
     auth: QuestRelayAuth | None = None,
     brain: Brain | None = None,
     gateway: GatewayLike | None = None,
+    detection_provider: Callable[[], list[Any]] | None = None,
     limits: LoopLimits | None = None,
 ) -> APIRouter:
     # TODO(gateway #57): default to the real CommandGateway instead of the dry-run recorder.
-    runner = TaskRunner(gateway or DryRunGateway(), brain or create_brain(), limits or LoopLimits.from_env())
+    command_gateway = gateway or DryRunGateway()
+    live_gateway = DetectionContextGateway(command_gateway, detection_provider) if detection_provider else command_gateway
+    runner = TaskRunner(live_gateway, brain or create_brain(), limits or LoopLimits.from_env())
     router = APIRouter(
         prefix="/api/v1/llm",
         tags=["LLM"],
