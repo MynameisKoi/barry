@@ -12,3 +12,4 @@ pyserial>=3.5
 onnxruntime>=1.17.0
 openai>=1.0.0
 python-multipart>=0.0.9
+anthropic>=2.8.0

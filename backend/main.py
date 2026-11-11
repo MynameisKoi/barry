@@ -57,6 +57,7 @@ from backend.robot.relay_router import QuestRelayAuth, create_robot_relay_router
 from backend.robot.router import create_robot_router
 from backend.services.mission import mission_service
 from backend.voice.router import create_voice_router
+from backend.ai.control.router import create_llm_router
 
 # Logging setup
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -235,6 +236,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(missions_router)
 app.include_router(create_voice_router(QuestRelayAuth.from_env()))  # Phase 5 voice prototype, dry run
+app.include_router(create_llm_router(QuestRelayAuth.from_env()))  # Phase 6 LLM planner prototype, dry run
 # Camera Feed API v1: /api/v1/camera/{stream,snapshot,status}, token-protected
 # via CAMERA_API_KEY (fails closed with 503 if unset).
 app.include_router(create_camera_router(lambda: app.state.camera, CameraAuth.from_env()))
