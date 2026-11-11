@@ -133,7 +133,7 @@
     </div>
     <div id="command-status" role="status" aria-live="polite">NOT CONNECTED · Enter the robot key</div>
     <div id="keyboard-hint">
-        🎮 <b>Controls:</b> WASD / Arrows to Drive · Space for E-Stop · Click / Drag to Look
+        🎮 <b>Controls:</b> VR laser + trigger on virtual joystick · WASD / Arrows on desktop · Space for E-Stop
     </div>
 
     <script>
@@ -158,6 +158,7 @@
             turn: 0.0,
             eStopActive: false
         };
+        const virtualJoystickAxes = { forward: 0, turn: 0 };
 
         const ROBOT_KEY_STORAGE_KEY = "barry.robotApiKey";
         const robotApiKeyInput = document.getElementById("robot-api-key");
@@ -457,22 +458,66 @@
             ctx.lineTo(c.width - 32, 290);
             ctx.stroke();
 
-            // COMMAND SENT Header
+            // Virtual VR joystick. The controller laser moves the knob while its
+            // trigger is held; a neutral stick sends an explicit stop.
             ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 22px -apple-system, monospace";
-            ctx.fillText("COMMAND SENT", 32, 335);
+            ctx.font = "bold 20px -apple-system, monospace";
+            ctx.fillText("VR JOYSTICK", 32, 335);
+            ctx.fillStyle = "#94a3b8";
+            ctx.font = "14px -apple-system, monospace";
+            ctx.fillText("AIM LASER · HOLD TRIGGER · RELEASE TO STOP", 32, 360);
 
-            // Command Sliders: Forward, Strafe, Turn
-            drawCommandSlider(ctx, 32, 365, "Forward", state.forward);
-            drawCommandSlider(ctx, 32, 435, "Strafe", state.strafe);
-            drawCommandSlider(ctx, 32, 505, "Turn", state.turn);
+            const stickX = 170;
+            const stickY = 480;
+            const stickRadius = 92;
+            ctx.fillStyle = "rgba(0, 240, 255, 0.08)";
+            ctx.strokeStyle = "rgba(0, 240, 255, 0.75)";
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(stickX, stickY, stickRadius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.25)";
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(stickX - stickRadius, stickY);
+            ctx.lineTo(stickX + stickRadius, stickY);
+            ctx.moveTo(stickX, stickY - stickRadius);
+            ctx.lineTo(stickX, stickY + stickRadius);
+            ctx.stroke();
+
+            const knobX = stickX - virtualJoystickAxes.turn * stickRadius;
+            const knobY = stickY - virtualJoystickAxes.forward * stickRadius;
+            ctx.fillStyle = "rgba(0, 240, 255, 0.75)";
+            ctx.strokeStyle = "#ffffff";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(knobX, knobY, 30, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.fillStyle = "#cbd5e1";
+            ctx.font = "bold 13px -apple-system, monospace";
+            ctx.textAlign = "center";
+            ctx.fillText("FORWARD", stickX, stickY - stickRadius - 12);
+            ctx.fillText("BACK", stickX, stickY + stickRadius + 21);
+            ctx.fillText("TURN LEFT", stickX - stickRadius - 35, stickY + 5);
+            ctx.fillText("TURN RIGHT", stickX + stickRadius + 38, stickY + 5);
+            ctx.textAlign = "left";
+
+            ctx.fillStyle = "#94a3b8";
+            ctx.font = "14px -apple-system, monospace";
+            ctx.fillText(`FORWARD  ${state.forward.toFixed(2)}`, 320, 430);
+            ctx.fillText(`STRAFE   ${state.strafe.toFixed(2)}`, 320, 462);
+            ctx.fillText(`TURN     ${state.turn.toFixed(2)}`, 320, 494);
 
             ctx.fillStyle = state.commandStatus === "ACCEPTED" || state.commandStatus === "SESSION_ACTIVE" ? "#00ff88" : "#fbbf24";
             ctx.font = "bold 16px -apple-system, monospace";
-            ctx.fillText(`RESULT · ${state.commandStatus}`, 32, 565);
+            ctx.fillText(`RESULT · ${state.commandStatus}`, 320, 542);
             ctx.fillStyle = "#cbd5e1";
             ctx.font = "14px -apple-system, monospace";
-            ctx.fillText(state.commandMessage, 32, 588, c.width - 64);
+            ctx.fillText(state.commandMessage, 320, 566, 190);
 
             // Footer info dot
             ctx.fillStyle = "#6366f1"; // Purple-blue indicator
@@ -487,27 +532,6 @@
             texture.needsUpdate = true;
         }
 
-        function drawCommandSlider(ctx, x, y, label, val) {
-            ctx.fillStyle = "#94a3b8";
-            ctx.font = "16px -apple-system, monospace";
-            ctx.fillText(label, x, y + 14);
-
-            const barX = x + 120;
-            const barW = 280;
-            const barY = y + 4;
-            ctx.fillStyle = "rgba(255, 255, 255, 0.2)";
-            roundRect(ctx, barX, barY, barW, 10, 5, true, false);
-
-            // Slider thumb indicator at center + offset
-            const clamped = Math.max(-1, Math.min(1, val));
-            const thumbX = barX + (barW / 2) + (clamped * (barW / 2));
-            ctx.fillStyle = "#ffffff";
-            roundRect(ctx, thumbX - 4, barY - 4, 8, 18, 4, true, false);
-
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 16px -apple-system, monospace";
-            ctx.fillText(val.toFixed(2), barX + barW + 24, y + 14);
-        }
         // 2. CENTER PANEL: LIVE ROBOT CAMERA (Forward Optics Display)
         const centerPanel = createHoloPanel(
             2.1, 1.4, 840, 560,
@@ -820,6 +844,93 @@
         // --- Interaction: Raycasting & Click Handling ---
         const raycaster = new THREE.Raycaster();
         const mouse = new THREE.Vector2();
+        const virtualStickCenter = { x: 170, y: 480, radius: 92 };
+        let virtualJoystickOwner = null;
+        let virtualJoystickLastSentAt = 0;
+        let virtualJoystickHasSentMotion = false;
+
+        function virtualStickHit(ray) {
+            const hit = ray.intersectObject(leftPanel.mesh)[0];
+            if (!hit || !hit.uv) return null;
+            const x = hit.uv.x * leftPanel.canvas.width;
+            const y = (1 - hit.uv.y) * leftPanel.canvas.height;
+            return { hit, x, y };
+        }
+
+        function updateVirtualStickFromHit(pointer, requireOnPad = false) {
+            if (!pointer) {
+                virtualJoystickAxes.forward = 0;
+                virtualJoystickAxes.turn = 0;
+                drawLeftPanel();
+                return;
+            }
+            let dx = (pointer.x - virtualStickCenter.x) / virtualStickCenter.radius;
+            let dy = (virtualStickCenter.y - pointer.y) / virtualStickCenter.radius;
+            const length = Math.hypot(dx, dy);
+            if (requireOnPad && length > 1.35) return false;
+            if (length > 1) {
+                dx /= length;
+                dy /= length;
+            }
+            if (Math.abs(dx) < 0.12) dx = 0;
+            if (Math.abs(dy) < 0.12) dy = 0;
+            // Screen-right turns the robot right; positive MotionCommand.turn is left.
+            virtualJoystickAxes.turn = -dx;
+            virtualJoystickAxes.forward = dy;
+            drawLeftPanel();
+            return true;
+        }
+
+        function setVirtualJoystickOwner(owner, pointer) {
+            if (virtualJoystickOwner || !updateVirtualStickFromHit(pointer, true)) return false;
+            virtualJoystickOwner = owner;
+            virtualJoystickLastSentAt = 0;
+            return true;
+        }
+
+        function releaseVirtualJoystick(owner) {
+            if (virtualJoystickOwner !== owner) return;
+            virtualJoystickOwner = null;
+            virtualJoystickAxes.forward = 0;
+            virtualJoystickAxes.turn = 0;
+            virtualJoystickLastSentAt = performance.now();
+            const hadMotion = virtualJoystickHasSentMotion;
+            virtualJoystickHasSentMotion = false;
+            drawLeftPanel();
+            if (hadMotion) sendMotionAxes(0, 0, 0);
+        }
+
+        function updateVirtualJoystickControls() {
+            if (!virtualJoystickOwner) return;
+            if (state.eStopActive) {
+                virtualJoystickOwner = null;
+                virtualJoystickAxes.forward = 0;
+                virtualJoystickAxes.turn = 0;
+                virtualJoystickHasSentMotion = false;
+                drawLeftPanel();
+                return;
+            }
+            if (virtualJoystickOwner !== "mouse") {
+                const controller = virtualJoystickOwner;
+                const tempMatrix = new THREE.Matrix4();
+                tempMatrix.identity().extractRotation(controller.matrixWorld);
+                raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+                raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+                updateVirtualStickFromHit(virtualStickHit(raycaster));
+            }
+
+            const now = performance.now();
+            const moving = Math.abs(virtualJoystickAxes.forward) > 0 || Math.abs(virtualJoystickAxes.turn) > 0;
+            if (now - virtualJoystickLastSentAt >= 120 && (moving || virtualJoystickHasSentMotion)) {
+                sendMotionAxes(
+                    virtualJoystickAxes.forward * state.speed,
+                    0,
+                    virtualJoystickAxes.turn * state.speed
+                );
+                virtualJoystickHasSentMotion = moving;
+                virtualJoystickLastSentAt = now;
+            }
+        }
 
         async function handleBottomPanelClick(uvX, uvY) {
             // Intensity Buttons
@@ -942,16 +1053,33 @@
         controller2.add(buildLaserPointer());
         scene.add(controller2);
 
-        function handleControllerSelect(controller) {
+        function setControllerRay(controller) {
             const tempMatrix = new THREE.Matrix4();
             tempMatrix.identity().extractRotation(controller.matrixWorld);
             raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
             raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+        }
+
+        function handleControllerSelectStart(controller) {
+            setControllerRay(controller);
+            const joystickPointer = virtualStickHit(raycaster);
+            if (joystickPointer && setVirtualJoystickOwner(controller, joystickPointer)) return;
             dispatchRaycastInteraction(raycaster);
         }
 
-        controller1.addEventListener('selectstart', () => handleControllerSelect(controller1));
-        controller2.addEventListener('selectstart', () => handleControllerSelect(controller2));
+        function handleControllerSelectEnd(controller) {
+            releaseVirtualJoystick(controller);
+        }
+
+        controller1.addEventListener('selectstart', () => handleControllerSelectStart(controller1));
+        controller2.addEventListener('selectstart', () => handleControllerSelectStart(controller2));
+        controller1.addEventListener('selectend', () => handleControllerSelectEnd(controller1));
+        controller2.addEventListener('selectend', () => handleControllerSelectEnd(controller2));
+        renderer.xr.addEventListener('sessionend', () => {
+            if (virtualJoystickOwner && virtualJoystickOwner !== "mouse") {
+                releaseVirtualJoystick(virtualJoystickOwner);
+            }
+        });
 
         // Desktop 360 Drag Look Controls
         let isDragging = false;
@@ -963,6 +1091,14 @@
         window.addEventListener('mousedown', (e) => {
             if (e.target.closest && e.target.closest('#robot-auth')) return;
             if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'A') {
+                mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+                mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+                raycaster.setFromCamera(mouse, camera);
+                const joystickPointer = virtualStickHit(raycaster);
+                if (joystickPointer && setVirtualJoystickOwner("mouse", joystickPointer)) {
+                    e.preventDefault();
+                    return;
+                }
                 isDragging = true;
                 prevMouseX = e.clientX;
                 prevMouseY = e.clientY;
@@ -970,6 +1106,13 @@
         });
 
         window.addEventListener('mousemove', (e) => {
+            if (virtualJoystickOwner === "mouse") {
+                mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+                mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+                raycaster.setFromCamera(mouse, camera);
+                updateVirtualStickFromHit(virtualStickHit(raycaster));
+                return;
+            }
             if (isDragging && !renderer.xr.isPresenting) {
                 const dx = e.clientX - prevMouseX;
                 const dy = e.clientY - prevMouseY;
@@ -981,7 +1124,10 @@
             }
         });
 
-        window.addEventListener('mouseup', () => { isDragging = false; });
+        window.addEventListener('mouseup', () => {
+            isDragging = false;
+            releaseVirtualJoystick("mouse");
+        });
 
         // --- Web Audio & Sound Feedback ---
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -1082,6 +1228,11 @@
             motionGeneration++;
             pendingMotion = null;
             state.eStopActive = true;
+            virtualJoystickOwner = null;
+            virtualJoystickAxes.forward = 0;
+            virtualJoystickAxes.turn = 0;
+            virtualJoystickHasSentMotion = false;
+            drawLeftPanel();
             drawBottomPanel();
             const result = await sendApiCommand("/api/v1/emergency-stop", { source: "emergency" });
             const resultStatus = String(result?.payload?.status || "").toUpperCase();
@@ -1188,65 +1339,6 @@
         }
         initWebSocket();
 
-        // --- WebXR Controller Thumbstick / Joystick Teleop ---
-        let lastJoystickSendTime = 0;
-        let isJoystickMoving = false;
-
-        function handleXRThumbsticks() {
-            const session = renderer.xr.getSession();
-            if (!session) return;
-
-            let fwd = 0;
-            let strafe = 0;
-            let turn = 0;
-
-            for (const source of session.inputSources) {
-                if (!source || !source.gamepad) continue;
-                const gp = source.gamepad;
-                const axes = gp.axes;
-                if (!axes || axes.length === 0) continue;
-
-                const joyX = axes.length >= 4 ? axes[2] : (axes[0] || 0);
-                const joyY = axes.length >= 4 ? axes[3] : (axes[1] || 0);
-
-                if (source.handedness === 'left' || source.handedness === 'none') {
-                    if (Math.abs(joyY) > 0.18) fwd = -joyY;
-                    if (Math.abs(joyX) > 0.18) strafe = joyX;
-                } else if (source.handedness === 'right') {
-                    if (Math.abs(joyX) > 0.18) turn = joyX;
-                }
-            }
-
-            state.cmdFwd = fwd;
-            state.cmdStrafe = strafe;
-            state.cmdTurn = turn;
-
-            const now = performance.now();
-            if (now - lastJoystickSendTime >= 120) {
-                if (Math.abs(fwd) > 0.2) {
-                    sendLocomotion(fwd > 0 ? 'forward' : 'backward', Math.abs(fwd) * state.speed);
-                    isJoystickMoving = true;
-                    lastJoystickSendTime = now;
-                    drawLeftPanel();
-                } else if (Math.abs(strafe) > 0.2) {
-                    sendLocomotion(strafe > 0 ? 'strafe_right' : 'strafe_left', Math.abs(strafe) * state.speed);
-                    isJoystickMoving = true;
-                    lastJoystickSendTime = now;
-                    drawLeftPanel();
-                } else if (Math.abs(turn) > 0.2) {
-                    sendLocomotion(turn > 0 ? 'turn_right' : 'turn_left', Math.abs(turn) * state.speed);
-                    isJoystickMoving = true;
-                    lastJoystickSendTime = now;
-                    drawLeftPanel();
-                } else if (isJoystickMoving) {
-                    sendLocomotion('stop', 0.0);
-                    isJoystickMoving = false;
-                    lastJoystickSendTime = now;
-                    drawLeftPanel();
-                }
-            }
-        }
-
         // --- Main Render Loop ---
         const clock = new THREE.Clock();
         let frameCount = 0;
@@ -1258,8 +1350,8 @@
             planetGroup.rotation.y += delta * 0.05;
             starField.rotation.y -= delta * 0.005;
 
-            // Handle Quest controller thumbstick teleop in VR
-            handleXRThumbsticks();
+            // Drive from the in-world virtual joystick while its control is held.
+            updateVirtualJoystickControls();
 
             // Refresh video texture at ~25 FPS
             const now = performance.now();
