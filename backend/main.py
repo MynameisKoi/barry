@@ -237,13 +237,30 @@ app = FastAPI(
 
 @app.middleware("http")
 async def cancel_llm_for_legacy_hand_controls(request, call_next):
-    """Bridge existing laptop hand routes to the shared gateway preemption hook."""
-    if request.method == "POST" and request.url.path in {
+    """Bridge legacy and Quest hand/safety routes to the gateway preemption hook."""
+    path = request.url.path
+    legacy_paths = {
         "/api/robot/command", "/api/robot/stop", "/api/robot/reset-emergency",
-    }:
+    }
+    relay_sources = {
+        "/api/v1/motion": "hand",
+        "/api/v1/motion/discrete": "hand",
+        "/api/v1/stop": "hand",
+        "/api/v1/emergency-stop": "emergency",
+    }
+    if request.method == "POST" and path in legacy_paths:
         gateway = getattr(app.state, "gateway", None)
         if gateway is not None:
             gateway.notify_preempt("hand")
+    elif request.method == "POST" and path in relay_sources:
+        try:
+            QuestRelayAuth.from_env()(request)
+        except HTTPException:
+            pass  # Let the route dependency return the authentication response.
+        else:
+            gateway = getattr(app.state, "gateway", None)
+            if gateway is not None:
+                gateway.notify_preempt(relay_sources[path])
     return await call_next(request)
 
 # Enable CORS for local development and VR/Unity network connections

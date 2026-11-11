@@ -67,7 +67,6 @@ class CommandGatewayAdapter:
         return self._dict(await self.gateway.run_turn(degrees, source=self.source))
 
     async def stop(self, *, source: str) -> Any:
-        if conflict := self._conflict(): return conflict
         return self._dict(await self.gateway.stop(source=self.source))
 
     async def set_style(self, intensity: str, gait: str, *, source: str) -> Any:
@@ -97,6 +96,5 @@ class VoiceGatewayAdapter(CommandGatewayAdapter):
         return self._dict(await self.gateway.motion(command, source="voice"))
 
     async def emergency_stop(self) -> dict[str, Any]:
-        if conflict := self._conflict(): return conflict
         return self._dict(await self.gateway.emergency_stop(source="voice"))
 
