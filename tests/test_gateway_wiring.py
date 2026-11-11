@@ -251,8 +251,6 @@ async def test_unauthenticated_quest_relay_does_not_preempt_llm(monkeypatch):
     })
     await main.cancel_llm_for_legacy_hand_controls(request, lambda _: asyncio.sleep(0, result=Response()))
     assert notifications == []
-
-
 class SlowBrain:
     def ensure_ready(self):
         pass
