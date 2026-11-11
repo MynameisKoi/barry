@@ -15,6 +15,9 @@ from backend.robot.relay import RobotApiRelay
 logger = logging.getLogger(__name__)
 LogEvent = Callable[..., Any]
 QUEST_API_KEY_ENV = "QUEST_API_KEY"
+# Safety paths that must get through while a motion request is in flight: the dedicated
+# priority client, never queued behind motion.
+PRIORITY_PATHS = frozenset({protocol.PATH_STOP, protocol.PATH_EMERGENCY_STOP})
 
 
 class QuestRelayAuth:
@@ -74,7 +77,7 @@ def create_robot_relay_router(
         response = await get_relay().forward(
             request,
             path,
-            priority_stop=path == protocol.PATH_STOP,
+            priority_stop=path in PRIORITY_PATHS,
         )
         if audit_action is not None and audit_action != "motion":
             audit(
@@ -94,19 +97,10 @@ def create_robot_relay_router(
             motion_active = False
         return response
 
-    @router.post("/motion")
-    async def motion(request: Request):
+    async def relay_motion(request: Request, path: str, moving: bool | None) -> Response:
+        """Relay a motion command; audit only start/stop transitions and non-2xx replies."""
         nonlocal motion_active
-        try:
-            command = await request.json()
-            moving = any(
-                isinstance(command.get(axis), (int, float)) and command.get(axis) != 0
-                for axis in ("forward", "strafe", "turn")
-            )
-        except (ValueError, AttributeError):
-            moving = None
-
-        response = await forward(request, protocol.PATH_MOTION)
+        response = await forward(request, path)
         if not 200 <= response.status_code < 300:
             audit(f"Relayed motion to Pi Robot API; HTTP {response.status_code}.")
         elif moving is not None:
@@ -118,10 +112,58 @@ def create_robot_relay_router(
                 audit(f"Relayed motion stopped to Pi Robot API; HTTP {response.status_code}.")
         return response
 
+    @router.post("/motion")
+    async def motion(request: Request):
+        try:
+            command = await request.json()
+            moving = any(
+                isinstance(command.get(axis), (int, float)) and command.get(axis) != 0
+                for axis in ("forward", "strafe", "turn")
+            )
+        except (ValueError, AttributeError):
+            moving = None
+        return await relay_motion(request, protocol.PATH_MOTION, moving)
+
+    @router.post("/motion/discrete")
+    async def motion_discrete(request: Request):
+        # Every discrete direction is a movement (there is no "stop" direction), so a request
+        # that names one is "moving"; a body we can't read is relayed unaudited unless it fails.
+        try:
+            command = await request.json()
+            moving = True if isinstance(command, dict) and command.get("direction") else None
+        except ValueError:
+            moving = None
+        return await relay_motion(request, protocol.PATH_MOTION_DISCRETE, moving)
+
     @router.post("/stop")
     async def stop(request: Request):
         nonlocal motion_active
         response = await forward(request, protocol.PATH_STOP, "stop")
+        if 200 <= response.status_code < 300:
+            motion_active = False
+        return response
+
+    @router.post("/emergency-stop")
+    async def emergency_stop(request: Request):
+        nonlocal motion_active
+        # Priority lane (PRIORITY_PATHS) and audited on every request, like /stop.
+        response = await forward(request, protocol.PATH_EMERGENCY_STOP, "emergency_stop")
+        if 200 <= response.status_code < 300:
+            motion_active = False
+        return response
+
+    @router.post("/emergency-stop/reset")
+    async def emergency_stop_reset(request: Request):
+        return await forward(request, protocol.PATH_EMERGENCY_RESET, "emergency_stop_reset")
+
+    @router.post("/posture")
+    async def posture(request: Request):
+        return await forward(request, protocol.PATH_POSTURE)
+
+    @router.post("/reset")
+    async def reset(request: Request):
+        nonlocal motion_active
+        response = await forward(request, protocol.PATH_RESET, "reset")
         if 200 <= response.status_code < 300:
             motion_active = False
         return response
