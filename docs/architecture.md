@@ -99,9 +99,13 @@ The system runs as two services:
 
 ---
 
-## Robot API (Pi)
+## Robot API (Pi and laptop)
 
-The Robot API mirrors the laptop's robot paths and response shapes, so `RemoteRobotClient` is a thin HTTP wrapper.
+The Pi serves the v1 Robot API on port 8100 (`backend/robot/server.py`). The Quest does not call it directly. It calls the laptop's `/api/v1/*` relay, which forwards to the Pi. The current routes are in [api-specification.md](api-specification.md).
+
+### Legacy: web cockpit, to be retired in Phase 2 cleanup
+
+The table below lists the older `/api/robot/*` routes on the laptop (`backend/robot/router.py`, mounted in `backend/main.py`). The web cockpit still uses them. The Quest must use `/api/v1/*` instead. These routes will be removed once the cockpit moves to `/api/v1/*`.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
@@ -138,6 +142,7 @@ The two-service split above is the target design. On the laptop, `backend/robot/
 **Done on `main`:**
 - **Pi Robot API v1**: `backend/robot/server.py`, `protocol.py`, `config.py`, `factory.py`, `remote.py`. It has control sessions, command sequence numbers, the watchdog, priority stop and the emergency-stop latch. Routes are under `/api/v1/*` (see [api-specification.md](api-specification.md)).
 - **Laptop `/api/v1` relay**: `backend/robot/relay.py` and `relay_router.py`, authenticated with `QUEST_API_KEY` (#54). The Quest sends its key as `X-Robot-Key` (#55).
+- **Relay routes for emergency stop, reset, posture, reset and discrete motion** (#69). Emergency stop uses the priority lane, like `/stop`.
 - **Pi deployment files**: `deploy/pi/` (systemd unit, `robot.env.example`, README) (#64).
 - **Windows PC-VR build** for Quest Link (#61): `Barry → Build PC-VR (Windows)` in the Unity editor, and `frontend/barry-vr/build_pcvr.sh`.
 - **Voice prototype, dry run** (#60): `POST /api/v1/voice/command` (OpenAI transcription, fixed command matching). Nothing is sent to the robot.
@@ -148,7 +153,6 @@ The two-service split above is the target design. On the laptop, `backend/robot/
 - **Command metadata** (#58): `X-Command-Source` and `X-Command-Id` headers, for audit.
 
 **Not yet built:**
-- Relay routes for `emergency-stop`, `emergency-stop/reset`, `posture`, `reset` and `motion/discrete` (Phase 1, item 5 of the build plan).
 - Emergency mode (Phase 4) and the robot camera (Phase 7).
 - Mission authorization on movement.
 - `requirements-pi.txt`. The Pi install list is in `deploy/pi/README.md`.

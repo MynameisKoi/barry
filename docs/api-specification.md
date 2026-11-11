@@ -21,7 +21,7 @@ The laptop backend is `backend.main:app`. The Pi API is `backend.robot.server:ap
 
 | Route group | Header | Secret | Missing or wrong key | Key not configured |
 |---|---|---|---|---|
-| Quest relay, voice, LLM (`/api/v1/session`, `/api/v1/motion`, `/api/v1/stop`, `/api/v1/movement-style`, `/api/v1/actions*`, `/api/v1/telemetry`, `/api/v1/status`, `/api/v1/voice/*`, `/api/v1/llm/*`) | `X-Robot-Key` | `QUEST_API_KEY` on the laptop | 401 | 503 (fails closed) |
+| Quest relay, voice, LLM (`/api/v1/session`, `/api/v1/motion`, `/api/v1/motion/discrete`, `/api/v1/stop`, `/api/v1/emergency-stop`, `/api/v1/emergency-stop/reset`, `/api/v1/posture`, `/api/v1/reset`, `/api/v1/movement-style`, `/api/v1/actions*`, `/api/v1/telemetry`, `/api/v1/status`, `/api/v1/voice/*`, `/api/v1/llm/*`) | `X-Robot-Key` | `QUEST_API_KEY` on the laptop | 401 | 503 (fails closed) |
 | Camera (`/api/v1/camera/*`) | `X-Camera-Key` header, or `?token=` query parameter | `CAMERA_API_KEY` on the laptop | 401 | 503 (fails closed) |
 | Pi Robot API (all routes except `/healthz`) | `X-Robot-Key` | `ROBOT_API_KEY`, shared by laptop and Pi | 401 | 401 on every authenticated route; in `dogzilla` mode the app fails on its first request with `ROBOT_API_KEY is required` (see `backend/robot/server.py`) |
 
@@ -43,14 +43,19 @@ The laptop relays these routes to the Pi unchanged, so the Quest uses the same r
 | POST | `/api/v1/session` | | `X-Control-Session` | Acquire or renew the control lease |
 | DELETE | `/api/v1/session` | `X-Control-Session` | | Release the lease and stop |
 | POST | `/api/v1/motion` | `X-Control-Session`, `X-Command-Seq`, `X-Command-Sent-At` | same | Analog joystick move; body in section 2.2 |
-| POST | `/api/v1/stop` | none | none | Priority stop; no session or sequence |
+| POST | `/api/v1/motion/discrete` | `X-Control-Session`, `X-Command-Seq`, `X-Command-Sent-At` | same | One directional move; body in section 2.2 |
+| POST | `/api/v1/stop` | none | none | Priority stop; no session or sequence. Uses the priority lane. |
+| POST | `/api/v1/emergency-stop` | none | none | Latches the emergency stop. Uses the priority lane, like `/stop`. Audited on every request. |
+| POST | `/api/v1/emergency-stop/reset` | `X-Control-Session`, `X-Command-Seq`, `X-Command-Sent-At` | same | Clears the latch. Audited. |
+| POST | `/api/v1/posture` | `X-Control-Session`, `X-Command-Seq`, `X-Command-Sent-At` | same | Height and attitude; body in section 2.2 |
+| POST | `/api/v1/reset` | `X-Control-Session`, `X-Command-Seq`, `X-Command-Sent-At` | same | Full robot reset. Audited. |
 | POST | `/api/v1/movement-style` | `X-Control-Session`, `X-Command-Seq`, `X-Command-Sent-At` | same | Body in section 2.2 |
 | GET | `/api/v1/actions` | none | none | Lists allowlisted preset actions |
 | POST | `/api/v1/actions/{action_id}` | `X-Control-Session`, `X-Command-Seq`, `X-Command-Sent-At` | same | Preset action by ID |
 | GET | `/api/v1/telemetry` | none | none | Measured telemetry |
 | GET | `/api/v1/status` | none | none | Link, lease and watchdog state |
 
-**Not yet relayed** (the Pi has them; the laptop relay does not, Phase 1, item 5 of the build plan): `POST /api/v1/motion/discrete`, `POST /api/v1/posture`, `POST /api/v1/reset`, `POST /api/v1/emergency-stop`, `POST /api/v1/emergency-stop/reset`. Until they are added, a request to them on the laptop returns 404.
+**Priority lane:** `/api/v1/stop` and `/api/v1/emergency-stop` are sent on a dedicated HTTP client (`PRIORITY_PATHS` in `backend/robot/relay_router.py`), so they are never queued behind an in-flight motion request. Emergency stop is audited on every request. Its reset goes through the normal lane with session and sequence checks.
 
 Relay settings come from `backend/robot/config.py` (`RobotConfig.from_env`): `ROBOT_MODE=remote`, `ROBOT_REMOTE_URL`, `ROBOT_REMOTE_TIMEOUT`, `ROBOT_API_KEY`.
 
