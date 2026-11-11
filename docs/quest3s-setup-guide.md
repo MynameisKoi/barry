@@ -91,27 +91,48 @@ You can test the BARRY cockpit inside your Quest 3S right now **without waiting 
 
 ---
 
-## 5. Unity 6 & Meta XR SDK Configuration (Person B)
+## 5. Unity Project, Quest APK and PC-VR Build
 
-When Person B is ready to build the standalone VR application:
+The Unity project is **`frontend/barry-vr/`** (Unity 6, editor version `6000.6.8f1`). Open that folder in Unity Hub. Do not create a new project. The Meta OpenXR, OpenXR and XR Interaction Toolkit packages are already listed in `frontend/barry-vr/Packages/manifest.json`.
 
-### Step 1: Project Setup in Unity 6
-1. Create a new Unity 6 project with the **3D (URP)** template in [`frontend/unity-project`](file:///home/koiisme/barry/frontend/unity-project).
-2. Go to **File** $\rightarrow$ **Build Settings**:
-   - Switch Platform to **Android**.
-   - Texture Compression: **ASTC**.
-3. In **Package Manager**, install:
-   - **Meta XR All-in-One SDK** (`com.meta.xr.sdk.all`).
-4. In **Project Settings** $\rightarrow$ **XR Plug-in Management**:
-   - Check **OpenXR** under the Android tab.
-   - Enable the **Meta Quest Feature Group**.
+Install these Unity modules in Unity Hub → Installs:
+- **Android Build Support** for the Quest APK.
+- **Windows Build Support (Mono)** for the PC-VR build (see Option 3 below).
 
-### Step 2: Import BARRY C# Cockpit Scripts
-The scripts are already created in the repository under [`frontend/unity-project/Assets/Scripts/`](file:///home/koiisme/barry/frontend/unity-project/Assets/Scripts/):
-1. `BarryNetworkManager.cs`: Set `backendHttpUrl` to `http://<LAPTOP_IP>:8000` and `backendWsUrl` to `ws://<LAPTOP_IP>:8000/ws`.
-2. `BarryCameraReceiver.cs`: Assign the target `RawImage` to display `/api/camera/stream`.
-3. `BarryCockpitUI.cs`: Assign the HUD text, battery meter, and emergency stop button.
-4. `BarryInputController.cs`: Maps Touch Controller thumbsticks to locomotion.
+### Step 1: Set the backend URL and keys
+Set these environment variables before you open Unity, or before a batch build:
 
-### Step 3: Build & Deploy
-Click **Build and Run** in Unity. Unity will automatically use ADB to deploy the APK to your Quest 3S.
+| Variable | Value |
+|---|---|
+| `BARRY_BACKEND_URL` | `http://<LAPTOP_IP>:8000` |
+| `BARRY_ROBOT_KEY` | The laptop's `QUEST_API_KEY`. The app sends it as `X-Robot-Key`. |
+| `BARRY_CAMERA_KEY` | The laptop's `CAMERA_API_KEY`. |
+
+The **Barry → Configure Quest Build** menu writes these into `frontend/barry-vr/Assets/Barry/Config/BarryConfig.asset`. That asset is tracked in git, so **do not commit it with real keys**. Restore it with `git checkout` before you commit anything else.
+
+### Step 2: Configure the Quest build
+In the Unity editor, choose **Barry → Configure Quest Build**. It:
+- switches the platform to Android (IL2CPP, ARM64, Vulkan, minimum API 32);
+- enables OpenXR with the Meta Quest feature group;
+- sets the Dashboard scene (`Assets/Barry/Scenes/Dashboard.unity`) as the only scene in the build;
+- writes the backend URL and keys from Step 1 into `BarryConfig.asset`.
+
+Check that **Project Settings → XR Plug-in Management → Android** shows OpenXR.
+
+### Step 3: Build and run on the Quest (APK)
+Connect the Quest over ADB (Section 3), then click **File → Build and Run** in Unity. Unity installs the APK on the headset with ADB.
+
+### The scripts are already in the project
+You do not import any scripts. The app code is in `frontend/barry-vr/Assets/Barry/`. The files you may need to check:
+- `Api/BarryApiClient.cs`: calls the laptop `/api/v1/*` routes and sends `X-Robot-Key`.
+- `Api/MjpegStreamSource.cs`: reads the camera stream.
+- `Config/BarryConfig.cs`: the backend URL and keys.
+- `App/DashboardController.cs`, `App/BarryApp.cs`: the dashboard.
+- `XR/ControllerInputReader.cs`, `Teleop/InputMapping.cs`, `Teleop/RobotControlService.cs`: controller input and robot control.
+
+### Option 3: PC-VR over Quest Link (Windows PC required)
+Option 3 runs the same app as a Windows PC player. The headset connects to the PC through **Meta Quest Link** or **Air Link**. **Quest Link and Air Link run only on Windows, so you need a Windows PC to run the PC-VR build.** The build can be made from a Mac Unity editor, because it builds a Windows player with the Mono backend.
+
+- In the editor: **Barry → Build PC-VR (Windows)**. The output is `frontend/barry-vr/Builds/PCVR/Barry.exe`.
+- Headless (macOS or Linux, Unity closed): `UNITY_EXECUTABLE=<path-to-Unity> frontend/barry-vr/build_pcvr.sh`. Set `BARRY_BACKEND_URL` to override the script's default backend URL. The log is written to `frontend/barry-vr/Builds/pcvr-build.log`.
+- Copy the **whole** `Builds/PCVR/` folder to the Windows PC and run `Barry.exe` there. Do not copy the `.exe` alone.

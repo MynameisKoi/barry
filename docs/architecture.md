@@ -95,7 +95,7 @@ The system runs as two services:
    - Movements are intended to require active mission authorization (enforced on the laptop; planned, not yet implemented in `backend/main.py`).
 
 6. **Security Boundary**:
-   Every Robot API route except `/healthz` requires the `X-Robot-Key` header to match `ROBOT_API_KEY`, a shared secret configured on both the laptop and the Pi. The Pi refuses to start in `dogzilla` mode without a key, and the Robot API does not enable CORS because only the laptop backend calls it.
+   Every Robot API route except `/healthz` requires the `X-Robot-Key` header to match `ROBOT_API_KEY`, a shared secret configured on both the laptop and the Pi. In `dogzilla` mode the Pi app fails on its first request if the key is unset (`ROBOT_API_KEY is required`), and the Robot API does not enable CORS because only the laptop backend calls it.
 
 ---
 
@@ -135,4 +135,20 @@ The two-service split above is the target design. On the laptop, `backend/robot/
 
 > **Provisional contract:** the `RobotInterface` method list, the Robot API endpoints, and the robot schemas described in this document are provisional and will be redesigned. See Phase 0 of [control-plan.md](control-plan.md), which also covers the hand, voice, and LLM control modes.
 
-Currently the repo contains `RobotInterface`, `RobotSimulator`, and a placeholder `DogzillaController`. Still to build: `backend/robot/config.py`, `factory.py`, `remote.py`, `server.py`, `deploy/pi/`, and `requirements-pi.txt`, plus stop and emergency-stop handling in `DogzillaController.move()`.
+**Done on `main`:**
+- **Pi Robot API v1**: `backend/robot/server.py`, `protocol.py`, `config.py`, `factory.py`, `remote.py`. It has control sessions, command sequence numbers, the watchdog, priority stop and the emergency-stop latch. Routes are under `/api/v1/*` (see [api-specification.md](api-specification.md)).
+- **Laptop `/api/v1` relay**: `backend/robot/relay.py` and `relay_router.py`, authenticated with `QUEST_API_KEY` (#54). The Quest sends its key as `X-Robot-Key` (#55).
+- **Pi deployment files**: `deploy/pi/` (systemd unit, `robot.env.example`, README) (#64).
+- **Windows PC-VR build** for Quest Link (#61): `Barry → Build PC-VR (Windows)` in the Unity editor, and `frontend/barry-vr/build_pcvr.sh`.
+- **Voice prototype, dry run** (#60): `POST /api/v1/voice/command` (OpenAI transcription, fixed command matching). Nothing is sent to the robot.
+- **LLM planner prototype, dry run** (#65): `/api/v1/llm/*`, using Anthropic `claude-sonnet-5-5`. Plans start without a confirm step. They run against a dry-run gateway.
+
+**In progress:**
+- **Command gateway** (#57): one owner of the Pi lease. The voice and LLM routes and the cockpit will switch to it. Until then they use the dry run.
+- **Command metadata** (#58): `X-Command-Source` and `X-Command-Id` headers, for audit.
+
+**Not yet built:**
+- Relay routes for `emergency-stop`, `emergency-stop/reset`, `posture`, `reset` and `motion/discrete` (Phase 1, item 5 of the build plan).
+- Emergency mode (Phase 4) and the robot camera (Phase 7).
+- Mission authorization on movement.
+- `requirements-pi.txt`. The Pi install list is in `deploy/pi/README.md`.
