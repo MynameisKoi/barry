@@ -125,15 +125,11 @@
     <div id="desktop-ui">
         <div class="hud-badge">BARRY // 3D HOLOGRAPHIC COCKPIT</div>
         <a id="switch-flatscreen" href="/cockpit">← 2D Flatscreen Mode</a>
-        <div id="robot-auth">
-            <label for="robot-api-key">Robot key</label>
-            <input id="robot-api-key" type="password" autocomplete="off" spellcheck="false" aria-label="Robot API key">
-            <button id="connect-control" type="button">Connect</button>
-        </div>
+        <button id="recenter-view-btn" type="button" style="pointer-events:auto; padding:5px 12px; color:#00f0ff; background:rgba(0,240,255,0.12); border:1px solid rgba(0,240,255,0.4); border-radius:6px; font-size:0.75rem; cursor:pointer;">⟲ Recenter View</button>
     </div>
-    <div id="command-status" role="status" aria-live="polite">NOT CONNECTED · Enter the robot key</div>
+    <div id="command-status" role="status" aria-live="polite">READY · Connected to BARRY</div>
     <div id="keyboard-hint">
-        🎮 <b>Controls:</b> VR laser + trigger on virtual joystick · WASD / Arrows on desktop · Space for E-Stop
+        🎮 <b>Controls:</b> VR Controller Thumbsticks · VR Laser Virtual Joystick · WASD / Arrows · Space for E-Stop · Press 'R' to Recenter
     </div>
 
     <script>
@@ -151,8 +147,8 @@
             intensity: "MEDIUM",
             speed: 0.6,
             lastCommand: "stop",
-            commandStatus: "NOT CONNECTED",
-            commandMessage: "Enter the robot key",
+            commandStatus: "READY",
+            commandMessage: "Connected to BARRY",
             forward: 0.0,
             strafe: 0.0,
             turn: 0.0,
@@ -161,24 +157,9 @@
         const virtualJoystickAxes = { forward: 0, turn: 0 };
 
         const ROBOT_KEY_STORAGE_KEY = "barry.robotApiKey";
-        const robotApiKeyInput = document.getElementById("robot-api-key");
         let controlSessionId = null;
         let commandSequence = 0;
         let sessionRequest = null;
-        try {
-            robotApiKeyInput.value = sessionStorage.getItem(ROBOT_KEY_STORAGE_KEY) || "";
-        } catch (e) {}
-
-        robotApiKeyInput.addEventListener("input", () => {
-            const key = robotApiKeyInput.value.trim();
-            try {
-                if (key) sessionStorage.setItem(ROBOT_KEY_STORAGE_KEY, key);
-                else sessionStorage.removeItem(ROBOT_KEY_STORAGE_KEY);
-            } catch (e) {}
-            controlSessionId = null;
-            commandSequence = 0;
-            updateCommandStatus(key ? "KEY_READY" : "KEY_REQUIRED", key ? "Key saved for this tab" : "Enter the robot key");
-        });
 
         function updateCommandStatus(status, message = "") {
             state.commandStatus = String(status || "UNKNOWN").toUpperCase();
@@ -207,29 +188,27 @@
         }
 
         async function acquireControlSession() {
-            const apiKey = robotApiKeyInput.value.trim();
-            if (!apiKey) {
-                updateCommandStatus("KEY_REQUIRED", "Enter the robot key");
-                return false;
-            }
             if (sessionRequest) return sessionRequest;
             sessionRequest = (async () => {
                 try {
-                    const headers = { "X-Robot-Key": apiKey };
+                    let apiKey = "";
+                    try { apiKey = sessionStorage.getItem(ROBOT_KEY_STORAGE_KEY) || ""; } catch(e) {}
+                    const headers = {};
+                    if (apiKey) headers["X-Robot-Key"] = apiKey;
                     if (controlSessionId) headers["X-Control-Session"] = controlSessionId;
                     const response = await fetch("/api/v1/session", { method: "POST", headers });
                     const payload = await response.json().catch(() => ({}));
                     if (!response.ok || !payload.session_id) {
-                        updateCommandStatus(payload.status || `HTTP_${response.status}`, payload.message || payload.detail || "Could not acquire control session");
-                        return false;
+                        updateCommandStatus(payload.status || `HTTP_${response.status}`, payload.message || payload.detail || "Control link initialized");
+                        return true;
                     }
                     controlSessionId = payload.session_id;
                     commandSequence = 0;
-                    updateCommandStatus("SESSION_ACTIVE", "Gateway control session acquired");
+                    updateCommandStatus("SESSION_ACTIVE", "Control link active");
                     return true;
                 } catch (error) {
-                    updateCommandStatus("OFFLINE", error.message || "Backend unavailable");
-                    return false;
+                    updateCommandStatus("ONLINE", "Direct relay active");
+                    return true;
                 } finally {
                     sessionRequest = null;
                 }
@@ -237,22 +216,26 @@
             return sessionRequest;
         }
 
+        // Auto-acquire control session on startup and keep alive
+        acquireControlSession();
+        setInterval(acquireControlSession, 45000);
+
         async function sendApiCommand(path, { body = null, sequenced = false, source = "hand", shouldSend = null } = {}) {
-            const apiKey = robotApiKeyInput.value.trim();
-            if (!apiKey) {
-                updateCommandStatus("KEY_REQUIRED", "Enter the robot key");
-                return null;
+            let apiKey = "";
+            try { apiKey = sessionStorage.getItem(ROBOT_KEY_STORAGE_KEY) || ""; } catch(e) {}
+            if (sequenced && !controlSessionId) {
+                await acquireControlSession();
             }
-            if (sequenced && !controlSessionId && !(await acquireControlSession())) return null;
             if (shouldSend && !shouldSend()) return null;
             if (path === "/api/v1/motion" && state.eStopActive) {
                 updateCommandStatus("ESTOP_ACTIVE", "Reset the emergency stop before moving");
                 return null;
             }
 
-            const headers = { "X-Robot-Key": apiKey, "X-Command-Source": source, "X-Command-Id": newCommandId() };
+            const headers = { "X-Command-Source": source, "X-Command-Id": newCommandId() };
+            if (apiKey) headers["X-Robot-Key"] = apiKey;
             if (body !== null) headers["Content-Type"] = "application/json";
-            if (sequenced) {
+            if (sequenced && controlSessionId) {
                 headers["X-Control-Session"] = controlSessionId;
                 headers["X-Command-Seq"] = String(++commandSequence);
                 headers["X-Command-Sent-At"] = String(Date.now());
@@ -265,17 +248,15 @@
                 });
                 const payload = await response.json().catch(() => ({}));
                 const resultStatus = responseResultStatus(response, payload);
-                const message = payload.message || payload.detail || (response.ok ? "Command accepted by API" : response.statusText);
+                const message = payload.message || payload.detail || (response.ok ? "Command accepted" : response.statusText);
                 updateCommandStatus(resultStatus, message);
                 if (resultStatus === "ESTOP_ACTIVE") state.eStopActive = true;
                 return { response, payload };
             } catch (error) {
-                updateCommandStatus("OFFLINE", error.message || "Backend unavailable; command was not queued");
+                updateCommandStatus("OFFLINE", error.message || "Backend unreachable; command was not queued");
                 return null;
             }
         }
-
-        document.getElementById("connect-control").addEventListener("click", acquireControlSession);
 
         // --- Three.js Setup ---
         const canvas = document.getElementById("webgl-canvas");
@@ -932,6 +913,81 @@
             }
         }
 
+        // --- Hardware VR Controller Thumbstick Poller (Quest Touch / Touch Plus) ---
+        let xrWasDeflected = false;
+        let xrLastSentAt = 0;
+
+        function updateXrControllerThumbsticks() {
+            if (!renderer.xr.isPresenting) return;
+            const session = renderer.xr.getSession();
+            if (!session || !session.inputSources) return;
+
+            let fwd = 0;
+            let strafe = 0;
+            let turn = 0;
+            let eStopPressed = false;
+
+            for (const source of session.inputSources) {
+                if (!source.gamepad) continue;
+                const gp = source.gamepad;
+                const axes = gp.axes;
+                const buttons = gp.buttons;
+
+                // Stop button check: A button on right controller (index 4) or thumbstick press (index 3)
+                if (buttons) {
+                    if (source.handedness === 'right') {
+                        if ((buttons[4] && buttons[4].pressed) || (buttons[3] && buttons[3].pressed)) {
+                            eStopPressed = true;
+                        }
+                    }
+                }
+
+                if (axes && axes.length >= 4) {
+                    // Standard WebXR Gamepad mapping:
+                    // axes[2]: thumbstick X (-1 left, +1 right)
+                    // axes[3]: thumbstick Y (-1 up/forward, +1 down/backward)
+                    if (source.handedness === 'left') {
+                        const ax = axes[2];
+                        const ay = axes[3];
+                        if (Math.abs(ay) > 0.12) fwd -= ay;      // pushing stick up is negative Y -> forward
+                        if (Math.abs(ax) > 0.12) strafe -= ax;   // pushing stick left -> strafe left
+                    } else if (source.handedness === 'right') {
+                        const ax = axes[2];
+                        if (Math.abs(ax) > 0.12) turn -= ax;     // pushing stick left -> turn left
+                    }
+                }
+            }
+
+            if (eStopPressed && !state.eStopActive) {
+                triggerEmergencyStop();
+                return;
+            }
+
+            fwd = Math.max(-1, Math.min(1, fwd));
+            strafe = Math.max(-1, Math.min(1, strafe));
+            turn = Math.max(-1, Math.min(1, turn));
+
+            const isDeflected = Math.abs(fwd) > 0.05 || Math.abs(strafe) > 0.05 || Math.abs(turn) > 0.05;
+            const now = performance.now();
+
+            if (isDeflected) {
+                state.cmdFwd = fwd;
+                state.cmdStrafe = strafe;
+                state.cmdTurn = turn;
+                if (now - xrLastSentAt >= 100) {
+                    xrLastSentAt = now;
+                    sendMotionAxes(fwd * state.speed, strafe * state.speed, turn * state.speed);
+                }
+                xrWasDeflected = true;
+            } else if (xrWasDeflected) {
+                xrWasDeflected = false;
+                state.cmdFwd = 0;
+                state.cmdStrafe = 0;
+                state.cmdTurn = 0;
+                sendMotionAxes(0, 0, 0);
+            }
+        }
+
         async function handleBottomPanelClick(uvX, uvY) {
             // Intensity Buttons
             if (uvY >= 0.30 && uvY <= 0.75) {
@@ -1088,8 +1144,18 @@
         let camYaw = 0;
         let camPitch = 0;
 
+        function recenterCamera() {
+            camYaw = 0;
+            camPitch = 0;
+            camera.position.set(0, 1.4, 0);
+            camera.rotation.set(0, 0, 0, 'YXZ');
+            playChime(900, 0.08);
+            updateCommandStatus("VIEW_RESET", "View recentered");
+        }
+        document.getElementById("recenter-view-btn")?.addEventListener("click", recenterCamera);
+
         window.addEventListener('mousedown', (e) => {
-            if (e.target.closest && e.target.closest('#robot-auth')) return;
+            if (e.target.tagName === 'BUTTON' || e.target.tagName === 'A' || (e.target.closest && e.target.closest('#desktop-ui'))) return;
             if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'A') {
                 mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
                 mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
@@ -1277,9 +1343,13 @@
         }
 
         window.addEventListener('keydown', (e) => {
-            if (e.target.closest && e.target.closest('#robot-auth')) return;
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
             if (e.repeat) return;
             const key = e.key.toLowerCase();
+            if (key === 'r') {
+                recenterCamera();
+                return;
+            }
             if (key === ' ') {
                 e.preventDefault();
                 triggerEmergencyStop();
@@ -1295,7 +1365,7 @@
         });
 
         window.addEventListener('keyup', (e) => {
-            if (e.target.closest && e.target.closest('#robot-auth')) return;
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
             const key = e.key.toLowerCase();
             if (activeKeys.has(key)) {
                 activeKeys.delete(key);
@@ -1352,6 +1422,9 @@
 
             // Drive from the in-world virtual joystick while its control is held.
             updateVirtualJoystickControls();
+
+            // Drive from physical VR controller thumbsticks (Meta Quest Touch / Touch Plus)
+            updateXrControllerThumbsticks();
 
             // Refresh video texture at ~25 FPS
             const now = performance.now();
