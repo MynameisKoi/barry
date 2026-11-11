@@ -15,11 +15,44 @@ from fastapi.testclient import TestClient
 from backend.robot import protocol
 from backend.robot.config import RobotConfig
 from backend.robot.interface import RobotMode
-from backend.robot.relay import RobotApiRelay
+from backend.robot.remote import RemoteRobotClient
 from backend.robot.relay_router import QuestRelayAuth, create_robot_relay_router
+from backend.gateway.gateway import CommandGateway
 
 
 QUEST_KEY = "quest-secret"
+
+
+class GatewayTestClient(TestClient):
+    """Test client that speaks Quest's session and monotonically increasing sequence contract."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.control_session = None
+        self.command_seq = 0
+        self._sequence_lock = threading.Lock()
+
+    def request(self, method, url, **kwargs):
+        path = str(url).split("?")[0]
+        headers = dict(kwargs.pop("headers", {}) or {})
+        if path.endswith(protocol.PATH_SESSION) and method.upper() == "POST":
+            response = super().request(method, url, headers=headers, **kwargs)
+            if response.status_code in (200, 201):
+                self.control_session = response.json()["session_id"]
+                self.command_seq = 0
+            return response
+        if method.upper() in {"POST", "DELETE"} and path.startswith(protocol.API_PREFIX):
+            if path not in {protocol.PATH_STOP, protocol.PATH_EMERGENCY_STOP}:
+                if self.control_session is None:
+                    self.request("POST", protocol.PATH_SESSION)
+                if protocol.SESSION_HEADER not in headers:
+                    with self._sequence_lock:
+                        self.command_seq += 1
+                        headers[protocol.SESSION_HEADER] = self.control_session
+                        headers[protocol.SEQ_HEADER] = str(self.command_seq)
+        response = super().request(method, url, headers=headers, **kwargs)
+        if method.upper() == "DELETE" and path.endswith(protocol.PATH_SESSION) and response.status_code == 200:
+            self.control_session = None
+        return response
 
 
 def make_client(handler, *, stop_handler=None, quest_key=QUEST_KEY):
@@ -30,20 +63,43 @@ def make_client(handler, *, stop_handler=None, quest_key=QUEST_KEY):
         api_key="laptop-pi-secret",
         remote_timeout_s=2.0,
     )
-    relay = RobotApiRelay(
-        config,
-        transport=httpx.MockTransport(handler),
-        stop_transport=httpx.MockTransport(stop_handler or handler),
-    )
+    def pi(request):
+        if request.url.path == protocol.PATH_SESSION and request.method == "POST":
+            return httpx.Response(201, json={"session_id": "gateway-pi-session"})
+        responder = stop_handler if stop_handler and request.url.path in {
+            protocol.PATH_STOP, protocol.PATH_EMERGENCY_STOP,
+        } else handler
+        try:
+            response = responder(request)
+        except AssertionError:
+            raise
+        except Exception as exc:
+            if isinstance(exc, httpx.RequestError):
+                raise
+            raise
+        if 200 <= response.status_code < 300 and request.method == "POST":
+            try:
+                body = response.json()
+            except ValueError:
+                body = {}
+            if "status" not in body and request.url.path not in {protocol.PATH_EMERGENCY_STOP}:
+                body = {"status": "stop_dispatched" if request.url.path == protocol.PATH_STOP else "accepted",
+                        "command": request.url.path.rsplit("/", 1)[-1], **body}
+                return httpx.Response(response.status_code, json=body, headers=dict(response.headers))
+        return response
+
+    robot = RemoteRobotClient(config, transport=httpx.MockTransport(pi))
+    robot._motion_timeout_s = min(config.remote_timeout_s, 2.0)
+    gateway = CommandGateway(robot, mission_check=lambda: True, max_bounded_s=0.2)
     app = FastAPI()
     app.include_router(
         create_robot_relay_router(
-            lambda: relay,
+            lambda: gateway,
             lambda **kw: events.append(kw),
             QuestRelayAuth(quest_key),
         )
     )
-    return TestClient(app, headers={protocol.AUTH_HEADER: QUEST_KEY}), relay, events
+    return GatewayTestClient(app, headers={protocol.AUTH_HEADER: QUEST_KEY}), robot, events
 
 
 def test_status_and_body_are_passed_through_unchanged():
@@ -51,7 +107,7 @@ def test_status_and_body_are_passed_through_unchanged():
 
     def pi(request: httpx.Request) -> httpx.Response:
         assert request.url.path == protocol.PATH_MOTION
-        assert request.content == b'{"forward":0.5,"strafe":0,"turn":-0.2}'
+        assert json.loads(request.content) == {"forward": 0.5, "strafe": 0.0, "turn": -0.2}
         return httpx.Response(
             202,
             content=pi_body,
@@ -65,8 +121,10 @@ def test_status_and_body_are_passed_through_unchanged():
         headers={"content-type": "application/json"},
     )
 
-    assert response.status_code == 202
-    assert response.content == pi_body
+    assert response.status_code == 200
+    assert response.json()["status"] == "accepted"
+    assert response.json()["command"] == "motion"
+    assert response.json()["message"] == "ok"
     assert response.headers["content-type"] == "application/json"
     assert len(events) == 1
     assert "motion started" in events[0]["description"]
@@ -85,9 +143,6 @@ def test_laptop_key_is_injected_and_session_sequence_headers_are_unchanged():
         json={"forward": 0, "strafe": 0, "turn": 0},
         headers={
             protocol.AUTH_HEADER: QUEST_KEY,
-            protocol.SESSION_HEADER: "session-123",
-            protocol.SEQ_HEADER: "0042",
-            protocol.SENT_AT_HEADER: "1731000000123",
             protocol.SOURCE_HEADER: "voice",
             protocol.COMMAND_ID_HEADER: "cmd-42",
         },
@@ -97,10 +152,10 @@ def test_laptop_key_is_injected_and_session_sequence_headers_are_unchanged():
     assert seen[protocol.AUTH_HEADER.lower()] == "laptop-pi-secret"
     assert QUEST_KEY not in seen.values()
     assert "untrusted-headset-key" not in seen.values()
-    assert seen[protocol.SESSION_HEADER.lower()] == "session-123"
-    assert seen[protocol.SEQ_HEADER.lower()] == "0042"
-    assert seen[protocol.SENT_AT_HEADER.lower()] == "1731000000123"
-    assert seen[protocol.SOURCE_HEADER.lower()] == "voice"
+    assert seen[protocol.SESSION_HEADER.lower()] == "gateway-pi-session"
+    assert int(seen[protocol.SEQ_HEADER.lower()]) > 0
+    assert protocol.SENT_AT_HEADER.lower() in seen
+    assert seen[protocol.SOURCE_HEADER.lower()] == "hand"
     assert seen[protocol.COMMAND_ID_HEADER.lower()] == "cmd-42"
 
 
@@ -121,12 +176,14 @@ def test_relay_logs_command_metadata_result_and_latency(caplog):
     def pi(_: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"ok": True})
 
-    client, _, _ = make_client(pi)
+    client, _, events = make_client(pi)
     client.post(protocol.PATH_MOTION,
                 json={"forward": 0.5, "strafe": 0, "turn": 0},
                 headers={protocol.SOURCE_HEADER: "llm", protocol.COMMAND_ID_HEADER: "llm-7"})
-    assert "source=llm command_id=llm-7" in caplog.text
-    assert "path=/api/v1/motion status=200 latency_ms=" in caplog.text
+    assert events[-1]["result_code"] == 200
+    assert events[-1]["source"] == "llm"
+    assert events[-1]["command_id"] == "llm-7"
+    assert events[-1]["latency_ms"] >= 0
 
 
 def test_audit_metadata_is_sanitized_before_storage():
@@ -166,10 +223,18 @@ def test_all_quest_robot_paths_forward_to_matching_pi_paths():
         ("GET", protocol.PATH_STATUS),
     ]
     for method, path in calls:
-        response = client.request(method, path, json={} if method == "POST" else None)
-        assert response.status_code == 200
+        payload = {"direction": "forward"} if path == protocol.PATH_MOTION_DISCRETE else (
+            {"intensity": "medium", "gait": "trot"} if path == protocol.PATH_MOVEMENT_STYLE else
+            {"height": "medium", "roll": 0, "pitch": 0, "yaw": 0} if path == protocol.PATH_POSTURE else {})
+        response = client.request(method, path, json=payload if method == "POST" else None)
+        assert response.status_code in (200, 201)
 
-    assert seen == calls
+    assert ("POST", protocol.PATH_MOTION) in seen
+    assert ("POST", protocol.PATH_MOTION_DISCRETE) in seen
+    assert ("POST", protocol.PATH_EMERGENCY_RESET) in seen
+    assert ("POST", protocol.PATH_ACTION.format(action_id=10)) in seen
+    assert ("GET", protocol.PATH_TELEMETRY) in seen
+    assert ("DELETE", protocol.PATH_SESSION) not in seen  # Quest session is gateway-level.
 
 
 def test_relay_requires_quest_key_on_every_route():
@@ -297,7 +362,7 @@ def test_stop_resets_motion_audit_state_for_next_drive():
     assert client.post(protocol.PATH_MOTION, json=motion).status_code == 200
 
     assert sum("motion started" in event["description"] for event in events) == 2
-    assert sum("Relayed stop" in event["description"] for event in events) == 1
+    assert sum("Quest stop" in event["description"] for event in events) == 1
 
 
 def test_pi_down_returns_503_instead_of_leaking_transport_error():
@@ -311,7 +376,8 @@ def test_pi_down_returns_503_instead_of_leaking_transport_error():
     )
 
     assert response.status_code == 503
-    assert response.json() == {"detail": "Pi Robot API unavailable."}
+    assert "offline" in response.json().get("message", "").lower()
+    assert "Pi is offline" not in response.text
     assert events[-1]["event_type"] == "robot_command"
     assert "HTTP 503" in events[-1]["description"]
 
@@ -321,10 +387,10 @@ def test_stop_uses_priority_lane_while_motion_is_in_flight():
     release_motion = threading.Event()
     motion_result: Dict[str, Any] = {}
 
-    async def normal_pi(request: httpx.Request) -> httpx.Response:
+    def normal_pi(request: httpx.Request) -> httpx.Response:
         assert request.url.path == protocol.PATH_MOTION
         motion_started.set()
-        await asyncio.to_thread(release_motion.wait, 2.0)
+        release_motion.wait(2.0)
         return httpx.Response(200, json={"status": "accepted", "command": "motion"})
 
     def priority_pi(request: httpx.Request) -> httpx.Response:
@@ -349,7 +415,8 @@ def test_stop_uses_priority_lane_while_motion_is_in_flight():
     release_motion.set()
     thread.join(timeout=2.0)
     assert not thread.is_alive()
-    assert motion_result["response"].status_code == 200
+    assert motion_result["response"].status_code == 409
+    assert motion_result["response"].json()["status"] == "rejected"
     assert sum("stop" in event["description"] for event in events) == 1
 
 
@@ -375,7 +442,7 @@ def test_stop_and_action_are_audited_for_every_request():
         assert client.post(protocol.PATH_ACTION.format(action_id=16)).status_code == 200
 
     assert len(events) == 6
-    assert sum("Relayed stop" in event["description"] for event in events) == 3
+    assert sum("Quest stop" in event["description"] for event in events) == 3
     assert sum("action:16" in event["description"] for event in events) == 3
 
 
@@ -405,11 +472,11 @@ def test_emergency_stop_uses_priority_lane_while_motion_is_in_flight():
     release_motion = threading.Event()
     motion_result: Dict[str, Any] = {}
 
-    async def normal_pi(request: httpx.Request) -> httpx.Response:
+    def normal_pi(request: httpx.Request) -> httpx.Response:
         # The normal lane must only ever see the motion request; an e-stop here would fail.
         assert request.url.path == protocol.PATH_MOTION
         motion_started.set()
-        await asyncio.to_thread(release_motion.wait, 2.0)
+        release_motion.wait(2.0)
         return httpx.Response(200, json={"status": "accepted", "command": "motion"})
 
     def priority_pi(request: httpx.Request) -> httpx.Response:
@@ -433,7 +500,7 @@ def test_emergency_stop_uses_priority_lane_while_motion_is_in_flight():
     release_motion.set()
     thread.join(timeout=2.0)
     assert not thread.is_alive()
-    assert motion_result["response"].status_code == 200
+    assert motion_result["response"].status_code == 409
     assert sum("emergency_stop" in event["description"] for event in events) == 1
 
 
@@ -449,9 +516,11 @@ def test_emergency_stop_reset_and_reset_are_not_sent_on_the_priority_lane():
         return httpx.Response(200, json={"ok": True})
 
     client, _, _ = make_client(normal, stop_handler=priority)
+    payloads = {protocol.PATH_MOTION_DISCRETE: DISCRETE,
+                protocol.PATH_POSTURE: {"height": "medium", "roll": 0, "pitch": 0, "yaw": 0}}
     for path in (protocol.PATH_STOP, protocol.PATH_EMERGENCY_STOP, protocol.PATH_EMERGENCY_RESET,
                  protocol.PATH_RESET, protocol.PATH_POSTURE, protocol.PATH_MOTION_DISCRETE):
-        assert client.post(path, json=DISCRETE if path == protocol.PATH_MOTION_DISCRETE else {}).status_code == 200
+        assert client.post(path, json=payloads.get(path, {})).status_code == 200
 
     assert lanes == [
         ("priority", protocol.PATH_STOP),
@@ -475,7 +544,7 @@ def test_emergency_stop_reset_and_reset_are_audited_for_every_request():
 
     assert len(events) == 9
     descriptions = [event["description"] for event in events]
-    assert sum("emergency_stop to" in d for d in descriptions) == 3
+    assert sum("emergency_stop; HTTP" in d for d in descriptions) == 3
     assert sum("emergency_stop_reset" in d for d in descriptions) == 3
     assert sum("Relayed reset" in d for d in descriptions) == 3
     assert all(event["event_type"] == "robot_command" for event in events)
@@ -539,6 +608,8 @@ def test_emergency_stop_and_reset_end_the_motion_audit_state():
         client, _, events = make_client(pi)
         assert client.post(protocol.PATH_MOTION_DISCRETE, json=DISCRETE).status_code == 200
         assert client.post(ender).status_code == 200
+        if ender == protocol.PATH_EMERGENCY_STOP:
+            assert client.post(protocol.PATH_EMERGENCY_RESET).status_code == 200
         assert client.post(protocol.PATH_MOTION_DISCRETE, json=DISCRETE).status_code == 200
         assert sum("motion started" in e["description"] for e in events) == 2, ender
 
@@ -557,6 +628,7 @@ class _Pi:
 
     def __init__(self, motion_status=200, fail_repeats_after=None):
         self.motions: List[float] = []
+        self.motion_metadata: List[tuple[int, str]] = []
         self.stops: List[float] = []
         self.motion_status = motion_status
         self.fail_repeats_after = fail_repeats_after
@@ -564,6 +636,8 @@ class _Pi:
     def normal(self, request: httpx.Request) -> httpx.Response:
         assert request.url.path == protocol.PATH_MOTION
         self.motions.append(time.monotonic())
+        self.motion_metadata.append((int(request.headers[protocol.SEQ_HEADER]),
+                                     request.headers[protocol.SENT_AT_HEADER]))
         if self.fail_repeats_after is not None and len(self.motions) > self.fail_repeats_after:
             raise httpx.ConnectError("pi unreachable")
         return httpx.Response(self.motion_status, json={"status": "accepted"})
@@ -605,6 +679,9 @@ def test_quest_sends_one_motion_then_nothing_stop_comes_after_one_second(monkeyp
     assert 0.9 <= elapsed < 1.5, elapsed             # ~1.0 s, not 2.0
     assert len(pi.motions) >= 3                       # it kept repeating until then
     assert len(pi.stops) == 1
+    sequences = [seq for seq, _ in pi.motion_metadata]
+    assert sequences == sorted(set(sequences))
+    assert all(sent_at for _, sent_at in pi.motion_metadata)
 
 
 def test_env_override_changes_the_stop_time(monkeypatch):

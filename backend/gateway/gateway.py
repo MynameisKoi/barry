@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import math
 import os
 import time
@@ -53,6 +54,9 @@ class CommandGateway:
             self._emergency_stopped = False
         self._preempt_callbacks: list[Callable[[str], Any]] = []
         self.online = True
+        self._command_id_override: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+            f"gateway_command_id_{id(self)}", default=None
+        )
         # backend.gateway.detections.LiveDetections (or None = no detector wired).
         self.live_detections = live_detections
 
@@ -74,7 +78,7 @@ class CommandGateway:
                 turn=max(-self.max_speed, min(self.max_speed, command.turn)),
             )
             async def send() -> GatewayResult:
-                result = await asyncio.to_thread(self.robot.move_analog, clamped)
+                result = await self._robot_call("move_analog", clamped, source=source, cid=cid)
                 return self._result(result, source, cid, {"clamped": clamped != command} if clamped != command else None)
             outcome = await self._run_owned(send(), source, cid)
             if source == "hand" and outcome.status not in {"BUSY", "OFFLINE"}:
@@ -91,8 +95,9 @@ class CommandGateway:
         if source == "hand":
             self._last_hand_at = time.monotonic()
         try:
-            result = await asyncio.to_thread(self.robot.stop)
-            return self._result(result, source, cid)
+            result = await self._robot_call("stop", source=source, cid=cid)
+            details = {"intensity": result.intensity.value} if getattr(result, "intensity", None) else None
+            return self._result(result, source, cid, details)
         except Exception:
             self.online = False
             return self._offline(source, cid)
@@ -102,7 +107,7 @@ class CommandGateway:
         self._notify_preempt(source)
         await self._cancel_active()
         try:
-            result = await asyncio.to_thread(self.robot.emergency_stop)
+            result = await self._robot_call("emergency_stop", source=source, cid=cid)
             if not getattr(self.robot, "connected", True):
                 self.online = False
                 return self._offline(source, cid)
@@ -144,18 +149,18 @@ class CommandGateway:
                 while time.monotonic() < deadline:
                     if not self.online:
                         return self._offline(source, cid)
-                    result = await asyncio.to_thread(self.robot.move_analog, MotionCommand(**axes))
+                    result = await self._robot_call("move_analog", MotionCommand(**axes), source=source, cid=cid)
                     if not result.ok:
                         if not getattr(self.robot, "connected", True):
                             self.online = False
                             return self._offline(source, cid)
                         return self._result(result, source, cid)
                     await asyncio.sleep(min(0.1, max(0, deadline - time.monotonic())))
-                result = await asyncio.to_thread(self.robot.stop)
+                result = await self._robot_call("stop", source=source, cid=cid)
                 return self._result(result, source, cid, details={"clamped": duration != requested_seconds or velocity != requested_speed,
                     "seconds": duration, "speed": velocity})
             except asyncio.CancelledError:
-                await asyncio.to_thread(self.robot.stop)
+                await self._robot_call("stop", source=source, cid=cid)
                 raise
         return await self._run_owned(run(), source, cid)
 
@@ -197,7 +202,7 @@ class CommandGateway:
         try:
             style = MovementStyle(Intensity(intensity), Gait(gait))
             async def apply() -> GatewayResult:
-                result = await asyncio.to_thread(self.robot.set_movement_style, style)
+                result = await self._robot_call("set_movement_style", style, source=source, cid=cid)
                 return self._result(result, source, cid)
             return await self._run_owned(apply(), source, cid)
         except (ValueError, TypeError) as exc:
@@ -216,17 +221,18 @@ class CommandGateway:
             return GatewayResult("MISSION_REQUIRED", "An active mission is required for robot actions.", cid, source)
         async def run() -> GatewayResult:
             try:
-                result = await asyncio.to_thread(self.robot.perform_action, int(action_id))
+                result = await self._robot_call("perform_action", int(action_id), source=source, cid=cid)
                 return self._result(result, source, cid)
             except asyncio.CancelledError:
-                await asyncio.to_thread(self.robot.stop)
+                await self._robot_call("stop", source=source, cid=cid)
                 raise
         return await self._run_owned(run(), source, cid)
 
     async def status(self, *, source: str = "llm") -> dict[str, Any]:
         try:
-            telemetry = await asyncio.to_thread(self.robot.read_telemetry)
-            control = await asyncio.to_thread(self.robot.get_control_state)
+            cid = self._id(source)
+            telemetry = await self._robot_call("read_telemetry", source=source, cid=cid)
+            control = await self._robot_call("get_control_state", source=source, cid=cid)
             return {"control_state": control.to_dict(), "telemetry": telemetry.to_dict(),
                     "online": bool(self.online and self.robot.connected),
                     "active_source": self._active_source, "emergency_stopped": self._emergency_stopped,
@@ -274,7 +280,7 @@ class CommandGateway:
         except (TypeError, ValueError) as exc:
             return GatewayResult("INVALID", str(exc), cid, source)
         try:
-            start_yaw = (await asyncio.to_thread(self.robot.read_telemetry)).orientation.yaw
+            start_yaw = (await self._robot_call("read_telemetry", source=source, cid=cid)).orientation.yaw
         except Exception:
             start_yaw = None
         blocked = await self._prepare(source, cid)
@@ -293,7 +299,7 @@ class CommandGateway:
                 while time.monotonic() < deadline:
                     if start_yaw is not None:
                         try:
-                            yaw = (await asyncio.to_thread(self.robot.read_telemetry)).orientation.yaw
+                            yaw = (await self._robot_call("read_telemetry", source=source, cid=cid)).orientation.yaw
                             delta = (yaw - start_yaw + 180) % 360 - 180 if yaw is not None else None
                             # Robot yaw follows the wire convention: positive is left,
                             # while the LLM tool contract defines positive degrees as right.
@@ -302,21 +308,21 @@ class CommandGateway:
                         except Exception:
                             pass
                     axis = speed if direction == Direction.TURN_LEFT else -speed
-                    result = await asyncio.to_thread(self.robot.move_analog, MotionCommand(turn=axis))
+                    result = await self._robot_call("move_analog", MotionCommand(turn=axis), source=source, cid=cid)
                     if not result.ok:
                         return self._result(result, source, cid)
                     await asyncio.sleep(min(0.1, max(0, deadline - time.monotonic())))
-                result = await asyncio.to_thread(self.robot.stop)
+                result = await self._robot_call("stop", source=source, cid=cid)
                 return self._result(result, source, cid, {"clamped": duration < abs(degrees) / self.turn_deg_per_s})
             except asyncio.CancelledError:
-                await asyncio.to_thread(self.robot.stop)
+                await self._robot_call("stop", source=source, cid=cid)
                 raise
         return await self._run_owned(turn(), source, cid)
 
     async def reset_emergency_stop(self, *, source: str) -> GatewayResult:
         cid = self._id(source)
         try:
-            result = await asyncio.to_thread(self.robot.reset_emergency_stop)
+            result = await self._robot_call("reset_emergency_stop", source=source, cid=cid)
             if not getattr(self.robot, "connected", True):
                 self.online = False
                 return self._offline(source, cid)
@@ -334,6 +340,73 @@ class CommandGateway:
         if not self.online or not getattr(self.robot, "connected", True):
             return self._offline(source, cid)
         return None
+
+    async def _robot_call(self, method: str, *args: Any, source: str, cid: str) -> Any:
+        def invoke() -> Any:
+            context = getattr(self.robot, "command_context", None)
+            if context is None:
+                return getattr(self.robot, method)(*args)
+            with context(source, cid):
+                return getattr(self.robot, method)(*args)
+        return await asyncio.to_thread(invoke)
+
+    async def move_discrete(self, direction: str | Direction, intensity: Any = None, *, source: str) -> GatewayResult:
+        cid = self._id(source)
+        if source in {"hand", "voice"}:
+            self._notify_preempt(source)
+        blocked = await self._prepare(source, cid)
+        if blocked:
+            return blocked
+        if self._emergency_stopped:
+            return GatewayResult("ESTOP_ACTIVE", "Emergency stop is latched.", cid, source)
+        if not self.mission_check():
+            return GatewayResult("MISSION_REQUIRED", "An active mission is required for motion.", cid, source)
+        try:
+            direction = Direction(direction)
+            from backend.robot.interface import Intensity
+            level = Intensity(intensity) if intensity is not None else None
+        except (ValueError, TypeError) as exc:
+            return GatewayResult("INVALID", str(exc), cid, source)
+        async def run() -> GatewayResult:
+            result = await self._robot_call("move_discrete", direction, level, source=source, cid=cid)
+            return self._result(result, source, cid)
+        return await self._run_owned(run(), source, cid)
+
+    async def set_posture(self, values: dict[str, Any], *, source: str) -> GatewayResult:
+        cid = self._id(source)
+        blocked = await self._prepare(source, cid)
+        if blocked:
+            return blocked
+        if self._emergency_stopped:
+            return GatewayResult("ESTOP_ACTIVE", "Emergency stop is latched.", cid, source)
+        try:
+            from backend.robot.interface import HeightPreset, Posture
+            target = Posture(HeightPreset(values["height"]), values.get("roll", 0),
+                             values.get("pitch", 0), values.get("yaw", 0))
+        except (ValueError, TypeError, KeyError) as exc:
+            return GatewayResult("INVALID", str(exc), cid, source)
+        result = await self._robot_call("set_posture", target, source=source, cid=cid)
+        return self._result(result, source, cid)
+
+    async def reset(self, *, source: str) -> GatewayResult:
+        cid = self._id(source)
+        await self._cancel_active()
+        result = await self._robot_call("reset", source=source, cid=cid)
+        return self._result(result, source, cid)
+
+    async def list_actions(self, *, source: str = "hand") -> list[Any]:
+        cid = self._id(source)
+        return await self._robot_call("list_actions", source=source, cid=cid)
+
+    async def with_command_id(self, command_id: str | None, operation: Callable[[], Any]) -> Any:
+        """Run a command using a sanitized caller ID, while retaining generated IDs otherwise."""
+        if not command_id:
+            return await operation()
+        token = self._command_id_override.set(command_id)
+        try:
+            return await operation()
+        finally:
+            self._command_id_override.reset(token)
 
     async def _run_owned(self, awaitable: Any, source: str, cid: str) -> GatewayResult:
         async with self._arbitration_lock:
@@ -383,7 +456,7 @@ class CommandGateway:
 
     def _id(self, source: str) -> str:
         self._validate_source(source)
-        return str(uuid.uuid4())
+        return self._command_id_override.get() or str(uuid.uuid4())
 
     @staticmethod
     def _validate_source(source: str) -> None:
@@ -394,6 +467,8 @@ class CommandGateway:
         self.online = getattr(self.robot, "connected", True)
         if not self.online:
             return self._offline(source, cid)
+        if getattr(result, "http_status", None) is not None:
+            details = {**(details or {}), "http_status": result.http_status}
         return GatewayResult(result.status.value.upper(), result.message, cid, source, details)
 
     @staticmethod

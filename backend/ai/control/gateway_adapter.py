@@ -22,11 +22,8 @@ def _shared_gateway() -> CommandGateway:
 
 
 class CommandGatewayAdapter:
-    def __init__(self, gateway: CommandGateway | Callable[[], CommandGateway], *,
-                 remote_conflict: bool | Callable[[], bool] = False,
-                 source: str = "llm") -> None:
+    def __init__(self, gateway: CommandGateway | Callable[[], CommandGateway], *, source: str = "llm") -> None:
         self._gateway_source = gateway
-        self._remote_conflict = remote_conflict
         self.source = source
         self._preempt_callbacks: list[Callable[[str], Any]] = []
         self._registered_gateway: CommandGateway | None = None
@@ -47,34 +44,23 @@ class CommandGatewayAdapter:
         if self._registered_gateway is not None:
             self._registered_gateway.on_preempt(callback)
 
-    def _conflict(self) -> dict[str, str] | None:
-        active = self._remote_conflict() if callable(self._remote_conflict) else self._remote_conflict
-        if active:
-            return {"status": "CONFLICT_RELAY_ACTIVE",
-                    "message": "Remote mode is unavailable while the Quest relay owns the Pi lease."}
-        return None
-
     @staticmethod
     def _dict(result: GatewayResult) -> dict[str, Any]:
         return result.to_dict()
 
     async def run_bounded(self, direction: str, seconds: float, speed: float, *, source: str) -> Any:
-        if conflict := self._conflict(): return conflict
         return self._dict(await self.gateway.run_bounded(direction, seconds, speed, source=self.source))
 
     async def turn(self, degrees: float, *, source: str) -> Any:
-        if conflict := self._conflict(): return conflict
         return self._dict(await self.gateway.run_turn(degrees, source=self.source))
 
     async def stop(self, *, source: str) -> Any:
         return self._dict(await self.gateway.stop(source=self.source))
 
     async def set_style(self, intensity: str, gait: str, *, source: str) -> Any:
-        if conflict := self._conflict(): return conflict
         return self._dict(await self.gateway.set_style(intensity, gait, source=self.source))
 
     async def run_action(self, action_id: int, *, source: str) -> Any:
-        if conflict := self._conflict(): return conflict
         return self._dict(await self.gateway.run_action(action_id, source=self.source))
 
     async def status(self) -> dict[str, Any]:
@@ -87,12 +73,10 @@ class CommandGatewayAdapter:
 class VoiceGatewayAdapter(CommandGatewayAdapter):
     """Voice entry points use the same CommandGateway with source=voice."""
 
-    def __init__(self, gateway: CommandGateway | Callable[[], CommandGateway], *,
-                 remote_conflict: bool | Callable[[], bool] = False) -> None:
-        super().__init__(gateway, remote_conflict=remote_conflict, source="voice")
+    def __init__(self, gateway: CommandGateway | Callable[[], CommandGateway]) -> None:
+        super().__init__(gateway, source="voice")
 
     async def motion(self, command: MotionCommand) -> dict[str, Any]:
-        if conflict := self._conflict(): return conflict
         return self._dict(await self.gateway.motion(command, source="voice"))
 
     async def emergency_stop(self) -> dict[str, Any]:

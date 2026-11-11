@@ -21,6 +21,7 @@ Variable                   Default                      Purpose
 ``ROBOT_API_KEY``          (none)                       Shared secret, ``X-Robot-Key`` header
 ``ROBOT_REMOTE_URL``       ``http://barry-pi.local:8100`` Pi Robot API base URL (laptop)
 ``ROBOT_REMOTE_TIMEOUT``   ``0.5``                      Per-request timeout, seconds (laptop)
+``ROBOT_STOP_TIMEOUT_S``   ``0.3``                      Priority stop/e-stop request timeout, clamped to 0.1-2.0 s
 ``DOGZILLA_PORT``          ``/dev/ttyAMA0``             Serial device (Pi)
 ``ROBOT_WATCHDOG_MS``      ``500``                      Stop if no motion command for this long
 ``ROBOT_SESSION_TTL_S``    ``10``                       Idle control session expiry
@@ -34,10 +35,22 @@ Variable                   Default                      Purpose
 from __future__ import annotations
 
 import os
+import math
 from dataclasses import dataclass
 from typing import Dict, FrozenSet, Mapping, Optional, Tuple
 
 from backend.robot.interface import Gait, HeightPreset, Intensity, RobotMode
+
+
+def priority_stop_timeout_s() -> float:
+    """Timeout for priority stop/e-stop HTTP requests; invalid values use 0.3 s."""
+    try:
+        value = float(os.environ.get("ROBOT_STOP_TIMEOUT_S", "0.3"))
+    except (TypeError, ValueError):
+        return 0.3
+    if not math.isfinite(value):
+        return 0.3
+    return min(2.0, max(0.1, value))
 
 # ----------------------------------------------------------------------
 # SDK limits (DOGZILLALib.py PARAM table and method-level clamps)

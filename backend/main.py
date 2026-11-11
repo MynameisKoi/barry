@@ -13,7 +13,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import FastAPI, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -294,13 +294,12 @@ app.include_router(auth_router)
 app.include_router(missions_router)
 llm_gateway_adapter = CommandGatewayAdapter(
     lambda: app.state.gateway,
-    remote_conflict=lambda: ROBOT_MODE == "remote",
 )
 llm_router = create_llm_router(QuestRelayAuth.from_env(), gateway=llm_gateway_adapter)
 app.include_router(llm_router)
 app.include_router(create_voice_router(
     QuestRelayAuth.from_env(),
-    gateway=VoiceGatewayAdapter(lambda: app.state.gateway, remote_conflict=lambda: ROBOT_MODE == "remote"),
+    gateway=VoiceGatewayAdapter(lambda: app.state.gateway),
     llm_runner=llm_router.task_runner,
 ))
 # Camera Feed API v1: /api/v1/camera/{stream,snapshot,status}, token-protected
@@ -310,7 +309,7 @@ app.include_router(create_camera_router(lambda: app.state.camera, CameraAuth.fro
 # coexists with /api/robot/* and the /api/v1/camera/* routes.
 app.include_router(
     create_robot_relay_router(
-        lambda: app.state.robot_relay,
+        lambda: app.state.gateway,
         lambda **kw: mission_service.log_event(**kw),
         QuestRelayAuth.from_env(),
     )
@@ -434,8 +433,12 @@ async def get_operators():
 # 2. Mission Management Endpoints
 # ============================================================================
 
+async def authenticate_mission_control(request: Request) -> None:
+    """Mission start/stop unlock robot motion, so use the Quest control key."""
+    QuestRelayAuth.from_env()(request)
+
 @app.post("/api/mission/start", response_model=MissionStatusResponse, tags=["Missions"])
-async def start_mission(payload: MissionStartRequest):
+async def start_mission(payload: MissionStartRequest, _: None = Depends(authenticate_mission_control)):
     """Starts an authorized inspection mission."""
     try:
         mission_info = mission_service.start_mission(
@@ -453,12 +456,12 @@ async def start_mission(payload: MissionStartRequest):
 
 
 @app.post("/api/mission/stop", tags=["Missions"])
-async def stop_mission(payload: MissionStopRequest = MissionStopRequest()):
+async def stop_mission(payload: MissionStopRequest = MissionStopRequest(), _: None = Depends(authenticate_mission_control)):
     """Terminates the currently active inspection mission."""
     stop_info = mission_service.stop_mission(reason=payload.reason or "Normal completion")
 
     # Halt robot locomotion upon mission end
-    get_robot().stop()
+    await app.state.gateway.stop(source="hand")
 
     await ws_manager.broadcast({"type": "mission_update", "mission": stop_info})
     return stop_info
