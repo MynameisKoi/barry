@@ -20,6 +20,12 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.ai.detection import detection_service
 from backend.ai.orchestrator import AIOrchestrator
+from backend.ai.control.gateway_adapter import (
+    CommandGatewayAdapter,
+    VoiceGatewayAdapter,
+    configure_gateway_provider,
+)
+from backend.ai.control.router import create_llm_router
 from backend.ai.schemas import (
     AIAnalysisRecord,
     AIProviderStatus,
@@ -51,13 +57,13 @@ from backend.models import (
 )
 from backend.robot.config import RobotConfig
 from backend.robot.factory import create_robot
+from backend.gateway.gateway import CommandGateway
 from backend.robot.interface import RobotInterface
 from backend.robot.relay import RobotApiRelay
 from backend.robot.relay_router import QuestRelayAuth, create_robot_relay_router
 from backend.robot.router import create_robot_router
 from backend.services.mission import mission_service
 from backend.voice.router import create_voice_router
-from backend.ai.control.router import create_llm_router
 
 # Logging setup
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -159,6 +165,10 @@ async def lifespan(app: FastAPI):
 
     if robot is None:
         robot = create_robot(mode=ROBOT_MODE)
+    app.state.gateway = CommandGateway(robot)
+    configure_gateway_provider(lambda: app.state.gateway)
+    # Resolve the adapter and bind the LLM preemption hook before serving requests.
+    llm_gateway_adapter.gateway
     logger.info("BARRY initialized with robot controller mode: %s", ROBOT_MODE)
     app.state.robot_relay = RobotApiRelay(RobotConfig.from_env())
 
@@ -224,6 +234,39 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+@app.middleware("http")
+async def cancel_llm_for_legacy_hand_controls(request, call_next):
+    """Bridge legacy and Quest hand/safety routes to the gateway preemption hook."""
+    path = request.url.path
+    legacy_paths = {
+        "/api/robot/command", "/api/robot/stop", "/api/robot/reset-emergency",
+    }
+    relay_sources = {
+        "/api/v1/motion": "hand",
+        "/api/v1/motion/discrete": "hand",
+        "/api/v1/stop": "hand",
+        "/api/v1/emergency-stop": "emergency",
+    }
+    if request.method == "POST" and path in legacy_paths:
+        gateway = getattr(app.state, "gateway", None)
+        if gateway is not None:
+            gateway.notify_preempt("hand")
+    elif request.method == "POST" and path in {"/api/v1/stop", "/api/v1/emergency-stop"}:
+        gateway = getattr(app.state, "gateway", None)
+        if gateway is not None:
+            gateway.notify_preempt(relay_sources[path])
+    elif request.method == "POST" and path in {"/api/v1/motion", "/api/v1/motion/discrete"}:
+        try:
+            QuestRelayAuth.from_env()(request)
+        except HTTPException:
+            pass  # Let the route dependency return the authentication response.
+        else:
+            gateway = getattr(app.state, "gateway", None)
+            if gateway is not None:
+                gateway.notify_preempt(relay_sources[path])
+    return await call_next(request)
+
 # Enable CORS for local development and VR/Unity network connections
 app.add_middleware(
     CORSMiddleware,
@@ -235,8 +278,17 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(missions_router)
-app.include_router(create_voice_router(QuestRelayAuth.from_env()))  # Phase 5 voice prototype, dry run
-app.include_router(create_llm_router(QuestRelayAuth.from_env()))  # Phase 6 LLM planner prototype, dry run
+llm_gateway_adapter = CommandGatewayAdapter(
+    lambda: app.state.gateway,
+    remote_conflict=lambda: ROBOT_MODE == "remote",
+)
+llm_router = create_llm_router(QuestRelayAuth.from_env(), gateway=llm_gateway_adapter)
+app.include_router(llm_router)
+app.include_router(create_voice_router(
+    QuestRelayAuth.from_env(),
+    gateway=VoiceGatewayAdapter(lambda: app.state.gateway, remote_conflict=lambda: ROBOT_MODE == "remote"),
+    llm_runner=llm_router.task_runner,
+))
 # Camera Feed API v1: /api/v1/camera/{stream,snapshot,status}, token-protected
 # via CAMERA_API_KEY (fails closed with 503 if unset).
 app.include_router(create_camera_router(lambda: app.state.camera, CameraAuth.from_env()))

@@ -1,4 +1,4 @@
-"""The brain loop: Claude sees each tool result and chooses the next step. Dry run for now.
+"""The brain loop: Claude sees each tool result and chooses the next step.
 
 Loop: model turn -> run its tool calls through :class:`GatewayLike` (``source="llm"``) -> send the
 results back in ONE user message -> repeat until the model answers in text, or a limit is hit.
@@ -11,9 +11,8 @@ results back in ONE user message -> repeat until the model answers in text, or a
   ``stop()``. No further model call is made. Refusal -> ``stop()`` + ``refused``; ``max_tokens`` or
   a model/gateway error -> ``stop()`` + ``failed``.
 
-TODO(gateway #57): plug the real ``CommandGateway`` in where ``DryRunGateway`` is created
-(``backend/ai/control/router.py``). The gateway owns arbitration, speed/duration limits and audit;
-"stop", e-stop, hand input or a voice command must call ``TaskRunner.cancel()``.
+The router supplies the real gateway adapter by default. Gateway preemption cancels this whole
+task synchronously, so no later tool step can run after hand, voice-stop or e-stop input.
 """
 
 from __future__ import annotations
@@ -162,8 +161,8 @@ class TaskRunner:
         task._runner = asyncio.create_task(self._run(task))
         return task
 
-    async def cancel(self) -> bool:
-        """Cancel during a model call or a step, then ``stop()``. False if nothing was running."""
+    async def cancel(self, *, stop: bool = True) -> bool:
+        """Cancel during a model call or step; optionally send a stop afterward."""
         task = self.task
         if task is None or task.state != "running":
             return False
@@ -175,8 +174,22 @@ class TaskRunner:
         for step in task.steps:
             if step.state == "running":
                 step.state = "skipped"
-        await self._gateway.stop(source=SOURCE)
+        if stop:
+            await self._gateway.stop(source=SOURCE)
         logger.info("LLM task %s cancelled", task.id)
+        return True
+
+    def request_cancel(self) -> bool:
+        """Synchronously mark and interrupt a task when the gateway preempts it."""
+        task = self.task
+        if task is None or task.state != "running":
+            return False
+        task.state = "cancelled"
+        for step in task.steps:
+            if step.state == "running":
+                step.state = "skipped"
+        if task._runner is not None and not task._runner.done():
+            task._runner.cancel()
         return True
 
     async def wait(self) -> None:
