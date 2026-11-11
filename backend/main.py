@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.ai.detection import detection_service
+from backend.ai.detection import CameraServiceDetectionSource, detection_service
 from backend.ai.orchestrator import AIOrchestrator
 from backend.ai.control.gateway_adapter import (
     CommandGatewayAdapter,
@@ -130,7 +130,7 @@ async def telemetry_broadcaster():
         while True:
             await asyncio.sleep(1.0)
             if ws_manager.active_connections:
-                detections = [d.model_dump() for d in detection_service.detections()]
+                detections = detection_service.detections()
                 status_payload = {
                     "type": "telemetry",
                     "telemetry": get_robot().get_status(),
@@ -170,8 +170,8 @@ async def lifespan(app: FastAPI):
         robot = create_robot(mode=ROBOT_MODE)
     app.state.gateway = CommandGateway(
         robot,
-        # On-demand YOLO on the shared camera's newest frame (camera is created later in lifespan).
-        live_detections=LiveDetections(lambda: getattr(app.state, "camera", None), detection_service.detector),
+        # The gateway reads the one background DetectionLoop; it never infers on demand.
+        live_detections=LiveDetections(lambda: detection_service),
     )
     configure_gateway_provider(lambda: app.state.gateway)
     # Resolve the adapter and bind the LLM preemption hook before serving requests.
@@ -205,14 +205,15 @@ async def lifespan(app: FastAPI):
         except asyncio.TimeoutError:
             logger.error("Camera did not start within 10 s; continuing without it")
 
-    from backend.camera.source import CameraServiceSource
     if hasattr(app.state, "camera"):
-        detection_service.attach_source(CameraServiceSource(app.state.camera))
+        detection_service.attach_source(
+            CameraServiceDetectionSource(app.state.camera),
+            camera=app.state.camera,
+        )
 
     yield
 
-    if detection_service._loop:
-        detection_service._loop.stop()
+    detection_service.stop()
 
     await app.state.robot_relay.aclose()
 
@@ -720,7 +721,7 @@ async def get_live_detections(zone: str = "Robot camera"):
     """Returns the latest real YOLO11n object detections from the camera stream."""
     return {
         "status": detection_service.status(),
-        "detections": [d.model_dump() for d in detection_service.detections(zone=zone)],
+        "detections": detection_service.detections(zone=zone),
     }
 
 
