@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import hmac
 import os
+import time
 from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -73,6 +75,34 @@ def create_robot_relay_router(
         dependencies=[Depends(relay_auth)],
     )
     motion_active = False
+    repeat_task: asyncio.Task | None = None
+    last_motion_time = 0.0
+
+    async def repeat_loop(body_bytes: bytes, headers: dict):
+        nonlocal motion_active
+        try:
+            while motion_active and (time.monotonic() - last_motion_time) < 2.0:
+                await asyncio.sleep(0.2)
+                if not motion_active:
+                    break
+                await get_relay()._client.request(
+                    "POST",
+                    protocol.PATH_MOTION,
+                    content=body_bytes,
+                    headers=headers,
+                    timeout=0.3,
+                )
+        except Exception:
+            pass
+        finally:
+            if motion_active and (time.monotonic() - last_motion_time) >= 2.0:
+                motion_active = False
+                try:
+                    await get_relay()._stop_client.request(
+                        "POST", protocol.PATH_STOP, headers=headers, timeout=0.3
+                    )
+                except Exception:
+                    pass
 
     def audit(description: str) -> None:
         try:
@@ -111,7 +141,7 @@ def create_robot_relay_router(
 
     async def relay_motion(request: Request, path: str, moving: bool | None) -> Response:
         """Relay a motion command; audit only start/stop transitions and non-2xx replies."""
-        nonlocal motion_active
+        nonlocal motion_active, repeat_task, last_motion_time
         response = await forward(request, path)
         if not 200 <= response.status_code < 300:
             audit(f"Relayed motion to Pi Robot API; HTTP {response.status_code}.")
@@ -122,6 +152,17 @@ def create_robot_relay_router(
             elif not moving and motion_active:
                 motion_active = False
                 audit(f"Relayed motion stopped to Pi Robot API; HTTP {response.status_code}.")
+
+        if moving and 200 <= response.status_code < 300:
+            last_motion_time = time.monotonic()
+            if os.environ.get("ROBOT_CONTINUOUS_MOTION", "true").lower() in ("1", "true", "yes"):
+                if repeat_task and not repeat_task.done():
+                    repeat_task.cancel()
+                headers = get_relay()._request_headers(request)
+                repeat_task = asyncio.create_task(repeat_loop(await request.body(), headers))
+        elif not moving and repeat_task and not repeat_task.done():
+            repeat_task.cancel()
+
         return response
 
     @router.post("/motion")
@@ -149,7 +190,9 @@ def create_robot_relay_router(
 
     @router.post("/stop")
     async def stop(request: Request):
-        nonlocal motion_active
+        nonlocal motion_active, repeat_task
+        if repeat_task and not repeat_task.done():
+            repeat_task.cancel()
         response = await forward(request, protocol.PATH_STOP, "stop")
         if 200 <= response.status_code < 300:
             motion_active = False
