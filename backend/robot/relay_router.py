@@ -90,7 +90,7 @@ def create_robot_relay_router(
                     protocol.PATH_MOTION,
                     content=body_bytes,
                     headers=headers,
-                    timeout=0.3,
+                    timeout=1.5,
                 )
         except Exception:
             pass
@@ -99,7 +99,7 @@ def create_robot_relay_router(
                 motion_active = False
                 try:
                     await get_relay()._stop_client.request(
-                        "POST", protocol.PATH_STOP, headers=headers, timeout=0.3
+                        "POST", protocol.PATH_STOP, headers=headers, timeout=1.5
                     )
                 except Exception:
                     pass

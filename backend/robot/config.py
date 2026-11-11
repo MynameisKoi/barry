@@ -163,7 +163,7 @@ class RobotConfig:
     mode: RobotMode = RobotMode.SIMULATOR
     api_key: Optional[str] = None
     remote_url: str = "http://barry-pi.local:8100"
-    remote_timeout_s: float = 0.5
+    remote_timeout_s: float = 2.5
     dogzilla_port: str = "/dev/ttyAMA0"
     watchdog_ms: int = 500
     session_ttl_s: float = 10.0
