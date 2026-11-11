@@ -1,4 +1,8 @@
-"""``/api/v1/llm/*``: plan a goal with the LLM, run it immediately, inspect or cancel it."""
+"""``/api/v1/llm/*``: give the robot brain a goal, watch the task, cancel it.
+
+``POST /plan`` keeps its name (the shape is unchanged) but now starts the brain loop and returns
+at once; poll ``GET /task`` for the steps and the final ``answer``.
+"""
 
 from __future__ import annotations
 
@@ -8,14 +12,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from backend.ai.control.executor import DryRunGateway, GatewayLike, TaskRunner
-from backend.ai.control.planner import (
-    Planner,
-    PlannerError,
-    PlannerNotConfigured,
-    create_planner,
-)
-from backend.ai.control.tools import PlanValidationError
+from backend.ai.control.brain import Brain, BrainNotConfigured, create_brain
+from backend.ai.control.executor import DryRunGateway, GatewayLike, LoopLimits, TaskRunner
 from backend.robot.relay_router import QuestRelayAuth
 
 logger = logging.getLogger(__name__)
@@ -27,13 +25,12 @@ class PlanRequest(BaseModel):
 
 def create_llm_router(
     auth: QuestRelayAuth | None = None,
-    planner: Planner | None = None,
+    brain: Brain | None = None,
     gateway: GatewayLike | None = None,
+    limits: LoopLimits | None = None,
 ) -> APIRouter:
-    planner = planner or create_planner()
     # TODO(gateway #57): default to the real CommandGateway instead of the dry-run recorder.
-    gateway = gateway or DryRunGateway()
-    runner = TaskRunner(gateway)
+    runner = TaskRunner(gateway or DryRunGateway(), brain or create_brain(), limits or LoopLimits.from_env())
     router = APIRouter(
         prefix="/api/v1/llm",
         tags=["LLM"],
@@ -41,25 +38,15 @@ def create_llm_router(
     )
 
     @router.post("/plan")
-    async def plan_and_run(body: PlanRequest) -> dict[str, Any]:
+    async def start_task(body: PlanRequest) -> dict[str, Any]:
         goal = body.goal.strip()
         logger.info("LLM goal: %r", goal)
         try:
-            result = await planner.plan(goal, await gateway.status(), await gateway.detections())
-        except PlannerNotConfigured:
+            # No confirm step: the loop starts now; the gateway's limits are the safety net.
+            task = await runner.start(goal)
+        except BrainNotConfigured:
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "LLM control is not configured")
-        except PlanValidationError as exc:
-            logger.warning("LLM plan rejected: %s", exc)
-            raise HTTPException(422, f"plan rejected: {exc}")
-        except PlannerError:
-            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "planner failed")
-
-        if result.status != "plan":
-            return {"status": result.status, "text": result.text, "plan": [], "task": runner.snapshot()}
-        # No confirm step: the plan starts immediately; the gateway's limits are the safety net.
-        task = await runner.start(goal, result.plan)
-        logger.info("LLM plan started: %s", [c.name for c in result.plan])
-        return {"status": "started", "text": result.text, "plan": [c.name for c in result.plan], "task": task.to_dict()}
+        return {"status": "started", "task": task.to_dict()}
 
     @router.post("/task/cancel")
     async def cancel_task() -> dict[str, Any]:
