@@ -97,6 +97,12 @@ def create_robot_relay_router(
     repeat_task: asyncio.Task | None = None
     last_motion_time = 0.0
 
+    def cancel_repeat() -> None:
+        """Stop re-sending motion NOW. Called before forwarding any stop-class command, so a slow,
+        unreachable or erroring Pi cannot leave the loop re-sending the last motion afterwards."""
+        if repeat_task and not repeat_task.done():
+            repeat_task.cancel()
+
     async def repeat_loop(body_bytes: bytes, headers: dict):
         """Re-send the last Quest motion every 0.2 s for up to the continuous-motion window since the
         last real Quest command, then stop. Cancelled (no stop sent here) when a newer Quest command or
@@ -231,9 +237,8 @@ def create_robot_relay_router(
 
     @router.post("/stop")
     async def stop(request: Request):
-        nonlocal motion_active, repeat_task
-        if repeat_task and not repeat_task.done():
-            repeat_task.cancel()
+        nonlocal motion_active
+        cancel_repeat()
         response = await forward(request, protocol.PATH_STOP, "stop")
         if 200 <= response.status_code < 300:
             motion_active = False
@@ -242,7 +247,9 @@ def create_robot_relay_router(
     @router.post("/emergency-stop")
     async def emergency_stop(request: Request):
         nonlocal motion_active
-        # Priority lane (PRIORITY_PATHS) and audited on every request, like /stop.
+        # Priority lane (PRIORITY_PATHS) and audited on every request, like /stop. The repeat loop is
+        # cancelled first and unconditionally: whatever the Pi answers, no more motion is re-sent.
+        cancel_repeat()
         response = await forward(request, protocol.PATH_EMERGENCY_STOP, "emergency_stop")
         if 200 <= response.status_code < 300:
             motion_active = False
@@ -259,6 +266,7 @@ def create_robot_relay_router(
     @router.post("/reset")
     async def reset(request: Request):
         nonlocal motion_active
+        cancel_repeat()   # a full robot reset must never be followed by a stale motion repeat
         response = await forward(request, protocol.PATH_RESET, "reset")
         if 200 <= response.status_code < 300:
             motion_active = False

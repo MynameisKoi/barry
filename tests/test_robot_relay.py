@@ -697,3 +697,54 @@ def test_continuous_motion_can_be_turned_off(monkeypatch):
         client.post(protocol.PATH_MOTION, json=MOVE)
         time.sleep(0.6)
     assert len(pi.motions) == 1 and pi.stops == []
+
+
+# ---------------------------------------------------------------- stop-class commands cancel the loop first
+
+def _run_stop_class_while_repeating(monkeypatch, path, pi_status):
+    """A repeat loop is running; `path` is sent and the Pi answers `pi_status` (or is unreachable when
+    None). Returns (motions_at_command, motions_after_waiting, response_status)."""
+    monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION_WINDOW_S", "2.0")
+    monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION", "true")
+    motions: List[float] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path == protocol.PATH_MOTION:
+            motions.append(time.monotonic())
+            return httpx.Response(200, json={"status": "accepted"})
+        if pi_status is None:
+            raise httpx.ConnectError("pi unreachable")
+        return httpx.Response(pi_status, json={"detail": "pi error"})
+
+    client, _, _ = make_client(respond, stop_handler=respond)
+    with client:
+        assert client.post(protocol.PATH_MOTION, json=MOVE).status_code == 200
+        assert _wait_for(lambda: len(motions) >= 3, 2.0), "repeat loop never started"
+        status = client.post(path).status_code
+        at_command = len(motions)
+        time.sleep(0.8)                  # four repeat intervals
+        return at_command, len(motions), status
+
+
+def test_emergency_stop_cancels_repeat_even_when_the_pi_returns_503(monkeypatch):
+    at_command, after, status = _run_stop_class_while_repeating(monkeypatch, protocol.PATH_EMERGENCY_STOP, 503)
+    assert status == 503
+    assert after == at_command, "motion kept being re-sent after the e-stop"
+
+
+def test_emergency_stop_cancels_repeat_when_the_pi_is_unreachable(monkeypatch):
+    at_command, after, status = _run_stop_class_while_repeating(monkeypatch, protocol.PATH_EMERGENCY_STOP, None)
+    assert status == 503                 # the relay's own "Pi unavailable"
+    assert after == at_command
+
+
+def test_reset_cancels_repeat_even_when_the_pi_returns_503(monkeypatch):
+    at_command, after, status = _run_stop_class_while_repeating(monkeypatch, protocol.PATH_RESET, 503)
+    assert status == 503
+    assert after == at_command, "motion kept being re-sent after a reset"
+
+
+def test_stop_still_cancels_repeat_when_the_pi_returns_503(monkeypatch):
+    at_command, after, status = _run_stop_class_while_repeating(monkeypatch, protocol.PATH_STOP, 503)
+    assert status == 503
+    assert after == at_command
