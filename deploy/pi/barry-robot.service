@@ -1,0 +1,21 @@
+[Unit]
+Description=BARRY Pi Robot API (DOGZILLA S2)
+Documentation=file:///opt/barry/deploy/pi/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=barry-robot
+Group=barry-robot
+# dialout gives access to the DOGZILLA serial port (DOGZILLA_PORT).
+SupplementaryGroups=dialout
+WorkingDirectory=/opt/barry
+EnvironmentFile=/etc/barry/robot.env
+ExecStart=/opt/barry/.venv/bin/uvicorn backend.robot.server:app --host 0.0.0.0 --port 8100 --workers 1
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
