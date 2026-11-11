@@ -252,7 +252,11 @@ async def cancel_llm_for_legacy_hand_controls(request, call_next):
         gateway = getattr(app.state, "gateway", None)
         if gateway is not None:
             gateway.notify_preempt("hand")
-    elif request.method == "POST" and path in relay_sources:
+    elif request.method == "POST" and path in {"/api/v1/stop", "/api/v1/emergency-stop"}:
+        gateway = getattr(app.state, "gateway", None)
+        if gateway is not None:
+            gateway.notify_preempt(relay_sources[path])
+    elif request.method == "POST" and path in {"/api/v1/motion", "/api/v1/motion/discrete"}:
         try:
             QuestRelayAuth.from_env()(request)
         except HTTPException:

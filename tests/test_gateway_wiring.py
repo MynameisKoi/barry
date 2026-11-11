@@ -251,3 +251,46 @@ async def test_unauthenticated_quest_relay_does_not_preempt_llm(monkeypatch):
     })
     await main.cancel_llm_for_legacy_hand_controls(request, lambda _: asyncio.sleep(0, result=Response()))
     assert notifications == []
+
+
+class SlowBrain:
+    def ensure_ready(self):
+        pass
+
+    async def turn(self, _messages):
+        await asyncio.sleep(5)
+
+
+@pytest.mark.parametrize(("path", "source"), [
+    ("/api/v1/stop", "hand"),
+    ("/api/v1/emergency-stop", "emergency"),
+])
+@pytest.mark.asyncio
+async def test_unkeyed_priority_stop_routes_cancel_running_llm(monkeypatch, simulator, path, source):
+    import backend.main as main
+
+    gateway = CommandGateway(simulator, mission_check=lambda: True)
+    adapter = CommandGatewayAdapter(gateway)
+    router = create_llm_router(QuestRelayAuth(KEY), SlowBrain(), adapter)
+    runner = router.task_runner
+    adapter.gateway  # register the runner's preemption hook
+    monkeypatch.setattr(main.app.state, "gateway", gateway, raising=False)
+    await runner.start("a long running goal")
+    await asyncio.sleep(0.02)
+    path_bytes = path.encode()
+    request = Request({
+        "type": "http", "method": "POST", "path": path, "raw_path": path_bytes,
+        "query_string": b"", "headers": [], "server": ("test", 80),
+        "client": ("test", 1234), "scheme": "http", "http_version": "1.1",
+    })
+
+    async def endpoint(_request):
+        if source == "hand":
+            await gateway.stop(source="hand")
+        else:
+            await gateway.emergency_stop(source="emergency")
+        return Response()
+
+    await main.cancel_llm_for_legacy_hand_controls(request, endpoint)
+    await runner.wait()
+    assert runner.task.state == "cancelled"
