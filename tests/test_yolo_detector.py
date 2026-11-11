@@ -64,9 +64,10 @@ def test_detection_loop_with_synthetic_source_and_stale_results():
     loop = DetectionLoop(SyntheticSource(CameraConfig(device="synthetic", width=160, height=120)), EmptyDetector(), fps=30, stale_s=.03)
     loop.start()
     deadline = time.monotonic() + 1
-    while loop._updated_at == 0 and time.monotonic() < deadline: time.sleep(.005)
-    loop._updated_at = time.monotonic() - 3
-    assert not loop.available and loop.latest() == []
+    while loop.latest()[1] is None and time.monotonic() < deadline: time.sleep(.005)
+    with loop._lock:
+        loop._frame_timestamp = time.monotonic() - 3
+    assert not loop.available and loop.latest()[0] == []
     loop.stop()
 
 
@@ -93,8 +94,8 @@ def test_detection_loop_recovers_after_transient_source_error():
     loop = DetectionLoop(source, OneDetection(), fps=30)
     loop.start()
     deadline = time.monotonic() + 3
-    while not loop.latest() and time.monotonic() < deadline: time.sleep(.01)
-    assert loop.latest()[0].object == "person"
+    while not loop.latest()[0] and time.monotonic() < deadline: time.sleep(.01)
+    assert loop.latest()[0][0].object == "person"
     assert source.opens >= 2
     loop.stop()
 

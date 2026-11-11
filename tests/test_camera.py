@@ -24,8 +24,8 @@ def test_ai_detection_processing_never_fabricates_without_model():
     frame = camera_streamer.capture_frame()
     from backend.ai.detection import AIDetectionService
     service = AIDetectionService(model_path="/missing/yolo11n.onnx")
-    assert service.process_frame(frame, zone="Sector-Delta") == []
-    assert service.process_frame(None, zone="Sector-Delta") == []
+    assert frame is not None
+    assert service.detections(zone="Sector-Delta") == []
 
 
 def test_flipper_uid_regex():
