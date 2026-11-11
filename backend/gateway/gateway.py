@@ -36,7 +36,7 @@ class CommandGateway:
 
     def __init__(self, robot: RobotInterface | None = None, *, mission_check: Callable[[], bool] | None = None,
                  max_speed: float | None = None, max_bounded_s: float | None = None,
-                 turn_deg_per_s: float | None = None) -> None:
+                 turn_deg_per_s: float | None = None, live_detections: Any = None) -> None:
         self.robot = robot or create_robot()
         self.mission_check = mission_check or (lambda: bool(mission_service.get_status().get("active")))
         self.max_speed = _env_float("GATEWAY_MAX_SPEED", 0.6) if max_speed is None else max_speed
@@ -53,6 +53,8 @@ class CommandGateway:
             self._emergency_stopped = False
         self._preempt_callbacks: list[Callable[[str], Any]] = []
         self.online = True
+        # backend.gateway.detections.LiveDetections (or None = no detector wired).
+        self.live_detections = live_detections
 
     async def motion(self, command: MotionCommand, *, source: str) -> GatewayResult:
         cid = self._id(source)
@@ -228,17 +230,27 @@ class CommandGateway:
             return {"control_state": control.to_dict(), "telemetry": telemetry.to_dict(),
                     "online": bool(self.online and self.robot.connected),
                     "active_source": self._active_source, "emergency_stopped": self._emergency_stopped,
-                    "detector": "unavailable"}
+                    "detector": self._detector_state()}
         except Exception:
             self.online = False
             return {"control_state": {}, "telemetry": {}, "online": False,
                     "active_source": self._active_source, "emergency_stopped": self._emergency_stopped,
-                    "detector": "unavailable"}
+                    "detector": self._detector_state()}
+
+    def _detector_state(self) -> str:
+        source = self.live_detections
+        return source.state() if source is not None else "unavailable"
 
     async def detections(self) -> list[Any]:
-        # TODO(detection): return the latest verified YOLO results when the real detector is wired.
-        # Never use AIDetectionService's contour/random fallback as control context.
-        return []
+        """Live YOLO detections from the newest shared-camera frame, each with ``age_s``; ``[]`` when
+        there is no model/camera, the frame is stale, or inference failed. Never simulated."""
+        source = self.live_detections
+        if source is None:
+            return []
+        try:
+            return await source.detections()
+        except Exception:
+            return []
 
     def _notify_preempt(self, source: str) -> None:
         if source in {"hand", "voice", "emergency"}:

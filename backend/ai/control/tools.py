@@ -86,7 +86,12 @@ TOOL_DEFS: list[dict[str, Any]] = [
         {"action_id": {"type": "integer", "enum": list(ACTION_IDS)}},
     ),
     _tool("get_status", "Read the robot's current status (read-only)."),
-    _tool("get_detections", "Read the latest object detections from the camera (read-only)."),
+    _tool(
+        "get_detections",
+        "Run object detection on the robot camera's newest frame (read-only). Returns a list of "
+        "{label, confidence, box, age_s}: age_s is how many seconds old the frame is. The list is empty "
+        "when the camera or detector is unavailable or the frame is stale, so an empty list does not "
+        "prove nothing is there."),
 ]
 _TOOL_NAMES = {t["name"] for t in TOOL_DEFS}
 

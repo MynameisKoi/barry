@@ -37,7 +37,11 @@ inside the ranges the tools state; if a call comes back as an error, read it and
 The robot moves immediately and the operator can stop it at any time, so do not ask for
 confirmation. When the goal is done, or if the operator only asks a question, reply in plain text
 with a short answer that uses what the tools returned. You are given the robot's status and
-detections at the start as context."""
+detections at the start as context.
+Detections come from the robot's own camera (a COCO object detector) and each carries age_s, the age of
+the frame in seconds. They may be empty when the camera or detector is unavailable, which is not
+evidence that nothing is there: say you could not see rather than guessing. Only mention objects that
+a detection result actually listed; never invent or assume objects, and mention age_s if it is large."""
 
 
 class BrainNotConfigured(RuntimeError):
