@@ -237,11 +237,19 @@
             return sessionRequest;
         }
 
-        // Auto-acquire control session on startup and keep alive
+        // Acquire a control session on startup. There is deliberately NO periodic re-acquire:
+        // POST /api/v1/session always issues a NEW session and drops the previous one (single
+        // operator, last caller wins), so a timer would steal control from other clients. The
+        // session stays alive while commands flow (each one extends it by 10 s); after an idle
+        // gap the first sequenced command gets a stale-session 409 and is re-acquired + retried
+        // once in sendApiCommand below.
         acquireControlSession();
-        setInterval(acquireControlSession, 45000);
 
-        async function sendApiCommand(path, { body = null, sequenced = false, source = "hand", shouldSend = null } = {}) {
+        function isStaleSessionRefusal(response, payload) {
+            return response.status === 409 && /control session|sequence/i.test(String(payload?.detail || ""));
+        }
+
+        async function sendApiCommand(path, { body = null, sequenced = false, source = "hand", shouldSend = null, retried = false } = {}) {
             if (sequenced && !controlSessionId) {
                 await acquireControlSession();
             }
@@ -265,6 +273,16 @@
                     body: body === null ? undefined : JSON.stringify(body)
                 });
                 const payload = await response.json().catch(() => ({}));
+                if (sequenced && !retried && isStaleSessionRefusal(response, payload)) {
+                    // Session expired after an idle gap (or another client took it): get a fresh
+                    // one and retry this command ONCE, but only if it is still current (the stick
+                    // is still deflected / not superseded by a stop). Never retry blindly.
+                    controlSessionId = null;
+                    await acquireControlSession();
+                    if (controlSessionId && (!shouldSend || shouldSend())) {
+                        return sendApiCommand(path, { body, sequenced, source, shouldSend, retried: true });
+                    }
+                }
                 const resultStatus = commandResultStatus(payload, response);
                 const detailMessage = String(payload.detail || payload.message || "").replace(/^(MISSION_REQUIRED|BUSY|ESTOP_ACTIVE|OFFLINE|INVALID)\s*:\s*/i, "");
                 const message = resultStatus === "MISSION_REQUIRED"
@@ -881,6 +899,22 @@
             new THREE.Vector3(0, 0.58, -1.75),
             0, -Math.PI / 6.5 // Tilted ~27.7° upwards towards pilot
         );
+
+        // Restored: deleted in 1d4f16c while drawBottomPanel still calls it. Without it the page
+        // throws during start-up, the render loop never runs, and neither the virtual joystick nor
+        // the XR thumbsticks (both polled in the render loop) ever send motion.
+        function drawSegmentBtn(ctx, x, y, w, h, text, active) {
+            ctx.fillStyle = active ? "#6366f1" : "rgba(255, 255, 255, 0.08)";
+            ctx.strokeStyle = active ? "#a5b4fc" : "rgba(255, 255, 255, 0.2)";
+            ctx.lineWidth = 1;
+            roundRect(ctx, x, y, w, h, 8, true, true);
+
+            ctx.fillStyle = active ? "#ffffff" : "#94a3b8";
+            ctx.font = "bold 14px -apple-system, monospace";
+            ctx.textAlign = "center";
+            ctx.fillText(text, x + w / 2, y + h / 2 + 5);
+            ctx.textAlign = "left";
+        }
 
         function drawBottomPanel() {
             const { ctx, canvas: c, texture } = bottomPanel;
