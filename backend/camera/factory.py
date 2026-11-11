@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Optional
+import os
 
 from .config import CameraConfig
 from .service import CameraService
@@ -20,5 +21,13 @@ def build_camera_service(config: Optional[CameraConfig] = None) -> CameraService
     on shutdown.
     """
     config = config or CameraConfig.from_env()
-    source: FrameSource = SyntheticSource(config) if config.synthetic else YahboomSource(config)
+    camera_source = os.getenv("CAMERA_SOURCE", "auto").strip().lower()
+    if camera_source == "pi":
+        from .remote_pi import RemotePiCameraSource
+        source: FrameSource = RemotePiCameraSource(
+            os.getenv("CAMERA_PI_URL", "http://barry-pi.local:8100/api/v1/camera/stream"),
+            os.getenv("ROBOT_API_KEY", ""),
+        )
+    else:
+        source = SyntheticSource(config) if config.synthetic else YahboomSource(config)
     return CameraService(source, config)
