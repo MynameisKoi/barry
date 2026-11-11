@@ -28,7 +28,7 @@ def make_client(handler, *, stop_handler=None, quest_key=QUEST_KEY):
         mode=RobotMode.REMOTE,
         remote_url="http://pi.test",
         api_key="laptop-pi-secret",
-        remote_timeout_s=0.4,
+        remote_timeout_s=2.0,
     )
     relay = RobotApiRelay(
         config,
@@ -98,6 +98,15 @@ def test_laptop_key_is_injected_and_session_sequence_headers_are_unchanged():
     assert seen[protocol.SESSION_HEADER.lower()] == "session-123"
     assert seen[protocol.SEQ_HEADER.lower()] == "0042"
     assert seen[protocol.SENT_AT_HEADER.lower()] == "1731000000123"
+
+
+def test_discrete_motion_uses_short_motion_timeout():
+    def pi(request: httpx.Request) -> httpx.Response:
+        assert request.extensions["timeout"]["read"] == 0.5
+        return httpx.Response(200, json={"ok": True})
+
+    client, _, _ = make_client(pi)
+    assert client.post(protocol.PATH_MOTION_DISCRETE, json={"direction": "forward"}).status_code == 200
 
 
 def test_all_quest_robot_paths_forward_to_matching_pi_paths():

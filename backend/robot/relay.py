@@ -78,7 +78,7 @@ class RobotApiRelay:
         client = self._stop_client if priority_stop else self._client
         timeout_s = (
             self._motion_timeout_s
-            if path == protocol.PATH_MOTION or priority_stop
+            if path in (protocol.PATH_MOTION, protocol.PATH_MOTION_DISCRETE) or priority_stop
             else self.config.remote_timeout_s
         )
         try:
