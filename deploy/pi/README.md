@@ -46,11 +46,11 @@ sudo chmod 0750 /etc/barry
 
 cd /opt/barry
 python3 -m venv .venv
-.venv/bin/pip install fastapi uvicorn pydantic pyserial
+.venv/bin/pip install fastapi uvicorn pydantic pyserial opencv-python-headless
 sudo chown -R barry-robot:barry-robot /opt/barry
 ```
 
-The install list is the Phase 1 Pi set: FastAPI, uvicorn, pydantic, pyserial. Camera dependencies are added in Phase 4.
+Install FastAPI, uvicorn, pydantic, pyserial, and `opencv-python-headless` for the shared Pi camera service. ONNX Runtime remains laptop-side.
 
 Create the environment file:
 
@@ -99,6 +99,12 @@ curl -s http://<pi-address>:8100/healthz
 | `ROBOT_WATCHDOG_MS` | `500` | Stop if no motion command for this long. |
 | `ROBOT_SESSION_TTL_S` | `10` | Idle control session expiry. |
 | `ROBOT_MAX_COMMAND_AGE_MS` | `0` | `0` disables. Enable only with NTP on both machines. |
+| `CAMERA_ENABLED` | `true` | Enable the Pi camera service. Camera failures do not stop the robot API. |
+| `CAMERA_DEVICE` | `0` | OpenCV camera index or device path. |
+| `CAMERA_WIDTH` | `640` | Pi camera capture width. |
+| `CAMERA_HEIGHT` | `480` | Pi camera capture height. |
+| `CAMERA_TARGET_FPS` | `15` | Capture rate target. |
+| `CAMERA_MAX_VIEWERS` | `3` | Shared MJPEG viewer limit. |
 
 After editing `/etc/barry/robot.env`, run `sudo systemctl restart barry-robot`.
 

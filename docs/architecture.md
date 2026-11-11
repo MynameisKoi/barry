@@ -75,7 +75,7 @@ The system runs as two services:
    Because every implementation honours the same contract, switching from the simulator to the real robot changes neither the Unity app nor the laptop's `/api/*` and `/ws` contracts.
 
 2. **Laptop as Central Processing Unit**:
-   Heavy tasks (YOLO object detection inference, database persistence, mission state, and WebSocket broadcasting) run on the operator laptop to preserve battery and compute on the robotic platform. The Pi runs only the Robot API, with minimal dependencies (`requirements-pi.txt`: no OpenCV or ONNX Runtime).
+   Heavy tasks (YOLO object detection inference, database persistence, mission state, and WebSocket broadcasting) run on the operator laptop to preserve battery and compute on the robotic platform. The Pi runs the Robot API and shared camera capture service with `opencv-python-headless`; ONNX Runtime remains laptop-side.
 
 3. **Single Owner of the Hardware**:
    Only the Pi talks to the DOGZILLA serial port. The Robot API runs as one process (`uvicorn --workers 1`, managed by systemd) and serializes serial writes with a lock, so emergency stop state lives in exactly one place.

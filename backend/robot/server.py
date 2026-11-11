@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
+import os
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -19,6 +20,12 @@ from typing import Any, AsyncIterator, Callable, Optional
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, ConfigDict, Field
+from backend.camera.auth import CameraAuth
+from backend.camera.config import CameraConfig, CameraConfigError
+from backend.camera.router import create_camera_router
+from backend.camera.service import CameraService
+from backend.camera.source import FrameSource
+from backend.camera.yahboom import YahboomSource
 
 from backend.robot.config import APPROVED_ACTIONS, RobotConfig
 from backend.robot.interface import (
@@ -129,17 +136,39 @@ class _State:
                 await self.stop(invalidate=False)
 
 
-def create_app(robot: RobotInterface, config: RobotConfig) -> FastAPI:
+def create_app(robot: RobotInterface, config: RobotConfig,
+               camera_config: Optional[CameraConfig] = None,
+               camera_source: Optional[FrameSource] = None) -> FastAPI:
     """Create an isolated API using dependency-injected robot and settings."""
     if config.mode == RobotMode.DOGZILLA and not config.api_key:
         raise RuntimeError("ROBOT_API_KEY is required in dogzilla mode")
     state = _State(robot, config)
+    # Camera credentials intentionally reuse the laptop's robot key for now.
+    # Phase 4 may replace this with ROBOT_EMERGENCY_KEY via this single hook.
+    if camera_config is None:
+        try:
+            pi_camera_config = CameraConfig.from_env()
+        except CameraConfigError as exc:
+            logger.error("Invalid Pi camera configuration; disabling camera: %s", exc)
+            pi_camera_config = CameraConfig(enabled=False)
+        if "CAMERA_TARGET_FPS" not in os.environ:
+            pi_camera_config = pi_camera_config.model_copy(update={"target_fps": 15})
+    else:
+        pi_camera_config = camera_config
+    # This is the Pi API, so its source is always the local Yahboom camera.
+    # CAMERA_SOURCE=pi is reserved for the laptop-side detector factory.
+    camera = (CameraService(camera_source, pi_camera_config) if camera_source
+              else CameraService(YahboomSource(pi_camera_config), pi_camera_config))
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await state.stop(invalidate=False)
         state.watchdog_task = asyncio.create_task(state.watchdog())
         try:
+            try:
+                await asyncio.to_thread(camera.start)
+            except Exception:
+                logger.exception("Pi camera unavailable; robot API will continue without camera")
             yield
         finally:
             state.watchdog_task.cancel()
@@ -148,9 +177,11 @@ def create_app(robot: RobotInterface, config: RobotConfig) -> FastAPI:
             except asyncio.CancelledError:
                 pass
             await state.stop(invalidate=False)
+            await asyncio.to_thread(camera.stop)
 
     api = FastAPI(title="Barry Pi Robot API", version="1.0", lifespan=lifespan)
     api.state.robot_server = state
+    api.state.camera = camera
 
     async def authenticate(value: Optional[str] = Header(None, alias=AUTH_HEADER)) -> None:
         if not config.api_key or not hmac.compare_digest(value or "", config.api_key):
@@ -348,6 +379,11 @@ def create_app(robot: RobotInterface, config: RobotConfig) -> FastAPI:
             "watchdog": {"armed": armed, "timeout_ms": config.watchdog_ms},
             "intensity": control.intensity.value, "gait": control.gait.value,
         }
+
+    api.include_router(create_camera_router(
+        lambda: camera,
+        CameraAuth(config.api_key, header_name=AUTH_HEADER),
+    ))
 
     return api
 

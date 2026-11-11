@@ -3,7 +3,7 @@
 A browser ``<img>`` element cannot attach custom headers, so the shared secret
 is accepted from either of:
 
-1. ``X-Camera-Key`` request header  (laptop relay, scripts, curl)
+1. configured request header (default ``X-Camera-Key``; Pi API uses ``X-Robot-Key``)
 2. ``?token=...`` query parameter   (``<img src=".../stream?token=...">``)
 
 The request is accepted if ANY presented credential verifies, so a stale value
@@ -34,10 +34,12 @@ QUERY_PARAM = "token"
 class CameraAuth:
     """Callable FastAPI dependency that validates the camera access token."""
 
-    def __init__(self, api_key: Optional[str], *, allow_anonymous: bool = False) -> None:
+    def __init__(self, api_key: Optional[str], *, allow_anonymous: bool = False,
+                 header_name: str = HEADER_NAME) -> None:
         # Empty/whitespace-only keys count as "not configured".
         self._key = api_key.strip().encode("utf-8") if api_key and api_key.strip() else None
         self._allow_anonymous = allow_anonymous
+        self._header_name = header_name
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "CameraAuth":
@@ -70,7 +72,7 @@ class CameraAuth:
         # short-circuit on the first non-empty value, so a stale header cannot
         # mask a valid ?token=).
         presented = (
-            request.headers.get(HEADER_NAME),
+            request.headers.get(self._header_name),
             *request.query_params.getlist(QUERY_PARAM),
         )
         if not any([self.verify(c) for c in presented]):

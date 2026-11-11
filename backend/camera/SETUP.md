@@ -15,17 +15,19 @@ the Raspberry Pi deployment. Plan: `camera_plan.md`. Status as of 2026-11-06.
 | MJPEG generator | `stream.py` | |
 | Auth | `auth.py` | `X-Camera-Key` header or `?token=` |
 | Router | `router.py` | `/api/v1/camera/{stream,snapshot,status}` |
-| Wiring | `factory.py` → `build_camera_service()` | `CAMERA_DEVICE=synthetic` selects the test source |
+| Wiring | `factory.py` → `build_camera_service()` | `CAMERA_SOURCE=pi` reads the Pi MJPEG stream; `CAMERA_DEVICE=synthetic` selects test frames |
 
-Currently the camera router is mounted in the **laptop backend**
-(`backend/main.py`, lifespan startup). There is **no standalone Pi entry
-point yet** (see section 4).
+The router is mounted in both the laptop backend and the Pi Robot API. On the
+Pi, the same `CameraService` owns one `YahboomSource` shared by all viewers;
+camera startup errors leave robot control available.
 
 ## 2. Environment variables
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `CAMERA_API_KEY` | none | **Required.** Shared secret. Unset = every camera request returns 503 (fail-closed) |
+| `CAMERA_SOURCE` | `auto` | Laptop source selection; `pi` reads `CAMERA_PI_URL` with `ROBOT_API_KEY` |
+| `CAMERA_PI_URL` | `http://barry-pi.local:8100/api/v1/camera/stream` | Pi MJPEG stream when source is `pi` |
 | `CAMERA_ENABLED` | `true` | `false` skips camera startup |
 | `CAMERA_DEVICE` | `0` | Device index, path such as `/dev/video0`, or `synthetic` |
 | `CAMERA_WIDTH` / `CAMERA_HEIGHT` | `640` / `480` | |
@@ -57,27 +59,18 @@ storage; Unity sends `X-Camera-Key` from `BarryNetworkManager.cameraApiKey`.
 
 ## 4. Raspberry Pi setup — TO DO (nothing below has been done or tested on the Pi)
 
-1. **Entry point.** The Pi needs a small standalone FastAPI app (lifespan:
-   `build_camera_service()` → `start()` / `stop()`, then
-   `create_camera_router(...)`). It does not exist yet. Alternative: relay
-   from the laptop, which is what `camera_plan.md` section 10 allows.
-2. **Dependencies.** `opencv-python-headless` and `numpy` are in the repo
-   `requirements.txt`, but `docs/architecture.md` says the Pi should stay
-   minimal (no OpenCV). Decide: add a `requirements-pi` entry for the camera,
-   or run the camera on the laptop side.
-3. **Camera device.** Confirm the real device index or path on the Pi
+1. **Camera device.** Confirm the real device index or path on the Pi
    (`ls /dev/video*`) and set `CAMERA_DEVICE`. Confirm the Yahboom
    `camera_dogzilla.py` behaviour matches `yahboom.py`; that source file was
    not available in the repo, so `yahboom.py` wraps plain OpenCV.
-4. **Only one process may open the camera.** Do not run Yahboom's own
+2. **Only one process may open the camera.** Do not run Yahboom's own
    `app_dogzilla.py` (port 6500) at the same time.
-5. **Secrets.** Put `CAMERA_API_KEY` in the Pi's env file (for example
-   alongside `/etc/barry/robot.env`), not in source. The laptop needs the same
-   key if it relays.
-6. **Network.** Pick the port, allow it on the LAN only, and reserve a fixed
+3. **Secrets.** The Pi camera currently authenticates with `ROBOT_API_KEY`
+   in the `X-Robot-Key` header. A dedicated emergency key is a future hook.
+4. **Network.** Keep the stream on the LAN and reserve a fixed
    address for the Pi. No HTTPS is set up; do not expose this to the internet.
-7. **Run under systemd** with a single worker, like the Robot API.
-8. **Verify on hardware:** snapshot returns a real JPEG, stream plays in the
+5. **Run under systemd** with a single worker, like the Robot API.
+6. **Verify on hardware:** snapshot returns a real JPEG, stream plays in the
    laptop browser and the Quest browser, unplugging the camera shows
    `connected: false` and it recovers when plugged back in, movement commands
    are unaffected while streaming.
