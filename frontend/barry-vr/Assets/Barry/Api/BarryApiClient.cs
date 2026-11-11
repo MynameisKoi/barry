@@ -86,6 +86,19 @@ namespace Barry.Api
         public IEnumerator GetMissionStatus(Action<ApiResponse<MissionStatus>> completed) =>
             Send("GET", "/api/mission/status", null, false, completed);
 
+        // LLM brain (backend/ai/control/router.py). Same X-Robot-Key as everything else.
+        public IEnumerator StartLlmTask(string goal, Action<ApiResponse<LlmStartResponse>> completed) =>
+            Send("POST", ApiPrefix + "/llm/plan", new LlmGoalRequest(goal), false, completed, null, null,
+                (raw, value) => LlmTaskParser.Enrich(raw, value.task));
+
+        public IEnumerator GetLlmTask(Action<ApiResponse<LlmTaskStatus>> completed) =>
+            Send("GET", ApiPrefix + "/llm/task", null, false, completed, null, null,
+                (raw, value) => LlmTaskParser.Enrich(raw, value));
+
+        public IEnumerator CancelLlmTask(Action<ApiResponse<LlmCancelResponse>> completed) =>
+            Send("POST", ApiPrefix + "/llm/task/cancel", null, false, completed, null, null,
+                (raw, value) => LlmTaskParser.Enrich(raw, value.task));
+
         public IEnumerator SetMovementStyle(MovementStyleRequest body, Action<ApiResponse<CommandResult>> completed) =>
             Send("POST", ApiPrefix + "/movement-style", body, true, completed);
 
@@ -105,7 +118,8 @@ namespace Barry.Api
             Send("GET", ApiPrefix + "/camera/status", null, false, completed);
 
         private IEnumerator Send<T>(string method, string path, object body, bool sequenced,
-            Action<ApiResponse<T>> completed, Action<T> onSuccess = null, Func<string, string> reshape = null) where T : class
+            Action<ApiResponse<T>> completed, Action<T> onSuccess = null, Func<string, string> reshape = null,
+            Action<string, T> afterParse = null) where T : class
         {
             byte[] bytes = body == null ? null : Encoding.UTF8.GetBytes(JsonUtility.ToJson(body));
             using (var request = new UnityWebRequest(baseUrl + path, method))
@@ -140,6 +154,7 @@ namespace Barry.Api
                     yield break;
                 }
 
+                afterParse?.Invoke(text, value);
                 onSuccess?.Invoke(value);
                 completed?.Invoke(new ApiResponse<T>(true, request.responseCode, value, null));
             }

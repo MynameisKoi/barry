@@ -288,6 +288,19 @@ namespace Barry.Api
                 if (camera.resolution != null && (camera.resolution.width <= 0 || camera.resolution.height <= 0))
                     return "Camera status has an invalid resolution.";
             }
+            else if (value is LlmStartResponse started)
+            {
+                // JsonUtility instantiates nested objects, so a missing task shows up as an empty state.
+                if (started.task == null || string.IsNullOrWhiteSpace(started.task.state)) return "LLM start response is missing task.";
+            }
+            else if (value is LlmTaskStatus task)
+            {
+                if (string.IsNullOrWhiteSpace(task.state)) return "LLM task is missing state.";
+            }
+            else if (value is LlmCancelResponse cancelled)
+            {
+                if (cancelled.task == null || string.IsNullOrWhiteSpace(cancelled.task.state)) return "LLM cancel response is missing task.";
+            }
             else if (value is OperatorsResponse operators)
             {
                 if (operators.operators == null) return "Operators response is missing operators.";

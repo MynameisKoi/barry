@@ -21,10 +21,12 @@ namespace Barry.App
         [SerializeField] ControlStripView controlStrip;
         [SerializeField] EmergencyBannerView emergencyBanner;
         [SerializeField] MissionPanelView missionPanel;
+        [SerializeField] LlmPanelView brainPanel;
 
-        InputAction moveAction, turnAction, stopAction, toggleActionsAction, intensityAction, gripLeftAction, gripRightAction;
+        InputAction moveAction, turnAction, stopAction, toggleActionsAction, intensityAction, gripLeftAction, gripRightAction, brainAction;
         readonly EmergencyStopGesture emergencyGesture = new EmergencyStopGesture();
         readonly MissionPanelModel missionModel = new MissionPanelModel();
+        readonly LlmPanelModel brainModel = new LlmPanelModel();
         ActionsPanelModel actionsModel;
         ActionsResponse actionsResponse;
         CameraStatusResponse cameraStatus;
@@ -64,6 +66,11 @@ namespace Barry.App
             toggleActionsAction.AddBinding("<Gamepad>/buttonNorth");
             toggleActionsAction.AddBinding("<Keyboard>/tab");
 
+            // Y (left secondary) opens the brain panel; HANDOFF §6 reserves it for future modes.
+            brainAction = new InputAction("Brain", InputActionType.Button);
+            brainAction.AddBinding("<XRController>{LeftHand}/secondaryButton");
+            brainAction.AddBinding("<Gamepad>/buttonEast");
+            brainAction.AddBinding("<Keyboard>/y");
             intensityAction = new InputAction("Intensity", InputActionType.Button);
             intensityAction.AddBinding("<XRController>{LeftHand}/primaryButton");
             intensityAction.AddBinding("<Gamepad>/buttonWest");
@@ -79,8 +86,9 @@ namespace Barry.App
             gripRightAction.AddBinding("<XRController>{RightHand}/gripButton");
             stopAction.performed += _ => app.RequestOperatorStop();
             toggleActionsAction.performed += _ => ToggleActions();
+            brainAction.performed += _ => ToggleBrain();
             intensityAction.performed += _ => CycleIntensity();
-            foreach (var a in new[] { moveAction, turnAction, stopAction, toggleActionsAction, intensityAction, gripLeftAction, gripRightAction }) a.Enable();
+            foreach (var a in new[] { moveAction, turnAction, stopAction, toggleActionsAction, intensityAction, gripLeftAction, gripRightAction, brainAction }) a.Enable();
             emergencyGesture.Reset();
 
             controlStrip.StopClicked += app.RequestOperatorStop;
@@ -88,6 +96,11 @@ namespace Barry.App
             controlStrip.ExitClicked += Exit;
             if (emergencyBanner != null) emergencyBanner.ResetClicked += app.PressEmergencyReset;
             controlStrip.EndMissionClicked += OnEndMissionClicked;
+            if (brainPanel != null)
+            {
+                brainPanel.PresetChosen += OnPresetChosen;
+                brainPanel.CancelClicked += OnBrainCancel;
+            }
             app.MissionRequiredHint += missionModel.ShowMissionRequired;
             if (missionPanel != null)
             {
@@ -101,8 +114,13 @@ namespace Barry.App
 
         void OnDisable()
         {
-            foreach (var a in new[] { moveAction, turnAction, stopAction, toggleActionsAction, intensityAction, gripLeftAction, gripRightAction }) a?.Dispose();
+            foreach (var a in new[] { moveAction, turnAction, stopAction, toggleActionsAction, intensityAction, gripLeftAction, gripRightAction, brainAction }) a?.Dispose();
             if (emergencyBanner != null && app != null) emergencyBanner.ResetClicked -= app.PressEmergencyReset;
+            if (brainPanel != null)
+            {
+                brainPanel.PresetChosen -= OnPresetChosen;
+                brainPanel.CancelClicked -= OnBrainCancel;
+            }
             if (app != null) app.MissionRequiredHint -= missionModel.ShowMissionRequired;
             if (controlStrip != null) controlStrip.EndMissionClicked -= OnEndMissionClicked;
             if (missionPanel != null)
@@ -155,6 +173,10 @@ namespace Barry.App
             header.SetEmergency(hud);
             header.SetMission(MissionChipModel.From(app.Mission.Latest));
             missionModel.Update(app.Mission);
+            brainModel.Update(app.Llm);
+            if (brainPanel != null) brainPanel.Bind(brainModel);
+            // The collapsed ACTIONS pill would ghost through the brain panel, so it is hidden while that is open.
+            if (actionsPanel.gameObject.activeSelf == brainModel.Open) actionsPanel.gameObject.SetActive(!brainModel.Open);
             if (missionPanel != null) missionPanel.Bind(missionModel);
             controlStrip.BindEndMission(EndMissionModel.From(app.Mission));
             if (emergencyBanner != null) emergencyBanner.Bind(hud);
@@ -162,6 +184,26 @@ namespace Barry.App
             cameraScreen.SetOrientation(app.LatestTelemetry);
             if (actionsModel != null) actionsModel.UpdateAvailability(cmd, app.TeleopState, hasControl);
         }
+
+        // The brain panel and the Actions list share the right-hand side: opening one closes the other.
+        public void ToggleBrain()   // the Y button; public so tests and tools can drive the same path
+        {
+            brainModel.Toggle();
+            if (brainModel.Open && actionsModel != null && !actionsModel.IsCollapsed)
+            {
+                actionsModel.SetCollapsed(true);
+                actionsPanel.Bind(actionsModel);
+            }
+        }
+
+        // Starting a task is always an explicit press (nothing auto-starts). If one is running the backend cancels it.
+        void OnPresetChosen(int index)
+        {
+            if (index < 0 || index >= LlmPresets.All.Length) return;
+            app.Llm.Start(LlmPresets.All[index].Goal);
+        }
+
+        void OnBrainCancel() => app.Llm.Cancel();
 
         void OnStartMissionClicked()
         {
@@ -175,6 +217,7 @@ namespace Barry.App
 
         void ToggleActions()
         {
+            if (brainModel.Open && actionsModel.IsCollapsed) brainModel.SetOpen(false);
             actionsModel.SetCollapsed(!actionsModel.IsCollapsed);
             actionsPanel.Bind(actionsModel);
         }
