@@ -143,6 +143,8 @@ namespace Barry.App
         public RobotControlService RobotControl { get; private set; }
         public StatusMonitor StatusMonitor { get; private set; }
         public EmergencyLatch EmergencyLatch { get; } = new EmergencyLatch();
+        /// <summary>Mission status/operators/start/end. Missions gate motion only; stop and e-stop never wait on this.</summary>
+        public MissionMonitor Mission { get; private set; }
         public XRSessionWatcher XRSessionWatcher => xrSessionWatcher;
         public MjpegStreamSource CameraStreamSource => cameraStreamSource;
 
@@ -155,6 +157,8 @@ namespace Barry.App
         public bool LastStopDelivered { get; private set; }
 
         public event Action<StopReason, bool> StopCompleted;
+        /// <summary>The gateway refused motion (MISSION_REQUIRED): show "Start a mission to drive". Never retried.</summary>
+        public event Action MissionRequiredHint;
 
         private void Awake()
         {
@@ -169,6 +173,7 @@ namespace Barry.App
                 new BarryApiCommandTransport(ApiClient),
                 routine => StartCoroutine(routine),
                 sendRateHz: settings.SendRateHz);
+            Mission = new MissionMonitor(new BarryMissionApi(ApiClient), routine => StartCoroutine(routine));
             StatusMonitor = new StatusMonitor(
                 new BarryStatusApi(ApiClient),
                 routine => StartCoroutine(routine));
@@ -186,11 +191,14 @@ namespace Barry.App
             RobotControl.EmergencyStopCompleted += EmergencyLatch.OnEmergencyStopCompleted;
             StatusMonitor.TelemetryUpdated += EmergencyLatch.OnTelemetry;
             EmergencyLatch.ExternallyLatched += OnExternallyLatched;
+            RobotControl.MissionRequired += OnMissionRequired;
+            Mission.Changed += OnMissionChanged;
         }
 
         private void Start()
         {
             StatusMonitor.PollNow();
+            Mission.PollNow();
             cameraWatchdog.Reset();
             cameraStreamSource.StartStream(config.cameraStreamUrl, config.cameraApiKey);
         }
@@ -201,6 +209,7 @@ namespace Barry.App
             RobotControl.Tick(deltaTime);
             StatusMonitor.Tick(deltaTime);
             EmergencyLatch.Tick(deltaTime);
+            Mission.Tick(deltaTime);
             TryFinishEmergencyRecovery();
             if (cameraWatchdog.Update(deltaTime, cameraStreamSource.FrameAgeSeconds))
                 stopRouter.Route(StopReason.CameraUnavailable);
@@ -280,6 +289,23 @@ namespace Barry.App
             if (TeleopState == TeleopState.Armed || TeleopState == TeleopState.Driving) recoveryPending = false;
         }
 
+        private void OnMissionRequired()
+        {
+            MissionRequiredHint?.Invoke();
+        }
+
+        private bool missionWasActive;
+
+        private void OnMissionChanged()
+        {
+            bool active = Mission.IsActive;
+            if (active && LastStopReason == StopReason.MissionRequired)
+                recoveryPending = true;   // re-arm only with centred sticks; the next deflection is the fresh one
+            if (missionWasActive && Mission.StatusKnown && !active)
+                RobotControl.RequestStop(StopReason.MissionRequired);   // the backend halted the robot; mirror it
+            if (Mission.StatusKnown) missionWasActive = active;
+        }
+
         private void OnExternallyLatched()
         {
             if (TeleopState != TeleopState.Stopped || LastStopReason != StopReason.EmergencyStop)
@@ -306,6 +332,8 @@ namespace Barry.App
             }
             if (StatusMonitor != null) StatusMonitor.TelemetryUpdated -= EmergencyLatch.OnTelemetry;
             EmergencyLatch.ExternallyLatched -= OnExternallyLatched;
+            if (RobotControl != null) RobotControl.MissionRequired -= OnMissionRequired;
+            if (Mission != null) Mission.Changed -= OnMissionChanged;
             if (cameraStreamSource != null)
                 cameraStreamSource.StopStream();
         }

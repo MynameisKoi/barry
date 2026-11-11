@@ -61,5 +61,48 @@ namespace Barry.Tests.EditMode.Api
                 out TelemetryResponse telemetry, out string error), Is.True, error);
             Assert.That(telemetry.control_state.emergency_stopped, Is.True);
         }
+
+        [Test]
+        public void Operators_ParseFromTheWrappedArray_AndTheNfcTagIsNeverModelled()
+        {
+            string wrapped = "{\"operators\":" +
+                "[{\"operator_id\":\"op1\",\"name\":\"Ada\",\"role\":\"Inspector\",\"tag_uid\":\"04:A2:3B\"}]}";
+            Assert.That(ApiJson.TryParse(wrapped, out OperatorsResponse response, out string error), Is.True, error);
+            Assert.That(response.operators, Has.Length.EqualTo(1));
+            Assert.That(response.operators[0].name, Is.EqualTo("Ada"));
+            Assert.That(typeof(OperatorInfo).GetField("tag_uid"), Is.Null);
+            Assert.That(ApiJson.TryParse("{\"operators\":[{\"operator_id\":\"\",\"name\":\"x\"}]}", out OperatorsResponse _, out _), Is.False);
+        }
+
+        [Test]
+        public void MissionStatus_ParsesActiveAndInactive_WithNulls()
+        {
+            Assert.That(ApiJson.TryParse(
+                "{\"active\":true,\"mission_id\":\"m1\",\"operator_id\":\"op1\",\"operator_name\":\"Ada\",\"zone\":\"Zone-A\",\"status\":\"active\",\"started_at\":\"t\",\"ended_at\":null}",
+                out MissionStatus active, out string error), Is.True, error);
+            Assert.That(active.active, Is.True);
+            Assert.That(active.zone, Is.EqualTo("Zone-A"));
+            Assert.That(ApiJson.TryParse("{\"active\":false,\"mission_id\":null}", out MissionStatus idle, out _), Is.True);
+            Assert.That(idle.active, Is.False);
+        }
+
+        [Test]
+        public void MissionRequests_SerializeTheFieldsTheBackendExpects()
+        {
+            Assert.That(UnityEngine.JsonUtility.ToJson(new MissionStartRequest("op1", "Zone-B")),
+                Is.EqualTo("{\"operator_id\":\"op1\",\"zone\":\"Zone-B\"}"));
+            Assert.That(UnityEngine.JsonUtility.ToJson(new MissionStopRequest("done")), Is.EqualTo("{\"reason\":\"done\"}"));
+        }
+
+        [Test]
+        public void MissionRequiredResult_WithoutACommand_IsValid_AndRecognised()
+        {
+            Assert.That(ApiJson.TryParse(
+                "{\"status\":\"MISSION_REQUIRED\",\"message\":\"An active mission is required for motion.\"}",
+                out CommandResult result, out string error), Is.True, error);
+            Assert.That(result.IsMissionRequired, Is.True);
+            Assert.That(result.Accepted, Is.False);
+            Assert.That(ApiJson.TryParse("{\"status\":\"accepted\"}", out CommandResult _, out _), Is.False);   // still strict
+        }
     }
 }

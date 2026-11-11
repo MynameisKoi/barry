@@ -97,6 +97,8 @@ namespace Barry.App.Editor
             var strip = BuildControlStrip();
             float below = 25f * Mathf.Deg2Rad;
             Place(strip.gameObject, new Vector3(0, Eye - 0.9f * Mathf.Sin(below), 0.9f * Mathf.Cos(below)), Quaternion.Euler(15f, 0, 0));
+            var missionPanel = BuildMissionPanel();
+            Place(missionPanel.gameObject, new Vector3(0, Eye - 0.22f, 1.35f), Quaternion.identity);
             var banner = BuildEmergencyBanner();
             Place(banner.gameObject, new Vector3(0, Eye + 0.12f, 1.6f), Quaternion.identity);
 
@@ -114,6 +116,7 @@ namespace Barry.App.Editor
             SetRef(ctrl, "actionsPanel", actions.GetComponentInChildren<ActionsPanelView>(true));
             SetRef(ctrl, "controlStrip", strip.GetComponentInChildren<ControlStripView>(true));
             SetRef(ctrl, "emergencyBanner", banner.GetComponentInChildren<EmergencyBannerView>(true));
+            SetRef(ctrl, "missionPanel", missionPanel.GetComponentInChildren<MissionPanelView>(true));
 
             var themeGo = new GameObject("ThemeApplier");
             var ta = themeGo.AddComponent<ThemeApplier>();
@@ -125,7 +128,7 @@ namespace Barry.App.Editor
 
             // Save prefabs (panels), then the scene.
             string pdir = Root + "/UI/Prefabs";
-            foreach (var g in new[] { header, camera, status, actions, strip, banner })
+            foreach (var g in new[] { header, camera, status, actions, strip, banner, missionPanel })
                 PrefabUtility.SaveAsPrefabAssetAndConnect(g.gameObject, $"{pdir}/{g.name}.prefab", InteractionMode.AutomatedAction);
 
             PlayerSettings.insecureHttpOption = InsecureHttpOption.AlwaysAllowed;   // the only Player setting changed
@@ -150,7 +153,7 @@ namespace Barry.App.Editor
         static Canvas BuildHeader()
         {
             Begin(1800f / 880f, 2.0f);
-            var c = NewCanvas("HeaderStrip", 1800, M(56));
+            var c = NewCanvas("HeaderStrip", 1900, M(56));   // room for the mission and e-stop chips; the MODE pill is dropped below
             PanelRoot(c, 14, true, RoundedPanel.DefaultGlowStrength);
             var view = c.gameObject.AddComponent<HeaderStripView>();
 
@@ -158,7 +161,11 @@ namespace Barry.App.Editor
             Txt(left, "Wordmark", "BARRY", 20, ThemeRole.Brand, FontRole.Brand, bold: true, tracking: 0.18f);
             var mode = Pill(left, "ModePill", 32, 12, 8, 8, ThemeRole.NeutralFill, ThemeRole.NeutralBorder, 1f);
             var modeText = Txt(mode.transform, "Mode", "MODE · MANUAL", 13, Grey3D, FontRole.Mono, bold: true);
-            Txt(mode.transform, "ModeMore", "· more modes later", 13, ThemeRole.TextSecondary, FontRole.Mono);
+            var modeMore = Txt(mode.transform, "ModeMore", "· more modes later", 13, ThemeRole.TextSecondary, FontRole.Mono);
+            modeMore.gameObject.SetActive(false);   // the header needs the room for the mission chip
+
+            mode.gameObject.SetActive(false);   // "MODE · MANUAL" is a constant placeholder; the mission chip needs the room
+            var missionChip = Chip(left, "MissionChip", 32, 12, 8, 8, 13, overlay: false);
 
             var right = Row(c.transform, "Right", 10, TextAnchor.MiddleRight, leftEdge: false, inset: 20);
             var estop = Chip(right, "EmergencyChip", 32, 12, 8, 8, 13, overlay: false);   // hidden unless E-STOP LATCHED
@@ -167,7 +174,7 @@ namespace Barry.App.Editor
             var control = Chip(right, "ControlChip", 32, 12, 8, 8, 13, overlay: false);
 
             SetRef(view, "emergencyChip", estop);
-            SetRef(view, "modePill", mode.gameObject);
+            SetRef(view, "missionChip", missionChip);
             SetRef(view, "modeLabel", modeText);
             SetRef(view, "robotChip", robot);
             SetRef(view, "controlChip", control);
@@ -352,7 +359,7 @@ namespace Barry.App.Editor
         static Canvas BuildControlStrip()
         {
             Begin(900f / 800f, 0.9f);
-            var c = NewCanvas("ControlStrip", 900, M(108));
+            var c = NewCanvas("ControlStrip", M(960), M(108));
             PanelRoot(c, 16, true, RoundedPanel.DefaultGlowStrength);
             var view = c.gameObject.AddComponent<ControlStripView>();
 
@@ -384,6 +391,15 @@ namespace Barry.App.Editor
             var et = Txt(exitImg.transform, "Text", "Exit VR", 15, ThemeRole.TextPrimary, FontRole.Body, bold: true, align: TextAlignmentOptions.Center);
             Stretch(et.rectTransform, 0);
 
+            var endImg = Box(c.transform, "EndMission", 796, 28, 140, 52);
+            Skin(endImg, M(10), Color.white, look.neutralBorder, M(1f));
+            endImg.raycastTarget = true;
+            var endBtn = endImg.gameObject.AddComponent<Button>(); endBtn.targetGraphic = endImg;
+            var endText = Txt(endImg.transform, "Text", "End mission", 13, Grey3D, FontRole.Body, bold: true, align: TextAlignmentOptions.Center);
+            endText.textWrappingMode = TextWrappingModes.Normal;
+            Stretch(endText.rectTransform, 4);
+            endImg.gameObject.SetActive(false);   // shown only while a mission is active
+
             var so = new SerializedObject(view);
             var arr = so.FindProperty("levelButtons");
             arr.arraySize = 3;
@@ -391,6 +407,8 @@ namespace Barry.App.Editor
             so.FindProperty("stopButton").objectReferenceValue = stop;
             so.FindProperty("exitButton").objectReferenceValue = exit;
             so.FindProperty("stopHint").objectReferenceValue = hint;
+            so.FindProperty("endMissionButton").objectReferenceValue = endBtn;
+            so.FindProperty("endMissionLabel").objectReferenceValue = endText;
             so.ApplyModifiedPropertiesWithoutUndo();
             Relayout(c);
             return c;
@@ -437,6 +455,69 @@ namespace Barry.App.Editor
             SetRef(view, "resetLabel", resetLabel);
             Relayout(c);
             return c;
+        }
+
+        /// <summary>
+        /// Start-mission card (#91): operator picker (prev/next), zone presets (prev/next), Start. Shown only while
+        /// no mission is active. 1 mm per px at 1.35 m so text meets the §4 cap-height rule.
+        /// </summary>
+        static Canvas BuildMissionPanel()
+        {
+            Begin(1f, 1.35f);
+            var c = NewCanvas("MissionPanel", 900, 480);
+            var view = c.gameObject.AddComponent<MissionPanelView>();
+
+            var content = Box(c.transform, "Content", 0, 0, 0, 0, stretch: 0);
+            Skin(content, M(24), look.panelBg, look.accent, M(4f), fillRole: ThemeRole.PanelBg, borderRole: ThemeRole.Accent);
+
+            Txt(content.transform, "Title", MissionPanelModel.Title, 36, ThemeRole.TextPrimary, FontRole.Body, bold: true, rect: P(32, 20, 836, 48));
+            var hint = Txt(content.transform, "Hint", MissionPanelModel.MissionRequiredHint, 28, ThemeRole.Accent, FontRole.Body, bold: true, rect: P(32, 70, 836, 40));
+            hint.gameObject.SetActive(false);
+
+            Txt(content.transform, "OperatorLabel", "OPERATOR", 22, ThemeRole.TextSecondary, FontRole.Mono, bold: true, rect: P(32, 118, 400, 30));
+            var opPrev = MiniButton(content.transform, "OperatorPrev", 32, 150, 80, 76, "<");
+            var opText = Txt(content.transform, "OperatorText", "Loading operators…", 30, ThemeRole.TextPrimary, FontRole.Body, bold: true,
+                align: TextAlignmentOptions.Center, rect: P(124, 150, 652, 76));
+            var opNext = MiniButton(content.transform, "OperatorNext", 788, 150, 80, 76, ">");
+
+            Txt(content.transform, "ZoneLabel", "ZONE", 22, ThemeRole.TextSecondary, FontRole.Mono, bold: true, rect: P(32, 238, 400, 30));
+            var zPrev = MiniButton(content.transform, "ZonePrev", 32, 270, 80, 76, "<");
+            var zText = Txt(content.transform, "ZoneText", MissionPanelModel.DefaultZone, 30, ThemeRole.TextPrimary, FontRole.Body, bold: true,
+                align: TextAlignmentOptions.Center, rect: P(124, 270, 652, 76));
+            var zNext = MiniButton(content.transform, "ZoneNext", 788, 270, 80, 76, ">");
+
+            var startImg = Box(content.transform, "Start", 250, 366, 400, 84);
+            Skin(startImg, M(16), look.accent, Color.clear, 0f, fillRole: ThemeRole.Accent);
+            startImg.raycastTarget = true;
+            var start = startImg.gameObject.AddComponent<Button>(); start.targetGraphic = startImg;
+            var startText = Txt(startImg.transform, "Text", MissionPanelModel.StartLabel, 30, Color.white, FontRole.Body, bold: true, align: TextAlignmentOptions.Center);
+            Stretch(startText.rectTransform, 8);
+            var error = Txt(content.transform, "Error", "", 22, ThemeRole.Danger, FontRole.Body, rect: P(32, 452, 836, 26));
+
+            SetRef(view, "content", content.gameObject);
+            SetRef(view, "hint", hint);
+            SetRef(view, "operatorText", opText);
+            SetRef(view, "zoneText", zText);
+            SetRef(view, "error", error);
+            SetRef(view, "operatorPrev", opPrev);
+            SetRef(view, "operatorNext", opNext);
+            SetRef(view, "zonePrev", zPrev);
+            SetRef(view, "zoneNext", zNext);
+            SetRef(view, "startButton", start);
+            SetRef(view, "startLabel", startText);
+            Relayout(c);
+            return c;
+        }
+
+        static Button MiniButton(Transform parent, string name, float x, float y, float w, float h, string glyph)
+        {
+            var img = Box(parent, name, x, y, w, h);
+            Skin(img, M(14), look.neutralFill, look.neutralBorder, M(1f), fillRole: ThemeRole.NeutralFill, borderRole: ThemeRole.NeutralBorder);
+            img.raycastTarget = true;
+            var button = img.gameObject.AddComponent<Button>(); button.targetGraphic = img;
+            var t = Txt(img.transform, "Text", glyph, 36, ThemeRole.TextPrimary, FontRole.Body, bold: true, align: TextAlignmentOptions.Center);
+            Stretch(t.rectTransform, 0);
+            return button;
         }
 
         // ---------------------------------------------------------------- scaling helpers

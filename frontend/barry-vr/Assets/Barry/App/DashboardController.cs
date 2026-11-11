@@ -20,9 +20,11 @@ namespace Barry.App
         [SerializeField] ActionsPanelView actionsPanel;
         [SerializeField] ControlStripView controlStrip;
         [SerializeField] EmergencyBannerView emergencyBanner;
+        [SerializeField] MissionPanelView missionPanel;
 
         InputAction moveAction, turnAction, stopAction, toggleActionsAction, intensityAction, gripLeftAction, gripRightAction;
         readonly EmergencyStopGesture emergencyGesture = new EmergencyStopGesture();
+        readonly MissionPanelModel missionModel = new MissionPanelModel();
         ActionsPanelModel actionsModel;
         ActionsResponse actionsResponse;
         CameraStatusResponse cameraStatus;
@@ -85,6 +87,14 @@ namespace Barry.App
             controlStrip.IntensityChosen += SetIntensity;
             controlStrip.ExitClicked += Exit;
             if (emergencyBanner != null) emergencyBanner.ResetClicked += app.PressEmergencyReset;
+            controlStrip.EndMissionClicked += OnEndMissionClicked;
+            app.MissionRequiredHint += missionModel.ShowMissionRequired;
+            if (missionPanel != null)
+            {
+                missionPanel.OperatorStep += missionModel.CycleOperator;
+                missionPanel.ZoneStep += missionModel.CycleZone;
+                missionPanel.StartClicked += OnStartMissionClicked;
+            }
             actionsPanel.ActionChosen += RunAction;
             actionsPanel.ActionHovered += id => { actionsModel?.SetHovered(id); actionsPanel.Bind(actionsModel); };
         }
@@ -93,6 +103,14 @@ namespace Barry.App
         {
             foreach (var a in new[] { moveAction, turnAction, stopAction, toggleActionsAction, intensityAction, gripLeftAction, gripRightAction }) a?.Dispose();
             if (emergencyBanner != null && app != null) emergencyBanner.ResetClicked -= app.PressEmergencyReset;
+            if (app != null) app.MissionRequiredHint -= missionModel.ShowMissionRequired;
+            if (controlStrip != null) controlStrip.EndMissionClicked -= OnEndMissionClicked;
+            if (missionPanel != null)
+            {
+                missionPanel.OperatorStep -= missionModel.CycleOperator;
+                missionPanel.ZoneStep -= missionModel.CycleZone;
+                missionPanel.StartClicked -= OnStartMissionClicked;
+            }
             if (controlStrip != null)
             {
                 controlStrip.StopClicked -= app.RequestOperatorStop;
@@ -135,11 +153,25 @@ namespace Barry.App
             var hud = EmergencyHudModel.From(app.EmergencyLatch);
             header.Bind(HeaderChipsModel.Create(app.LatestStatus, hasControl));
             header.SetEmergency(hud);
+            header.SetMission(MissionChipModel.From(app.Mission.Latest));
+            missionModel.Update(app.Mission);
+            if (missionPanel != null) missionPanel.Bind(missionModel);
+            controlStrip.BindEndMission(EndMissionModel.From(app.Mission));
             if (emergencyBanner != null) emergencyBanner.Bind(hud);
             statusPanel.Bind(StatusPanelModel.Create(app.LatestStatus, app.LatestTelemetry, cameraStatus, cmd, hasControl, rtt >= 0 ? rtt : (float?)null));
             cameraScreen.SetOrientation(app.LatestTelemetry);
             if (actionsModel != null) actionsModel.UpdateAvailability(cmd, app.TeleopState, hasControl);
         }
+
+        void OnStartMissionClicked()
+        {
+            missionModel.ClearHint();
+            OperatorInfo op = missionModel.SelectedOperator;
+            if (op == null) return;
+            app.Mission.StartMission(op.operator_id, missionModel.SelectedZone);
+        }
+
+        void OnEndMissionClicked() => app.Mission.PressEndMission();
 
         void ToggleActions()
         {
