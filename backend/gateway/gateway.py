@@ -47,11 +47,17 @@ class CommandGateway:
         self._arbitration_lock = asyncio.Lock()
         self.hand_hold_s = _env_float("GATEWAY_HAND_HOLD_S", 2.0)
         self._last_hand_at = 0.0
-        self._emergency_stopped = False
+        try:
+            self._emergency_stopped = bool(self.robot.get_control_state().emergency_stopped)
+        except Exception:
+            self._emergency_stopped = False
+        self._preempt_callbacks: list[Callable[[str], Any]] = []
         self.online = True
 
     async def motion(self, command: MotionCommand, *, source: str) -> GatewayResult:
         cid = self._id(source)
+        if source in {"hand", "voice"}:
+            self._notify_preempt(source)
         blocked = await self._prepare(source, cid)
         if blocked:
             return blocked
@@ -78,6 +84,7 @@ class CommandGateway:
 
     async def stop(self, *, source: str) -> GatewayResult:
         cid = self._id(source)
+        self._notify_preempt(source)
         await self._cancel_active()
         if source == "hand":
             self._last_hand_at = time.monotonic()
@@ -90,6 +97,7 @@ class CommandGateway:
 
     async def emergency_stop(self, *, source: str) -> GatewayResult:
         cid = self._id(source)
+        self._notify_preempt(source)
         await self._cancel_active()
         try:
             result = await asyncio.to_thread(self.robot.emergency_stop)
@@ -106,6 +114,8 @@ class CommandGateway:
     async def run_bounded(self, direction: str | Direction, seconds: float, speed: float,
                           *, source: str) -> GatewayResult:
         cid = self._id(source)
+        if source in {"hand", "voice"}:
+            self._notify_preempt(source)
         blocked = await self._prepare(source, cid)
         if blocked:
             return blocked
@@ -165,9 +175,86 @@ class CommandGateway:
         except Exception as exc:
             return GatewayResult("FAILED", str(exc), cid, source)
 
+    def on_preempt(self, callback: Callable[[str], Any]) -> None:
+        self._preempt_callbacks.append(callback)
+
+    def notify_preempt(self, source: str) -> None:
+        """Notify task owners when an external hand/voice input takes priority."""
+        self._notify_preempt(source)
+
+    async def set_style(self, intensity: str, gait: str, *, source: str) -> GatewayResult:
+        cid = self._id(source)
+        if source in {"hand", "voice"}:
+            self._notify_preempt(source)
+        blocked = await self._prepare(source, cid)
+        if blocked:
+            return blocked
+        if self._emergency_stopped:
+            return GatewayResult("ESTOP_ACTIVE", "Emergency stop is latched.", cid, source)
+        from backend.robot.interface import Gait, Intensity, MovementStyle
+        try:
+            style = MovementStyle(Intensity(intensity), Gait(gait))
+            async def apply() -> GatewayResult:
+                result = await asyncio.to_thread(self.robot.set_movement_style, style)
+                return self._result(result, source, cid)
+            return await self._run_owned(apply(), source, cid)
+        except (ValueError, TypeError) as exc:
+            return GatewayResult("INVALID", str(exc), cid, source)
+
+    async def run_action(self, action_id: int, *, source: str) -> GatewayResult:
+        cid = self._id(source)
+        if source in {"hand", "voice"}:
+            self._notify_preempt(source)
+        blocked = await self._prepare(source, cid)
+        if blocked:
+            return blocked
+        if self._emergency_stopped:
+            return GatewayResult("ESTOP_ACTIVE", "Emergency stop is latched.", cid, source)
+        if not self.mission_check():
+            return GatewayResult("MISSION_REQUIRED", "An active mission is required for robot actions.", cid, source)
+        async def run() -> GatewayResult:
+            try:
+                result = await asyncio.to_thread(self.robot.perform_action, int(action_id))
+                return self._result(result, source, cid)
+            except asyncio.CancelledError:
+                await asyncio.to_thread(self.robot.stop)
+                raise
+        return await self._run_owned(run(), source, cid)
+
+    async def status(self, *, source: str = "llm") -> dict[str, Any]:
+        try:
+            telemetry = await asyncio.to_thread(self.robot.read_telemetry)
+            control = await asyncio.to_thread(self.robot.get_control_state)
+            return {"control_state": control.to_dict(), "telemetry": telemetry.to_dict(),
+                    "online": bool(self.online and self.robot.connected),
+                    "active_source": self._active_source, "emergency_stopped": self._emergency_stopped,
+                    "detector": "unavailable"}
+        except Exception:
+            self.online = False
+            return {"control_state": {}, "telemetry": {}, "online": False,
+                    "active_source": self._active_source, "emergency_stopped": self._emergency_stopped,
+                    "detector": "unavailable"}
+
+    async def detections(self) -> list[Any]:
+        # TODO(detection): return the latest verified YOLO results when the real detector is wired.
+        # Never use AIDetectionService's contour/random fallback as control context.
+        return []
+
+    def _notify_preempt(self, source: str) -> None:
+        if source in {"hand", "voice", "emergency"}:
+            for callback in tuple(self._preempt_callbacks):
+                try:
+                    value = callback(source)
+                    if asyncio.iscoroutine(value):
+                        asyncio.create_task(value)
+                except Exception:
+                    continue
+
     async def run_turn(self, degrees: float, speed: float = 0.5, *, source: str) -> GatewayResult:
         """Turn by degrees; positive is right, negative is left (per LLM tools)."""
         cid = self._id(source)
+        if source in {"hand", "voice"}:
+            self._notify_preempt(source)
         try:
             degrees, speed = float(degrees), float(speed)
             if not math.isfinite(degrees) or degrees == 0 or not math.isfinite(speed) or speed < 0:
@@ -196,7 +283,9 @@ class CommandGateway:
                         try:
                             yaw = (await asyncio.to_thread(self.robot.read_telemetry)).orientation.yaw
                             delta = (yaw - start_yaw + 180) % 360 - 180 if yaw is not None else None
-                            if delta is not None and math.copysign(1, delta) == math.copysign(1, degrees) and abs(delta) >= abs(degrees):
+                            # Robot yaw follows the wire convention: positive is left,
+                            # while the LLM tool contract defines positive degrees as right.
+                            if delta is not None and math.copysign(1, delta) == math.copysign(1, -degrees) and abs(delta) >= abs(degrees):
                                 break
                         except Exception:
                             pass
@@ -257,6 +346,9 @@ class CommandGateway:
         try:
             return await task
         except asyncio.CancelledError:
+            current_task = asyncio.current_task()
+            if (current_task and current_task.cancelling()) or not task.cancelled():
+                raise
             return GatewayResult("CANCELLED", "Command cancelled by higher-priority input.", cid, source)
         finally:
             if self._active_task is task:

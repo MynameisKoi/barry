@@ -66,8 +66,27 @@ class FakeTranscriptions:
 def make_client(text="forward 2 seconds", exc=None, key=KEY):
     fake = FakeTranscriptions(text, exc)
     client = type("C", (), {"audio": type("A", (), {"transcriptions": fake})()})()
+    class FakeGateway:
+        async def run_bounded(self, direction, seconds, speed, *, source):
+            return {"status": "ACCEPTED", "direction": direction, "seconds": seconds, "speed": speed, "source": source}
+        async def turn(self, degrees, *, source):
+            return {"status": "ACCEPTED", "degrees": degrees, "source": source}
+        async def stop(self, *, source):
+            return {"status": "ACCEPTED", "source": source}
+        async def emergency_stop(self):
+            return {"status": "ACCEPTED"}
+    class FakeRunner:
+        async def start(self, goal):
+            self.goal = goal
+        async def cancel(self, *, stop=True):
+            self.cancelled = True
+            return True
+        def snapshot(self):
+            return {"state": "running", "goal": getattr(self, "goal", None)}
+    gateway, runner = FakeGateway(), FakeRunner()
     app = FastAPI()
-    app.include_router(create_voice_router(QuestRelayAuth(key), Transcriber(client=client)))
+    app.include_router(create_voice_router(QuestRelayAuth(key), Transcriber(client=client), gateway, runner))
+    fake.gateway, fake.runner = gateway, runner
     return TestClient(app), fake
 
 
@@ -84,6 +103,8 @@ def test_command_matched():
     assert response.status_code == 200
     assert response.json() == {
         "transcript": "Forward 2 seconds", "command": "forward", "args": {"seconds": 2.0}, "matched": True,
+        "command_result": {"status": "ACCEPTED", "direction": "forward", "seconds": 2.0, "speed": 0.3, "source": "voice"},
+        "task": None,
     }
     assert fake.calls[0]["model"] == DEFAULT_MODEL
     assert fake.calls[0]["file"][1] == b"RIFFfake"
@@ -91,7 +112,9 @@ def test_command_matched():
 
 def test_unrecognised_speech_is_not_matched():
     response = post(make_client("blah blah")[0])
-    assert response.json() == {"transcript": "blah blah", "command": None, "args": {}, "matched": False}
+    body = response.json()
+    assert body["transcript"] == "blah blah" and body["command"] is None and not body["matched"]
+    assert body["task"] == {"state": "running", "goal": "blah blah"}
 
 
 def test_stop_in_router():
