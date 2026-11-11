@@ -73,6 +73,45 @@ def test_stale_quest_sequence_is_rejected_without_pi_call():
     assert paths.count(protocol.PATH_MOTION) == 1
 
 
+def test_sessionless_high_sequence_does_not_invalidate_active_quest_session():
+    def pi(request):
+        return httpx.Response(201 if request.url.path == protocol.PATH_SESSION else 200,
+                              json={"session_id": "pi-session", "status": "accepted", "command": "motion"})
+
+    client, _, _, _ = client_for(pi)
+    headers = quest_headers(client, seq=1)
+    body = {"forward": .2, "strafe": 0, "turn": 0}
+    assert client.post(protocol.PATH_MOTION, json=body, headers=headers).status_code == 200
+
+    sessionless = {protocol.AUTH_HEADER: KEY, protocol.SEQ_HEADER: "200"}
+    assert client.post(protocol.PATH_MOTION, json=body, headers=sessionless).status_code == 409
+
+    headers[protocol.SEQ_HEADER] = "2"
+    assert client.post(protocol.PATH_MOTION, json=body, headers=headers).status_code == 200
+
+
+@pytest.mark.parametrize(("path", "body"), [
+    (protocol.PATH_MOTION, {"forward": .2, "strafe": 0, "turn": 0, "jump": 1}),
+    (protocol.PATH_MOTION + "/discrete", {"direction": "forward", "jump": 1}),
+])
+def test_quest_motion_rejects_extra_fields_before_gateway(path, body):
+    calls = []
+
+    def pi(request):
+        calls.append(request.url.path)
+        return httpx.Response(201 if request.url.path == protocol.PATH_SESSION else 200,
+                              json={"session_id": "pi-session", "status": "accepted"})
+
+    client, _, _, _ = client_for(pi)
+    headers = quest_headers(client)
+    response = client.post(path, json=body, headers=headers)
+
+    assert response.status_code == 422
+    assert response.json()["detail"].startswith("INVALID:")
+    assert protocol.PATH_MOTION not in calls
+    assert protocol.PATH_MOTION + "/discrete" not in calls
+
+
 def test_quest_session_delete_stops_motion_and_invalidates_the_session(monkeypatch):
     monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION", "false")
     paths = []

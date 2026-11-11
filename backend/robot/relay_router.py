@@ -11,9 +11,10 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from backend.robot import protocol
-from backend.robot.interface import CommandResult, MotionCommand
+from backend.robot.interface import CommandResult, Direction, Intensity, MotionCommand
 from backend.gateway.gateway import CommandGateway, GatewayResult
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,19 @@ CONTINUOUS_WINDOW_ENV = "ROBOT_CONTINUOUS_MOTION_WINDOW_S"
 CONTINUOUS_WINDOW_DEFAULT_S = 1.0
 CONTINUOUS_WINDOW_MIN_S, CONTINUOUS_WINDOW_MAX_S = 0.2, 2.0
 PRIORITY_PATHS = frozenset({protocol.PATH_STOP, protocol.PATH_EMERGENCY_STOP})
+
+
+class _RelayMotionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    forward: float = Field(0.0, ge=-1.0, le=1.0, allow_inf_nan=False)
+    strafe: float = Field(0.0, ge=-1.0, le=1.0, allow_inf_nan=False)
+    turn: float = Field(0.0, ge=-1.0, le=1.0, allow_inf_nan=False)
+
+
+class _RelayDiscreteMotionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    direction: Direction
+    intensity: Intensity | None = None
 
 
 def continuous_window_s() -> float:
@@ -155,7 +169,6 @@ def create_robot_relay_router(
             seq = -1
         if (session_id is None or time.monotonic() >= session_expires_at or
                 supplied_session != session_id or seq <= last_seq):
-            session_id = None
             return JSONResponse({"detail": "Invalid or stale control session/sequence."}, status_code=409)
         last_seq = seq
         session_expires_at = time.monotonic() + 10.0
@@ -189,22 +202,24 @@ def create_robot_relay_router(
         try:
             data = await request.json()
             if discrete:
-                direction, intensity = data.get("direction"), data.get("intensity")
-                if not direction:
-                    raise ValueError("direction is required")
+                payload = _RelayDiscreteMotionRequest.model_validate(data)
+                direction, intensity = payload.direction, payload.intensity
                 await cancel_repeat()
                 result = await gateway_call(request, "move_discrete", direction, intensity, source="hand")
                 moving = True
                 repeat_call = lambda: gateway_call(request, "move_discrete", direction, intensity, source="hand")
             else:
-                command = MotionCommand(data.get("forward", 0), data.get("strafe", 0), data.get("turn", 0))
+                payload = _RelayMotionRequest.model_validate(data)
+                command = MotionCommand(payload.forward, payload.strafe, payload.turn)
                 moving = not command.is_zero
                 if moving:
                     await cancel_repeat()
                 result = await gateway_call(request, "motion", command, source="hand")
                 repeat_call = lambda: gateway_call(request, "motion", command, source="hand")
-        except (ValueError, TypeError, AttributeError) as exc:
-            return JSONResponse({"status": "rejected", "command": "motion", "message": str(exc)}, status_code=422)
+        except (ValidationError, ValueError, TypeError, AttributeError) as exc:
+            message = str(exc)
+            return JSONResponse({"status": "rejected", "command": "motion", "message": message,
+                                 "detail": f"INVALID: {message}"}, status_code=422)
         response = result_response(result, command="motion/discrete" if discrete else "motion")
         if not response.status_code // 100 == 2:
             if motion_active:
