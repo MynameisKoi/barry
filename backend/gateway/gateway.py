@@ -453,6 +453,8 @@ class CommandGateway:
         self.online = getattr(self.robot, "connected", True)
         if not self.online:
             return self._offline(source, cid)
+        if getattr(result, "http_status", None) is not None:
+            details = {**(details or {}), "http_status": result.http_status}
         return GatewayResult(result.status.value.upper(), result.message, cid, source, details)
 
     @staticmethod

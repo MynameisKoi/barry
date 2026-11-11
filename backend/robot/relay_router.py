@@ -80,7 +80,7 @@ def create_robot_relay_router(
                     "message": result.message, "command_id": result.command_id, "source": result.source}
             if result.details and "intensity" in result.details:
                 body["intensity"] = result.details["intensity"]
-            http_status = status_override or (200 if result.status in {"ACCEPTED", "STOP_DISPATCHED"} else
+            http_status = status_override or (result.details.get("http_status") if result.details and result.details.get("http_status") else None) or (200 if result.status in {"ACCEPTED", "STOP_DISPATCHED"} else
                 409 if result.status in {"BUSY", "CANCELLED", "ESTOP_ACTIVE"} else
                 503 if result.status == "OFFLINE" else 403 if result.status == "MISSION_REQUIRED" else 422)
         else:
@@ -228,7 +228,7 @@ def create_robot_relay_router(
         await cancel_repeat()
         motion_active = False
         started = time.perf_counter(); result = await get_gateway().stop(source="hand")
-        response = result_response(result, command="stop"); audit("Quest stop.", request, response, started); return response
+        response = result_response(result, command="stop"); audit(f"Quest stop; HTTP {response.status_code}.", request, response, started); return response
 
     @router.post("/emergency-stop")
     async def emergency_stop(request: Request):
@@ -236,16 +236,19 @@ def create_robot_relay_router(
         await cancel_repeat()
         motion_active = False
         started = time.perf_counter(); result = await get_gateway().emergency_stop(source="emergency")
-        response = result_response(result, command="emergency_stop"); audit("Quest emergency stop.", request, response, started); return response
+        response = result_response(result, command="emergency_stop"); audit(f"Quest emergency_stop; HTTP {response.status_code}.", request, response, started); return response
 
     @router.post("/emergency-stop/reset")
     async def emergency_reset(request: Request):
         nonlocal motion_active
+        started = time.perf_counter()
         invalid = await checked(request)
         if isinstance(invalid, Response): return invalid
         await cancel_repeat()
         motion_active = False
-        return result_response(await get_gateway().reset_emergency_stop(source="hand"), command="emergency_stop_reset")
+        response = result_response(await get_gateway().reset_emergency_stop(source="hand"), command="emergency_stop_reset")
+        audit(f"Relayed emergency_stop_reset; HTTP {response.status_code}.", request, response, started)
+        return response
 
     @router.post("/posture")
     async def posture(request: Request):
@@ -256,11 +259,14 @@ def create_robot_relay_router(
     @router.post("/reset")
     async def reset(request: Request):
         nonlocal motion_active
+        started = time.perf_counter()
         invalid = await checked(request)
         if isinstance(invalid, Response): return invalid
         await cancel_repeat()
         motion_active = False
-        return result_response(await get_gateway().reset(source="hand"), command="reset")
+        response = result_response(await get_gateway().reset(source="hand"), command="reset")
+        audit(f"Relayed reset; HTTP {response.status_code}.", request, response, started)
+        return response
 
     @router.post("/movement-style")
     async def movement_style(request: Request):
@@ -276,9 +282,12 @@ def create_robot_relay_router(
 
     @router.post("/actions/{action_id}")
     async def run_action(action_id: int, request: Request):
+        started = time.perf_counter()
         invalid = await checked(request)
         if isinstance(invalid, Response): return invalid
-        return result_response(await get_gateway().run_action(action_id, source="hand"), command=f"action:{action_id}")
+        response = result_response(await get_gateway().run_action(action_id, source="hand"), command=f"action:{action_id}")
+        audit(f"Relayed action:{action_id}; HTTP {response.status_code}.", request, response, started)
+        return response
 
     @router.get("/telemetry")
     async def telemetry(request: Request):

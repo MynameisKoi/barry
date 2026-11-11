@@ -114,6 +114,7 @@ class RemoteRobotClient(RobotInterface):
                 remote_timeout_s=timeout if timeout is not None else config.remote_timeout_s,
             )
         self.config = config
+        self._motion_timeout_s = min(config.remote_timeout_s, 2.0)
         headers = {protocol.AUTH_HEADER: config.api_key} if config.api_key else {}
         self._http = httpx.Client(
             base_url=config.remote_url,
@@ -522,7 +523,8 @@ class RemoteRobotClient(RobotInterface):
                         protocol.SEQ_HEADER: str(self._seq),
                         protocol.SENT_AT_HEADER: str(int(time.time() * 1000)),
                     }
-                resp, error = self._call("POST", path, json=body, headers=headers)
+                timeout = self._motion_timeout_s if name in {"motion", "motion_discrete"} else None
+                resp, error = self._call("POST", path, json=body, headers=headers, timeout=timeout)
                 if resp is None:
                     return CommandResult(CommandStatus.FAILED, name, f"Link error: {error}")
                 if resp.status_code == protocol.HTTP_CONFLICT and attempt == 0:
@@ -590,7 +592,9 @@ class RemoteRobotClient(RobotInterface):
 
         detail = data.get("message") or data.get("detail") or resp.reason_phrase or f"HTTP {resp.status_code}"
         status = CommandStatus.REJECTED if resp.status_code in _REJECTION_CODES else CommandStatus.FAILED
-        return CommandResult(status, name, f"HTTP {resp.status_code}: {detail}")
+        result = CommandResult(status, name, f"HTTP {resp.status_code}: {detail}")
+        result.http_status = resp.status_code
+        return result
 
     @staticmethod
     def _parse_control_state(data: Dict[str, Any]) -> ControlState:
