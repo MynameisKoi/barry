@@ -7,6 +7,7 @@ at once; poll ``GET /task`` for the steps and the final ``answer``.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -14,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from backend.ai.control.brain import Brain, BrainNotConfigured, create_brain
 from backend.ai.control.executor import DryRunGateway, GatewayLike, LoopLimits, TaskRunner
+from backend.ai.control.gateway_adapter import CommandGatewayAdapter, _shared_gateway
 from backend.robot.relay_router import QuestRelayAuth
 
 logger = logging.getLogger(__name__)
@@ -28,9 +30,17 @@ def create_llm_router(
     brain: Brain | None = None,
     gateway: GatewayLike | None = None,
     limits: LoopLimits | None = None,
+    runner: TaskRunner | None = None,
 ) -> APIRouter:
-    # TODO(gateway #57): default to the real CommandGateway instead of the dry-run recorder.
-    runner = TaskRunner(gateway or DryRunGateway(), brain or create_brain(), limits or LoopLimits.from_env())
+    if runner is None:
+        if gateway is None and os.environ.get("LLM_GATEWAY", "real").lower() == "dry":
+            gateway = DryRunGateway()
+        elif gateway is None:
+            gateway = CommandGatewayAdapter(_shared_gateway)
+        runner = TaskRunner(gateway, brain or create_brain(), limits or LoopLimits.from_env())
+    preempt_hook = getattr(gateway, "on_preempt", None)
+    if callable(preempt_hook):
+        preempt_hook(lambda _source: runner.request_cancel())
     router = APIRouter(
         prefix="/api/v1/llm",
         tags=["LLM"],
@@ -57,4 +67,5 @@ def create_llm_router(
     async def get_task() -> dict[str, Any]:
         return runner.snapshot()
 
+    router.task_runner = runner
     return router
