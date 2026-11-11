@@ -98,7 +98,7 @@ ROBOT_MODE=remote ROBOT_REMOTE_URL=http://127.0.0.1:8100 ROBOT_API_KEY=devkey QU
 
 Setting `ROBOT_MODE=simulation` on the laptop alone does **not** move anything through `/api/v1` until PR #98 merges. Use the two-process setup above.
 
-**Missions:** once PR #98 is merged, motion needs an active mission. Start one from the headset's mission panel, or with `POST /api/mission/start`. Stop and e-stop never need a mission.
+**Missions:** motion needs an active mission. Start one from the headset's mission panel, the cockpit's Start mission button (#114, coming), or `POST /api/mission/start`. Stop and e-stop never need one.
 
 ### 6.3 PC-VR exe: `barry_config.json`
 
