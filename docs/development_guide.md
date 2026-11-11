@@ -3,7 +3,7 @@
 ## 1. Prerequisites & Environment Setup
 
 ```bash
-cd /home/koiisme/barry
+cd <repo>
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -17,7 +17,7 @@ cp .env.example .env
 Start the FastAPI server with Uvicorn:
 
 ```bash
-cd /home/koiisme/barry
+cd <repo>
 .venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
@@ -33,7 +33,7 @@ cd /home/koiisme/barry
 Run the full unit and integration test suite (`pytest`):
 
 ```bash
-cd /home/koiisme/barry
+cd <repo>
 .venv/bin/pytest tests/ -v
 ```
 

@@ -15,7 +15,7 @@ This guide describes how to run and verify the backend environment on the primar
 
 ### Clone Repository & Navigate
 ```bash
-cd /home/koiisme/barry
+cd <repo>
 ```
 
 ### Create and Activate Virtual Environment

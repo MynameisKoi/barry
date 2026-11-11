@@ -38,7 +38,7 @@
 ## Quick Start
 
 ```bash
-cd /home/koiisme/barry
+cd <repo>
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt

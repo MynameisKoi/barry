@@ -88,20 +88,24 @@ The system runs as two services:
    In normal operation the Quest never connects to the Pi directly. The one exception is **emergency mode**, a fallback for when the laptop is unavailable: the Quest sends hand commands straight to the Pi and shows the raw camera feed straight from the Pi (no detection, no LLM) (see Phase 4 of [control-plan.md](control-plan.md)).
 
 5. **Fail-Safe & Safety Architecture**:
-   - `emergency_stop` cuts locomotion immediately and sets a latch on the Pi that blocks movement until `reset-emergency` is called. Emergency stop is never gated by missions or auth state on the laptop.
+   - `emergency_stop` cuts locomotion immediately and sets a latch on the Pi that blocks movement until `/api/v1/emergency-stop/reset` is called. Emergency stop is never gated by missions or auth state on the laptop.
    - **Watchdog**: the Pi stops the robot if no command arrives within `ROBOT_WATCHDOG_MS` (default 500 ms). Clients resend movement commands while a direction is held, so a dropped laptop or Wi-Fi link brings the robot to a halt.
    - **Speed cap**: the Pi limits requested speed to `ROBOT_MAX_SPEED`.
    - **Link loss**: if the Pi is unreachable, `RemoteRobotClient` reports `connected: false` instead of raising, so the Quest shows the robot as offline.
    - Movements are intended to require active mission authorization (enforced on the laptop; planned, not yet implemented in `backend/main.py`).
 
 6. **Security Boundary**:
-   Every Robot API route except `/healthz` requires the `X-Robot-Key` header to match `ROBOT_API_KEY`, a shared secret configured on both the laptop and the Pi. The Pi refuses to start in `dogzilla` mode without a key, and the Robot API does not enable CORS because only the laptop backend calls it.
+   Every Robot API route except `/healthz` requires the `X-Robot-Key` header to match `ROBOT_API_KEY`, a shared secret configured on both the laptop and the Pi. In `dogzilla` mode the Pi app fails on its first request if the key is unset (`ROBOT_API_KEY is required`), and the Robot API does not enable CORS because only the laptop backend calls it.
 
 ---
 
-## Robot API (Pi)
+## Robot API (Pi and laptop)
 
-The Robot API mirrors the laptop's robot paths and response shapes, so `RemoteRobotClient` is a thin HTTP wrapper.
+The Pi serves the v1 Robot API on port 8100 (`backend/robot/server.py`). The Quest does not call it directly. It calls the laptop's `/api/v1/*` relay, which forwards to the Pi. The current routes are in [api-specification.md](api-specification.md).
+
+### Legacy: web cockpit, to be retired in Phase 2 cleanup
+
+The table below lists the older `/api/robot/*` routes on the laptop (`backend/robot/router.py`, mounted in `backend/main.py`). The web cockpit still uses them. The Quest must use `/api/v1/*` instead. These routes will be removed once the cockpit moves to `/api/v1/*`.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
@@ -135,4 +139,22 @@ The two-service split above is the target design. On the laptop, `backend/robot/
 
 > **Provisional contract:** the `RobotInterface` method list, the Robot API endpoints, and the robot schemas described in this document are provisional and will be redesigned. See Phase 0 of [control-plan.md](control-plan.md), which also covers the hand, voice, and LLM control modes.
 
-Currently the repo contains `RobotInterface`, `RobotSimulator`, and a placeholder `DogzillaController`. Still to build: `backend/robot/config.py`, `factory.py`, `remote.py`, `server.py`, `deploy/pi/`, and `requirements-pi.txt`, plus stop and emergency-stop handling in `DogzillaController.move()`.
+**Done on `main`:**
+- **Pi Robot API v1**: `backend/robot/server.py`, `protocol.py`, `config.py`, `factory.py`, `remote.py`. It has control sessions, command sequence numbers, the watchdog, priority stop and the emergency-stop latch. Routes are under `/api/v1/*` (see [api-specification.md](api-specification.md)).
+- **Laptop `/api/v1` relay**: `backend/robot/relay.py` and `relay_router.py`, authenticated with `QUEST_API_KEY` (#54). The Quest sends its key as `X-Robot-Key` (#55).
+- **Relay routes for emergency stop, reset, posture, reset and discrete motion** (#69). Emergency stop uses the priority lane, like `/stop`.
+- **Pi deployment files**: `deploy/pi/` (systemd unit, `robot.env.example`, README) (#64).
+- **Windows PC-VR build** for Quest Link (#61): `Barry → Build PC-VR (Windows)` in the Unity editor, and `frontend/barry-vr/build_pcvr.sh`.
+- **Voice prototype, dry run** (#60): `POST /api/v1/voice/command` (OpenAI transcription, fixed command matching). Nothing is sent to the robot.
+- **LLM planner prototype, dry run** (#65): `/api/v1/llm/*`, using Anthropic `claude-sonnet-5-5`.
+- **LLM brain loop** (#71): `POST /api/v1/llm/plan` starts the loop and returns at once. Poll `GET /api/v1/llm/task`. Caps: `LLM_MAX_STEPS`, `LLM_MAX_TURNS` (8), `LLM_TIMEOUT_S` (60). Failures appear as task state. There is no confirm step. Still runs against a dry-run gateway until #57.
+- **Stop and emergency stop need no Quest key** (#72): `POST /api/v1/stop` and `POST /api/v1/emergency-stop` are always allowed, since they can only make the robot safer. The laptop still sends its own `ROBOT_API_KEY` to the Pi.
+
+**In progress:**
+- **Command gateway** (#57): one owner of the Pi lease. The voice and LLM routes and the cockpit will switch to it. Until then they use the dry run.
+- **Command metadata** (#58): `X-Command-Source` and `X-Command-Id` headers, for audit.
+
+**Not yet built:**
+- Emergency mode (Phase 4) and the robot camera (Phase 7).
+- Mission authorization on movement.
+- `requirements-pi.txt`. The Pi install list is in `deploy/pi/README.md`.
