@@ -395,6 +395,24 @@ async def test_mock_brain_corrects_an_out_of_range_call_after_is_error():
 
 
 @pytest.mark.asyncio
+async def test_mock_brain_answer_uses_detections_from_an_earlier_turn():
+    # Turn 1: move(50 s) is rejected and get_detections runs; turn 2 re-issues the clamped move;
+    # the final answer (turn 3) must still use the get_detections result from turn 1.
+    gateway = DryRunGateway(time_scale=0, detections_data=CHAIR)
+    task = await run(TaskRunner(gateway, MockBrain(), LoopLimits()), "forward 50 seconds then tell me what you see")
+    assert [s.tool for s in task.steps] == ["move", "get_detections", "move"]
+    assert [s.state for s in task.steps] == ["rejected", "done", "done"]
+    assert task.turns == 3 and task.answer == "I see: chair."
+
+
+@pytest.mark.asyncio
+async def test_mock_brain_ignores_other_tools_results_in_the_answer():
+    gateway = DryRunGateway(time_scale=0, detections_data=CHAIR)
+    task = await run(TaskRunner(gateway, MockBrain(), LoopLimits()), "check the battery status")
+    assert task.answer == "Done."          # get_status output is not a list of detections
+
+
+@pytest.mark.asyncio
 async def test_mock_brain_question_gets_text_only():
     gateway = DryRunGateway(time_scale=0)
     task = await run(TaskRunner(gateway, MockBrain(), LoopLimits()), "how are you today?")

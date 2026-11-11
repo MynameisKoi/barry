@@ -211,9 +211,16 @@ class MockBrain:
             fixed = [(b["name"], _clamp_call(b["name"], b["input"])) for b in prev if b["id"] in bad_ids]
             return self._call_turn(fixed)
 
+        # Use get_detections results from ANY earlier turn, not just the last one.
+        detection_ids = {b["id"] for m in messages if m["role"] == "assistant"
+                         for b in blocks(m["content"])
+                         if isinstance(b, dict) and b.get("type") == "tool_use" and b["name"] == "get_detections"}
         seen: list[str] = []
-        for b in results:
-            seen += _labels(b["content"]) if isinstance(b["content"], str) else []
+        for m in messages:
+            for b in blocks(m["content"]) if m["role"] == "user" else []:
+                if (isinstance(b, dict) and b.get("type") == "tool_result" and not b.get("is_error")
+                        and b.get("tool_use_id") in detection_ids and isinstance(b["content"], str)):
+                    seen += _labels(b["content"])
         text = ("I see: " + ", ".join(seen) + ".") if seen else "Done."
         return ModelTurn("end_turn", text, [], [{"type": "text", "text": text}])
 
