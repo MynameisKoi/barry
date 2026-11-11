@@ -73,6 +73,32 @@
             font: 700 0.8rem monospace;
             pointer-events: none;
         }
+        #mission-controls {
+            position: absolute;
+            top: 106px;
+            right: 20px;
+            z-index: 10;
+            width: min(360px, calc(100vw - 40px));
+            padding: 12px;
+            color: #d9e6f2;
+            background: rgba(10, 16, 28, 0.94);
+            border: 1px solid rgba(0, 240, 255, 0.45);
+            border-radius: 8px;
+            font: 13px monospace;
+        }
+        #mission-controls .mission-topline { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+        #mission-chip { color: #fbbf24; font-weight: 700; }
+        #mission-controls .mission-fields { display: grid; grid-template-columns: 1fr 110px; gap: 8px; margin-bottom: 10px; }
+        #mission-controls label { display: grid; gap: 4px; color: #94a3b8; }
+        #mission-controls select, #mission-controls input, #mission-controls button {
+            min-width: 0; padding: 7px 8px; color: #fff; background: #111c2d;
+            border: 1px solid rgba(148, 163, 184, 0.45); border-radius: 5px; font: inherit;
+        }
+        #mission-controls .mission-actions { display: flex; gap: 8px; }
+        #mission-controls button { flex: 1; cursor: pointer; font-weight: 700; }
+        #mission-start-btn { border-color: #00c987 !important; }
+        #mission-end-btn { border-color: #ff6b6b !important; }
+        #mission-feedback { min-height: 1.2em; margin-top: 7px; color: #94a3b8; }
         #keyboard-hint {
             position: absolute;
             bottom: 20px;
@@ -101,6 +127,18 @@
         <button id="recenter-view-btn" type="button" style="pointer-events:auto; padding:5px 12px; color:#00f0ff; background:rgba(0,240,255,0.12); border:1px solid rgba(0,240,255,0.4); border-radius:6px; font-size:0.75rem; cursor:pointer;">⟲ Recenter View</button>
     </div>
     <div id="command-status" role="status" aria-live="polite">READY · Connected to BARRY</div>
+    <section id="mission-controls" aria-label="Mission controls">
+        <div class="mission-topline"><strong>MISSION</strong><span id="mission-chip">Checking status…</span></div>
+        <div class="mission-fields">
+            <label>Operator<select id="mission-operator" disabled><option>Loading operators…</option></select></label>
+            <label>Zone<input id="mission-zone" value="Zone-A" maxlength="40"></label>
+        </div>
+        <div class="mission-actions">
+            <button id="mission-start-btn" type="button">Start mission</button>
+            <button id="mission-end-btn" type="button" disabled>End mission</button>
+        </div>
+        <div id="mission-feedback" role="status" aria-live="polite"></div>
+    </section>
     <div id="keyboard-hint">
         🎮 <b>Controls:</b> VR Controller Thumbsticks · VR Laser Virtual Joystick · WASD / Arrows · Space for E-Stop · Press 'R' to Recenter
     </div>
@@ -122,6 +160,14 @@
             lastCommand: "stop",
             commandStatus: "READY",
             commandMessage: "Connected to BARRY",
+            commandResultColor: "#fbbf24",
+            mission: null,
+            missionStatusKnown: false,
+            operators: [],
+            operatorIndex: 0,
+            zone: "Zone-A",
+            endMissionConfirmUntil: 0,
+            motionMissionBlocked: false,
             forward: 0.0,
             strafe: 0.0,
             turn: 0.0,
@@ -136,9 +182,30 @@
         function updateCommandStatus(status, message = "") {
             state.commandStatus = String(status || "UNKNOWN").toUpperCase();
             state.commandMessage = String(message || "");
+            state.commandResultColor = commandStatusColor(state.commandStatus);
             const statusElement = document.getElementById("command-status");
-            if (statusElement) statusElement.textContent = [state.commandStatus, state.commandMessage].filter(Boolean).join(" · ");
+            if (statusElement) {
+                statusElement.textContent = [state.commandStatus, state.commandMessage].filter(Boolean).join(" · ");
+                statusElement.style.borderColor = state.commandResultColor;
+                statusElement.style.color = state.commandResultColor;
+            }
             if (typeof drawLeftPanel === "function") drawLeftPanel();
+        }
+
+        function commandStatusColor(status) {
+            if (status === "ACCEPTED") return "#00ff88";
+            if (status === "MISSION_REQUIRED" || status === "BUSY") return "#fbbf24";
+            if (status === "ESTOP_ACTIVE" || status === "OFFLINE" || status.startsWith("HTTP_")) return "#ff5c70";
+            if (status === "INVALID") return "#fb923c";
+            return "#00f0ff";
+        }
+
+        function commandResultStatus(payload, response) {
+            const detail = String(payload?.detail || payload?.message || "");
+            const refusal = detail.match(/^(MISSION_REQUIRED|BUSY|ESTOP_ACTIVE|OFFLINE|INVALID)\s*:/i);
+            if (refusal) return refusal[1].toUpperCase();
+            if (payload?.status && String(payload.status).toUpperCase() !== "REJECTED") return String(payload.status).toUpperCase();
+            return response.ok ? "ACCEPTED" : `HTTP_${response.status}`;
         }
 
         function newCommandId() {
@@ -198,9 +265,23 @@
                     body: body === null ? undefined : JSON.stringify(body)
                 });
                 const payload = await response.json().catch(() => ({}));
-                const resultStatus = payload && payload.status ? String(payload.status).toUpperCase() : (response.ok ? "ACCEPTED" : `HTTP_${response.status}`);
-                const message = payload.message || payload.detail || (response.ok ? "Command accepted" : response.statusText);
+                const resultStatus = commandResultStatus(payload, response);
+                const detailMessage = String(payload.detail || payload.message || "").replace(/^(MISSION_REQUIRED|BUSY|ESTOP_ACTIVE|OFFLINE|INVALID)\s*:\s*/i, "");
+                const message = resultStatus === "MISSION_REQUIRED"
+                    ? `Start a mission to drive${detailMessage ? `. ${detailMessage}` : "."}`
+                    : (detailMessage || (response.ok ? "Command accepted" : response.statusText));
                 updateCommandStatus(resultStatus, message);
+                if (resultStatus === "MISSION_REQUIRED") {
+                    state.motionMissionBlocked = true;
+                    motionGeneration++;
+                    pendingMotion = null;
+                    virtualJoystickOwner = null;
+                    virtualJoystickAxes.forward = 0;
+                    virtualJoystickAxes.turn = 0;
+                    virtualJoystickHasSentMotion = false;
+                    state.forward = state.strafe = state.turn = 0;
+                    drawLeftPanel();
+                }
                 if (resultStatus === "ESTOP_ACTIVE") state.eStopActive = true;
                 return { response, payload };
             } catch (error) {
@@ -330,6 +411,11 @@
             new THREE.Vector3(-1.85, 1.40, -1.95),
             Math.PI * 0.23, 0 // Angled ~41.4° inward
         );
+        const missionPanel = createHoloPanel(
+            1.35, 0.58, 540, 248,
+            new THREE.Vector3(-1.85, 0.32, -1.95),
+            Math.PI * 0.23, 0
+        );
 
         function drawLeftPanel() {
             const { ctx, canvas: c, texture } = leftPanel;
@@ -444,12 +530,12 @@
             ctx.fillText(`STRAFE   ${state.strafe.toFixed(2)}`, 320, 462);
             ctx.fillText(`TURN     ${state.turn.toFixed(2)}`, 320, 494);
 
-            ctx.fillStyle = state.commandStatus === "LOCAL PREVIEW" ? "#00f0ff" : "#fbbf24";
+            ctx.fillStyle = state.commandResultColor;
             ctx.font = "bold 16px -apple-system, monospace";
             ctx.fillText(`RESULT · ${state.commandStatus}`, 320, 542);
             ctx.fillStyle = "#cbd5e1";
             ctx.font = "14px -apple-system, monospace";
-            ctx.fillText(state.commandMessage, 320, 566, 190);
+            drawWrappedText(ctx, state.commandMessage, 320, 566, 190, 17, 3);
 
             // Footer info dot
             ctx.fillStyle = "#6366f1"; // Purple-blue indicator
@@ -463,6 +549,247 @@
 
             texture.needsUpdate = true;
         }
+
+        function drawMissionPanel() {
+            const { ctx, canvas: c, texture } = missionPanel;
+            ctx.clearRect(0, 0, c.width, c.height);
+            ctx.fillStyle = "rgba(10, 16, 28, 0.94)";
+            ctx.strokeStyle = "rgba(0, 240, 255, 0.9)";
+            ctx.lineWidth = 3;
+            roundRect(ctx, 4, 4, c.width - 8, c.height - 8, 14, true, true);
+
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 22px monospace";
+            ctx.fillText("MISSION CONTROL", 20, 34);
+            const activeMission = state.mission?.active;
+            ctx.fillStyle = activeMission ? "#00ff88" : "#fbbf24";
+            ctx.font = "bold 15px monospace";
+            const missionLabel = activeMission
+                ? `ACTIVE · ${state.mission.operator_name || state.mission.operator_id || "Operator"} · ${state.mission.zone || "Zone"}`
+                : (state.missionStatusKnown ? "NO ACTIVE MISSION" : "CHECKING MISSION…");
+            ctx.fillText(missionLabel.slice(0, 53), 20, 60);
+
+            const operator = state.operators[state.operatorIndex];
+            ctx.fillStyle = "#94a3b8";
+            ctx.font = "13px monospace";
+            ctx.fillText("OPERATOR", 20, 88);
+            drawMissionButton(ctx, 20, 96, 42, 38, "‹", !activeMission && state.operators.length > 0, "#00f0ff");
+            drawMissionButton(ctx, 64, 96, 360, 38, operator ? operator.name : "No operators", false);
+            drawMissionButton(ctx, 426, 96, 42, 38, "›", !activeMission && state.operators.length > 0, "#00f0ff");
+
+            ctx.fillStyle = "#94a3b8";
+            ctx.fillText("ZONE", 20, 158);
+            drawMissionButton(ctx, 20, 166, 42, 38, "‹", !activeMission, "#00f0ff");
+            drawMissionButton(ctx, 64, 166, 360, 38, state.zone, false);
+            drawMissionButton(ctx, 426, 166, 42, 38, "›", !activeMission, "#00f0ff");
+
+            if (!activeMission) {
+                drawMissionButton(ctx, 20, 208, 220, 30, "START MISSION", true, "#00c987");
+                ctx.fillStyle = "#64748b";
+                ctx.font = "bold 13px monospace";
+                ctx.textAlign = "center";
+                ctx.fillText("END MISSION", 360, 228);
+                ctx.textAlign = "left";
+            } else {
+                drawMissionButton(ctx, 20, 208, 220, 30, "MISSION ACTIVE", false);
+                drawMissionButton(ctx, 280, 208, 220, 30,
+                    Date.now() < state.endMissionConfirmUntil ? "CONFIRM END?" : "END MISSION",
+                    true, "#dc2626");
+            }
+            texture.needsUpdate = true;
+        }
+
+        function drawMissionButton(ctx, x, y, w, h, label, enabled, color = "#64748b") {
+            ctx.fillStyle = enabled ? `${color}33` : "rgba(255,255,255,0.04)";
+            ctx.strokeStyle = enabled ? color : "rgba(148,163,184,0.28)";
+            ctx.lineWidth = 1.5;
+            roundRect(ctx, x, y, w, h, 7, true, true);
+            ctx.fillStyle = enabled ? "#ffffff" : "#94a3b8";
+            ctx.font = "bold 14px monospace";
+            ctx.textAlign = "center";
+            ctx.fillText(label, x + w / 2, y + h / 2 + 5, w - 12);
+            ctx.textAlign = "left";
+        }
+
+        function drawWrappedText(ctx, text, x, y, maxWidth, lineHeight, maxLines) {
+            const words = String(text || "").split(/\s+/);
+            let line = "";
+            let lineNumber = 0;
+            for (const word of words) {
+                const candidate = line ? `${line} ${word}` : word;
+                if (line && ctx.measureText(candidate).width > maxWidth) {
+                    ctx.fillText(line, x, y + lineNumber * lineHeight, maxWidth);
+                    line = word;
+                    lineNumber++;
+                    if (lineNumber >= maxLines) break;
+                } else {
+                    line = candidate;
+                }
+            }
+            if (line && lineNumber < maxLines) ctx.fillText(line, x, y + lineNumber * lineHeight, maxWidth);
+        }
+
+        const missionZones = ["Zone-A", "Zone-B", "Zone-C", "Zone-D"];
+
+        function syncMissionControls() {
+            const chip = document.getElementById("mission-chip");
+            const startButton = document.getElementById("mission-start-btn");
+            const endButton = document.getElementById("mission-end-btn");
+            const operatorSelect = document.getElementById("mission-operator");
+            const zoneInput = document.getElementById("mission-zone");
+            const feedback = document.getElementById("mission-feedback");
+            const active = Boolean(state.mission?.active);
+
+            if (chip) {
+                chip.textContent = active
+                    ? `ACTIVE · ${state.mission.operator_name || state.mission.operator_id} · ${state.mission.zone}`
+                    : (state.missionStatusKnown ? "NO ACTIVE MISSION" : "Checking status…");
+                chip.style.color = active ? "#00ff88" : "#fbbf24";
+            }
+            if (startButton) startButton.disabled = active || !state.operators.length;
+            if (endButton) {
+                endButton.disabled = !active;
+                endButton.textContent = Date.now() < state.endMissionConfirmUntil ? "Confirm end mission" : "End mission";
+            }
+            if (operatorSelect && state.operators.length) {
+                operatorSelect.value = state.operators[state.operatorIndex]?.operator_id || "";
+                operatorSelect.disabled = active;
+            }
+            if (zoneInput) {
+                zoneInput.value = state.zone;
+                zoneInput.disabled = active;
+            }
+            if (feedback && state.missionFeedback) feedback.textContent = state.missionFeedback;
+            if (typeof drawMissionPanel === "function" && typeof missionPanel !== "undefined") drawMissionPanel();
+        }
+
+        async function loadMissionOperators() {
+            const select = document.getElementById("mission-operator");
+            try {
+                const response = await fetch("/api/operators");
+                const payload = await response.json().catch(() => []);
+                if (!response.ok || !Array.isArray(payload)) throw new Error(payload.detail || `HTTP ${response.status}`);
+                state.operators = payload;
+                const selectedMissionOperator = state.mission?.operator_id;
+                const selectedIndex = state.operators.findIndex((operator) => operator.operator_id === selectedMissionOperator);
+                state.operatorIndex = selectedIndex >= 0 ? selectedIndex : 0;
+                if (select) {
+                    select.replaceChildren();
+                    state.operators.forEach((operator) => {
+                        const option = document.createElement("option");
+                        option.value = operator.operator_id;
+                        option.textContent = `${operator.name} (${operator.role})`;
+                        select.appendChild(option);
+                    });
+                    select.disabled = !state.operators.length || Boolean(state.mission?.active);
+                }
+                state.missionFeedback = state.operators.length ? "" : "No operators are registered.";
+            } catch (error) {
+                state.missionFeedback = `Could not load operators: ${error.message}`;
+                if (select) {
+                    select.replaceChildren(new Option("Operators unavailable", ""));
+                    select.disabled = true;
+                }
+            }
+            syncMissionControls();
+        }
+
+        function applyMissionStatus(mission) {
+            state.mission = mission && typeof mission === "object" ? mission : { active: false };
+            state.missionStatusKnown = true;
+            state.motionMissionBlocked = !state.mission.active;
+            if (state.mission.active && state.commandStatus === "MISSION_REQUIRED") {
+                updateCommandStatus("READY", "Mission active; ready to drive");
+            } else if (!state.mission.active && state.commandStatus === "MISSION_REQUIRED") {
+                updateCommandStatus("MISSION_REQUIRED", "Start a mission to drive");
+            }
+            syncMissionControls();
+        }
+
+        async function refreshMissionStatus() {
+            try {
+                const response = await fetch("/api/mission/status");
+                const mission = await response.json().catch(() => ({}));
+                if (response.ok) applyMissionStatus(mission);
+            } catch (error) {
+                // Keep the last known mission state; command requests still report OFFLINE if needed.
+            }
+        }
+
+        async function startMission() {
+            const operator = state.operators[state.operatorIndex];
+            const zone = String(document.getElementById("mission-zone")?.value || state.zone).trim();
+            if (!operator || !zone) {
+                state.missionFeedback = "Choose an operator and enter a zone.";
+                syncMissionControls();
+                return;
+            }
+            state.zone = zone;
+            state.missionFeedback = "Starting mission…";
+            syncMissionControls();
+            try {
+                const response = await fetch("/api/mission/start", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ operator_id: operator.operator_id, zone })
+                });
+                const mission = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(mission.detail || `HTTP ${response.status}`);
+                applyMissionStatus(mission);
+                state.missionFeedback = `Mission started for ${mission.operator_name || operator.name}.`;
+            } catch (error) {
+                state.missionFeedback = `Mission start failed: ${error.message}`;
+            }
+            syncMissionControls();
+        }
+
+        async function endMission() {
+            if (Date.now() >= state.endMissionConfirmUntil) {
+                state.endMissionConfirmUntil = Date.now() + 5000;
+                state.missionFeedback = "Select End mission again within 5 seconds to confirm.";
+                syncMissionControls();
+                setTimeout(() => {
+                    if (Date.now() >= state.endMissionConfirmUntil) {
+                        state.endMissionConfirmUntil = 0;
+                        syncMissionControls();
+                    }
+                }, 5100);
+                return;
+            }
+            state.endMissionConfirmUntil = 0;
+            state.missionFeedback = "Ending mission…";
+            syncMissionControls();
+            try {
+                const response = await fetch("/api/mission/stop", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ reason: "Operator ended mission" })
+                });
+                const mission = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(mission.detail || `HTTP ${response.status}`);
+                applyMissionStatus(mission);
+                state.missionFeedback = "Mission ended. Start a mission to drive again.";
+                updateCommandStatus("MISSION_REQUIRED", "Start a mission to drive");
+            } catch (error) {
+                state.missionFeedback = `Mission end failed: ${error.message}`;
+            }
+            syncMissionControls();
+        }
+
+        document.getElementById("mission-start-btn")?.addEventListener("click", startMission);
+        document.getElementById("mission-end-btn")?.addEventListener("click", endMission);
+        document.getElementById("mission-controls")?.addEventListener("click", (event) => event.stopPropagation());
+        document.getElementById("mission-operator")?.addEventListener("change", (event) => {
+            state.operatorIndex = Math.max(0, state.operators.findIndex((operator) => operator.operator_id === event.target.value));
+            syncMissionControls();
+        });
+        document.getElementById("mission-zone")?.addEventListener("input", (event) => {
+            state.zone = event.target.value || "Zone-A";
+            drawMissionPanel();
+        });
+        loadMissionOperators();
+        refreshMissionStatus();
+        setInterval(refreshMissionStatus, 3000);
 
         // 2. CENTER PANEL: LIVE ROBOT CAMERA (Forward Optics Display)
         const centerPanel = createHoloPanel(
@@ -771,6 +1098,7 @@
         drawCenterPanel();
         drawBottomPanel();
         drawRightPanel();
+        drawMissionPanel();
 
         // --- Interaction: Raycasting & Click Handling ---
         const raycaster = new THREE.Raycaster();
@@ -970,6 +1298,28 @@
             }
         }
 
+        async function handleMissionPanelClick(uvX, uvY) {
+            const x = uvX * missionPanel.canvas.width;
+            const y = (1 - uvY) * missionPanel.canvas.height;
+            if (y >= 96 && y <= 134) {
+                if (x >= 20 && x < 62 && state.operators.length && !state.mission?.active) {
+                    state.operatorIndex = (state.operatorIndex - 1 + state.operators.length) % state.operators.length;
+                    syncMissionControls();
+                } else if (x >= 426 && x <= 468 && state.operators.length && !state.mission?.active) {
+                    state.operatorIndex = (state.operatorIndex + 1) % state.operators.length;
+                    syncMissionControls();
+                }
+            } else if (y >= 166 && y <= 204 && !state.mission?.active) {
+                const current = missionZones.indexOf(state.zone);
+                if (x >= 20 && x < 62) state.zone = missionZones[(current - 1 + missionZones.length) % missionZones.length];
+                else if (x >= 426 && x <= 468) state.zone = missionZones[(current + 1 + missionZones.length) % missionZones.length];
+                syncMissionControls();
+            } else if (y >= 208 && y <= 240) {
+                if (x >= 20 && x <= 240 && !state.mission?.active) await startMission();
+                else if (x >= 280 && x <= 500 && state.mission?.active) await endMission();
+            }
+        }
+
         async function handleRightPanelClick(uvX, uvY) {
             playChime(850, 0.08);
             let action = null;
@@ -1025,7 +1375,7 @@
         }
 
         function dispatchRaycastInteraction(ray) {
-            const interactiveMeshes = [bottomPanel.mesh, rightPanel.mesh];
+            const interactiveMeshes = [bottomPanel.mesh, rightPanel.mesh, missionPanel.mesh];
             const hits = ray.intersectObjects(interactiveMeshes);
             if (hits.length > 0) {
                 const hit = hits[0];
@@ -1034,6 +1384,8 @@
                     handleBottomPanelClick(uv.x, uv.y);
                 } else if (hit.object === rightPanel.mesh) {
                     handleRightPanelClick(uv.x, uv.y);
+                } else if (hit.object === missionPanel.mesh) {
+                    handleMissionPanelClick(uv.x, uv.y);
                 }
             }
         }
@@ -1208,6 +1560,10 @@
 
             const isStop = !command.forward && !command.strafe && !command.turn;
             if (isStop) return stopRobot();
+            if (state.motionMissionBlocked) {
+                updateCommandStatus("MISSION_REQUIRED", "Start a mission to drive");
+                return;
+            }
             if (state.eStopActive) {
                 updateCommandStatus("ESTOP_ACTIVE", "Reset the emergency stop before moving");
                 return;
@@ -1344,6 +1700,7 @@
                         drawCenterPanel();
                         drawBottomPanel();
                     }
+                    if (data.type === 'mission_update' && data.mission) applyMissionStatus(data.mission);
                 } catch (e) {}
             };
             ws.onclose = () => {
