@@ -97,6 +97,8 @@ namespace Barry.App.Editor
             var strip = BuildControlStrip();
             float below = 25f * Mathf.Deg2Rad;
             Place(strip.gameObject, new Vector3(0, Eye - 0.9f * Mathf.Sin(below), 0.9f * Mathf.Cos(below)), Quaternion.Euler(15f, 0, 0));
+            var brain = BuildBrainPanel();
+            PlaceOnArc(brain.gameObject, 46f, 1.25f, Eye + 0.1f);   // further right and higher than the Actions pill, so the control strip never covers it; Y opens it
             var missionPanel = BuildMissionPanel();
             Place(missionPanel.gameObject, new Vector3(0, Eye - 0.22f, 1.35f), Quaternion.identity);
             var banner = BuildEmergencyBanner();
@@ -117,6 +119,7 @@ namespace Barry.App.Editor
             SetRef(ctrl, "controlStrip", strip.GetComponentInChildren<ControlStripView>(true));
             SetRef(ctrl, "emergencyBanner", banner.GetComponentInChildren<EmergencyBannerView>(true));
             SetRef(ctrl, "missionPanel", missionPanel.GetComponentInChildren<MissionPanelView>(true));
+            SetRef(ctrl, "brainPanel", brain.GetComponentInChildren<LlmPanelView>(true));
 
             var themeGo = new GameObject("ThemeApplier");
             var ta = themeGo.AddComponent<ThemeApplier>();
@@ -128,7 +131,7 @@ namespace Barry.App.Editor
 
             // Save prefabs (panels), then the scene.
             string pdir = Root + "/UI/Prefabs";
-            foreach (var g in new[] { header, camera, status, actions, strip, banner, missionPanel })
+            foreach (var g in new[] { header, camera, status, actions, strip, banner, missionPanel, brain })
                 PrefabUtility.SaveAsPrefabAssetAndConnect(g.gameObject, $"{pdir}/{g.name}.prefab", InteractionMode.AutomatedAction);
 
             PlayerSettings.insecureHttpOption = InsecureHttpOption.AlwaysAllowed;   // the only Player setting changed
@@ -505,6 +508,88 @@ namespace Barry.App.Editor
             SetRef(view, "zoneNext", zNext);
             SetRef(view, "startButton", start);
             SetRef(view, "startLabel", startText);
+            Relayout(c);
+            return c;
+        }
+
+        /// <summary>
+        /// The LLM brain panel (#92): preset goals, live steps, the answer, Cancel. 1 mm per px at 1.25 m, so text meets the
+        /// §4 cap-height rule. Collapsed it is a "BRAIN · Y" tab; Y toggles it.
+        /// </summary>
+        static Canvas BuildBrainPanel()
+        {
+            Begin(1f, 1.25f);
+            var c = NewCanvas("BrainPanel", 600, 890);
+            var view = c.gameObject.AddComponent<LlmPanelView>();
+
+            var tabImg = Box(c.transform, "Tab", 0, 0, 220, 60, centre: true);
+            Skin(tabImg, M(18), Color.white, look.panelBorder, M(1f), true, RoundedPanel.DefaultGlowStrength);
+            var tabText = Txt(tabImg.transform, "Text", "BRAIN · Y", 22, ThemeRole.TextPrimary, FontRole.Mono, bold: true, tracking: 0.1f, align: TextAlignmentOptions.Center);
+            Stretch(tabText.rectTransform, 0);
+
+            var content = Box(c.transform, "Content", 0, 0, 0, 0, stretch: 0);
+            Skin(content, M(24), look.panelBg, look.panelBorder, M(2f), true, RoundedPanel.DefaultGlowStrength, ThemeRole.PanelBg, ThemeRole.PanelBorder);
+
+            Txt(content.transform, "Title", "BRAIN", 28, ThemeRole.TextSecondary, FontRole.Body, bold: true, tracking: 0.14f, rect: P(28, 20, 300, 38));
+            var close = Txt(content.transform, "Close", "Y · close", 22, ThemeRole.TextSecondary, FontRole.Mono, rect: P(400, 22, 172, 34));
+            close.alignment = TextAlignmentOptions.MidlineRight;
+
+            var presets = new Button[LlmPresets.All.Length];
+            for (int i = 0; i < presets.Length; i++)
+            {
+                var img = Box(content.transform, "Preset" + i, 28, 70 + i * 64, 544, 56);
+                Skin(img, M(12), RowFill, look.neutralBorder, M(1f));
+                img.raycastTarget = true;
+                presets[i] = img.gameObject.AddComponent<Button>(); presets[i].targetGraphic = img;
+                var t = Txt(img.transform, "Text", LlmPresets.All[i].Label, 24, ThemeRole.TextPrimary, FontRole.Body, bold: true);
+                Stretch(t.rectTransform, 0); t.rectTransform.offsetMin = new Vector2(M(16), 0);
+            }
+
+            var notice = Txt(content.transform, "Notice", "", 21, ThemeRole.TextSecondary, FontRole.Body, rect: P(28, 392, 544, 30));
+            var chipRow = Row(content.transform, "ChipRow", 12, TextAnchor.MiddleLeft, leftEdge: true, inset: 28, top: 428, fitVertical: true);
+            var chip = Chip(chipRow, "StateChip", 40, 16, 10, 12, 22, overlay: false);
+
+            const int rows = LlmPanelModel.MaxRows;
+            var labels = new TMP_Text[rows];
+            var states = new TMP_Text[rows];
+            for (int i = 0; i < rows; i++)
+            {
+                labels[i] = Txt(content.transform, "StepLabel" + i, "", 22, ThemeRole.TextPrimary, FontRole.Mono, rect: P(28, 480 + i * 38, 380, 34));
+                states[i] = Txt(content.transform, "StepState" + i, "", 22, ThemeRole.TextSecondary, FontRole.Mono, bold: true, rect: P(380, 480 + i * 38, 192, 34));
+                states[i].alignment = TextAlignmentOptions.MidlineRight;
+            }
+            var more = Txt(content.transform, "More", "", 21, ThemeRole.TextSecondary, FontRole.Mono, rect: P(28, 708, 300, 28));
+
+            var answer = Txt(content.transform, "Answer", "", 26, ThemeRole.TextPrimary, FontRole.Body, bold: true, rect: P(28, 738, 544, 74));
+            answer.textWrappingMode = TextWrappingModes.Normal;
+            answer.alignment = TextAlignmentOptions.TopLeft;
+
+            var cancelImg = Box(content.transform, "Cancel", 28, 816, 544, 62);
+            Skin(cancelImg, M(14), look.dangerSolid, Color.clear, 0f, fillRole: ThemeRole.Danger);
+            cancelImg.raycastTarget = true;
+            var cancel = cancelImg.gameObject.AddComponent<Button>(); cancel.targetGraphic = cancelImg;
+            var cancelText = Txt(cancelImg.transform, "Text", LlmPanelModel.CancelLabel, 30, Color.white, FontRole.Body, bold: true, align: TextAlignmentOptions.Center);
+            Stretch(cancelText.rectTransform, 4);
+
+            var so = new SerializedObject(view);
+            so.FindProperty("tab").objectReferenceValue = tabImg.gameObject;
+            so.FindProperty("content").objectReferenceValue = content.gameObject;
+            var pArr = so.FindProperty("presetButtons"); pArr.arraySize = presets.Length;
+            for (int i = 0; i < presets.Length; i++) pArr.GetArrayElementAtIndex(i).objectReferenceValue = presets[i];
+            so.FindProperty("stateChip").objectReferenceValue = chip;
+            var lArr = so.FindProperty("rowLabels"); lArr.arraySize = rows;
+            var sArr = so.FindProperty("rowStates"); sArr.arraySize = rows;
+            for (int i = 0; i < rows; i++)
+            {
+                lArr.GetArrayElementAtIndex(i).objectReferenceValue = labels[i];
+                sArr.GetArrayElementAtIndex(i).objectReferenceValue = states[i];
+            }
+            so.FindProperty("moreLabel").objectReferenceValue = more;
+            so.FindProperty("answer").objectReferenceValue = answer;
+            so.FindProperty("notice").objectReferenceValue = notice;
+            so.FindProperty("cancelButton").objectReferenceValue = cancel;
+            so.FindProperty("cancelLabel").objectReferenceValue = cancelText;
+            so.ApplyModifiedPropertiesWithoutUndo();
             Relayout(c);
             return c;
         }

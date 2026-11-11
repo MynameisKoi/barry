@@ -145,6 +145,8 @@ namespace Barry.App
         public EmergencyLatch EmergencyLatch { get; } = new EmergencyLatch();
         /// <summary>Mission status/operators/start/end. Missions gate motion only; stop and e-stop never wait on this.</summary>
         public MissionMonitor Mission { get; private set; }
+        /// <summary>The LLM brain task. Polls only while running; never gates or delays stop / e-stop.</summary>
+        public LlmTaskMonitor Llm { get; private set; }
         public XRSessionWatcher XRSessionWatcher => xrSessionWatcher;
         public MjpegStreamSource CameraStreamSource => cameraStreamSource;
 
@@ -174,6 +176,7 @@ namespace Barry.App
                 routine => StartCoroutine(routine),
                 sendRateHz: settings.SendRateHz);
             Mission = new MissionMonitor(new BarryMissionApi(ApiClient), routine => StartCoroutine(routine));
+            Llm = new LlmTaskMonitor(new BarryLlmApi(ApiClient), routine => StartCoroutine(routine));
             StatusMonitor = new StatusMonitor(
                 new BarryStatusApi(ApiClient),
                 routine => StartCoroutine(routine));
@@ -210,6 +213,7 @@ namespace Barry.App
             StatusMonitor.Tick(deltaTime);
             EmergencyLatch.Tick(deltaTime);
             Mission.Tick(deltaTime);
+            Llm.Tick(deltaTime);
             TryFinishEmergencyRecovery();
             if (cameraWatchdog.Update(deltaTime, cameraStreamSource.FrameAgeSeconds))
                 stopRouter.Route(StopReason.CameraUnavailable);
