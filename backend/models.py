@@ -94,3 +94,5 @@ class DetectionAlert(BaseModel):
     zone: str
     timestamp: str
     bounding_box: Optional[List[float]] = None
+    simulated: bool = False
+    simulated: bool = False

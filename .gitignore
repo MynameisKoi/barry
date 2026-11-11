@@ -39,6 +39,7 @@ htmlcov/
 *.db
 *.sqlite
 *.sqlite3
+models/*.onnx
 
 # IDEs
 .vscode/

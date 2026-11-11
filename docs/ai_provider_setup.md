@@ -1,5 +1,9 @@
 # BARRY Intelligence Engine — AI Provider Setup & Switching Guide
 
+## Object detection model
+
+The camera detector uses Ultralytics YOLO11n exported to ONNX and runs with CPU `onnxruntime`. YOLO11n is licensed under **AGPL-3.0**; this project has accepted that license for private use. Export it with `scripts/get_yolo11n.sh`. The resulting `models/yolo11n.onnx` is local and ignored by Git. Without a model or live frame source, detection reports unavailable and returns no detections; it never fabricates detections.
+
 BARRY uses a modular **LLM Provider Layer** (`backend/ai/`) so the backend is never locked into a single AI vendor. All providers implement the `LLMProvider` abstract base class (`backend/ai/interface.py`).
 
 ---
