@@ -250,6 +250,54 @@ namespace Barry.Teleop.Tests
             Assert.That(service.StateMachine.LastStopReason, Is.EqualTo(StopReason.EmergencyStop));
         }
 
+
+        [Test]
+        public void MissionRequired_StopsOnce_RaisesTheHint_AndIsNeverRetried()
+        {
+            var transport = new FakeTransport();
+            RobotControlService service = DrivingService(transport, 10f);
+            int hints = 0;
+            service.MissionRequired += () => hints++;
+            service.SetCommand(new MotionCommand(0.5f, 0f, 0f));
+            service.Tick(0.1f);
+
+            transport.CompleteMotion(0, new ApiResponse<CommandResult>(true, 200,
+                new CommandResult { status = "MISSION_REQUIRED", message = "An active mission is required for motion." }, null));
+
+            Assert.That(hints, Is.EqualTo(1));
+            Assert.That(service.StateMachine.State, Is.EqualTo(TeleopState.Stopped));
+            Assert.That(service.StateMachine.LastStopReason, Is.EqualTo(StopReason.MissionRequired));
+            Assert.That(transport.StopCalls, Is.EqualTo(1));          // a plain STOP, never gated
+            Assert.That(service.ConsecutiveMotionFailures, Is.EqualTo(0));
+            service.Tick(0.1f);
+            service.Tick(0.1f);
+            Assert.That(transport.MotionRequests, Has.Count.EqualTo(1));   // not retried
+        }
+
+        [Test]
+        public void MissionRequired_AlsoRecognisedFromAnHttpErrorDetail()
+        {
+            var transport = new FakeTransport();
+            RobotControlService service = DrivingService(transport, 10f);
+            bool raised = false;
+            service.MissionRequired += () => raised = true;
+            service.SetCommand(new MotionCommand(0.5f, 0f, 0f));
+            service.Tick(0.1f);
+
+            transport.CompleteMotion(0, new ApiResponse<CommandResult>(false, 409, null, "MISSION_REQUIRED: An active mission is required for motion."));
+
+            Assert.That(raised, Is.True);
+            Assert.That(service.StateMachine.LastStopReason, Is.EqualTo(StopReason.MissionRequired));
+        }
+
+        [Test]
+        public void OrdinaryFailures_AreNotMistakenForMissionRequired()
+        {
+            Assert.That(RobotControlService.IsMissionRequired(FailedResponse()), Is.False);
+            Assert.That(RobotControlService.IsMissionRequired(AcceptedResponse()), Is.False);
+            Assert.That(RobotControlService.IsMissionRequired(new ApiResponse<CommandResult>(false, 423, null, "Emergency stop is latched")), Is.False);
+        }
+
         private static RobotControlService DrivingService(FakeTransport transport, float sendRate)
         {
             var state = new TeleopStateMachine();

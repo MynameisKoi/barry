@@ -25,7 +25,8 @@ namespace Barry.Teleop
         StatusUnavailable,
         CameraUnavailable,
         Operator,
-        EmergencyStop
+        EmergencyStop,
+        MissionRequired
     }
 
     public sealed class TeleopStateMachine

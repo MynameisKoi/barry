@@ -72,6 +72,20 @@ namespace Barry.Api
         public IEnumerator Reset(Action<ApiResponse<CommandResult>> completed) =>
             Send("POST", ApiPrefix + "/reset", null, true, completed);
 
+        // Mission endpoints live under /api (not /api/v1). After #89 start/stop need the same X-Robot-Key,
+        // which Send() already attaches.
+        public IEnumerator GetOperators(Action<ApiResponse<OperatorsResponse>> completed) =>
+            Send("GET", "/api/operators", null, false, completed, null, bare => "{\"operators\":" + bare + "}");
+
+        public IEnumerator StartMission(MissionStartRequest body, Action<ApiResponse<MissionStatus>> completed) =>
+            Send("POST", "/api/mission/start", body, false, completed);
+
+        public IEnumerator StopMission(string reason, Action<ApiResponse<MissionStatus>> completed) =>
+            Send("POST", "/api/mission/stop", new MissionStopRequest(reason), false, completed);
+
+        public IEnumerator GetMissionStatus(Action<ApiResponse<MissionStatus>> completed) =>
+            Send("GET", "/api/mission/status", null, false, completed);
+
         public IEnumerator SetMovementStyle(MovementStyleRequest body, Action<ApiResponse<CommandResult>> completed) =>
             Send("POST", ApiPrefix + "/movement-style", body, true, completed);
 
@@ -91,7 +105,7 @@ namespace Barry.Api
             Send("GET", ApiPrefix + "/camera/status", null, false, completed);
 
         private IEnumerator Send<T>(string method, string path, object body, bool sequenced,
-            Action<ApiResponse<T>> completed, Action<T> onSuccess = null) where T : class
+            Action<ApiResponse<T>> completed, Action<T> onSuccess = null, Func<string, string> reshape = null) where T : class
         {
             byte[] bytes = body == null ? null : Encoding.UTF8.GetBytes(JsonUtility.ToJson(body));
             using (var request = new UnityWebRequest(baseUrl + path, method))
@@ -119,6 +133,7 @@ namespace Barry.Api
                     yield break;
                 }
 
+                if (reshape != null && !string.IsNullOrWhiteSpace(text)) text = reshape(text.Trim());
                 if (!ApiJson.TryParse(text, out T value, out string error))
                 {
                     completed?.Invoke(new ApiResponse<T>(false, request.responseCode, null, error));

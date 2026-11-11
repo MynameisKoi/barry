@@ -59,6 +59,8 @@ namespace Barry.Teleop
         public event Action<MotionCommand> MotionSent;
         public event Action<StopReason> StopRequested;
         public event Action<StopReason, bool> StopCompleted;
+        /// <summary>The gateway refused motion (MISSION_REQUIRED). Raised once; the robot is stopped, never retried.</summary>
+        public event Action MissionRequired;
         public event Action EmergencyStopRequested;
         public event Action<bool> EmergencyStopCompleted;
 
@@ -158,6 +160,13 @@ namespace Barry.Teleop
         {
             if (requestId != activeRequestId) return;
             motionInFlight = false;
+            if (IsMissionRequired(response))
+            {
+                // Not a link failure and never retried: stop, tell the operator, wait for a mission.
+                MissionRequired?.Invoke();
+                RequestStop(StopReason.MissionRequired);
+                return;
+            }
             if (response.Success && response.Value != null && response.Value.Accepted)
             {
                 ConsecutiveMotionFailures = 0;
@@ -167,6 +176,16 @@ namespace Barry.Teleop
             ConsecutiveMotionFailures++;
             if (ConsecutiveMotionFailures >= FailuresBeforeStop)
                 RequestStop(StopReason.LinkUnreliable);
+        }
+
+        /// <summary>Gateway-style refusal in the body, or the same words in an HTTP error's detail.</summary>
+        public static bool IsMissionRequired(ApiResponse<CommandResult> response)
+        {
+            if (response.Value != null && response.Value.IsMissionRequired) return true;
+            string error = response.Error;
+            return !string.IsNullOrEmpty(error) &&
+                   (error.IndexOf(CommandResult.MissionRequiredStatus, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    error.IndexOf("active mission is required", StringComparison.OrdinalIgnoreCase) >= 0);
         }
 
         private void OnStateChanged(TeleopState previous, TeleopState next)

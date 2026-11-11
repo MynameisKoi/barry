@@ -14,12 +14,17 @@ namespace Barry.UI
         [SerializeField] Button stopButton;
         [SerializeField] Button exitButton;
         [SerializeField] TMP_Text stopHint;
+        [SerializeField] Button endMissionButton;   // two-press end (hidden while no mission is active)
+        [SerializeField] TMP_Text endMissionLabel;
 
         string selected = "MEDIUM";
 
         public event Action<string> IntensityChosen;
         public event Action StopClicked;
         public event Action ExitClicked;
+        public event Action EndMissionClicked;
+
+        EndMissionModel endMission;
 
         void Awake()
         {
@@ -30,6 +35,11 @@ namespace Barry.UI
             }
             stopButton.onClick.AddListener(() => StopClicked?.Invoke());
             exitButton.onClick.AddListener(() => ExitClicked?.Invoke());
+            if (endMissionButton != null)
+            {
+                endMissionButton.onClick.AddListener(() => EndMissionClicked?.Invoke());
+                endMissionButton.gameObject.SetActive(false);
+            }
             if (stopHint != null) stopHint.text = "A button · or point + trigger";
         }
 
@@ -38,6 +48,23 @@ namespace Barry.UI
         void OnTheme(ThemeTokens _) => Render();
 
         public void SetIntensity(string level) { selected = level; Render(); }
+
+        public void BindEndMission(EndMissionModel model) { endMission = model; RenderEndMission(); }
+
+        void RenderEndMission()
+        {
+            if (endMissionButton == null || endMission == null) return;
+            if (endMissionButton.gameObject.activeSelf != endMission.Visible) endMissionButton.gameObject.SetActive(endMission.Visible);
+            if (!endMission.Visible) return;
+            endMissionButton.interactable = endMission.Enabled;
+            if (endMissionLabel != null) endMissionLabel.text = endMission.Label;
+            var skin = endMissionButton.GetComponent<PanelSkin>();
+            var k = ThemeApplier.Current;
+            if (skin == null || k == null) return;
+            bool danger = endMission.Tone == StatusTone.Danger;
+            skin.SetColors(danger ? k.dangerSolid : Color.white, danger ? Color.clear : k.neutralBorder);
+            if (endMissionLabel != null) endMissionLabel.color = danger ? k.stopText : (Color)new Color32(0x3D, 0x3D, 0x3A, 255);
+        }
 
         void Render()
         {
@@ -54,6 +81,7 @@ namespace Barry.UI
             }
             stopButton.GetComponent<PanelSkin>().SetColors(k.dangerSolid, Color.clear, 0f);   // always solid danger + white text
             foreach (var t in stopButton.GetComponentsInChildren<TMP_Text>(true)) t.color = k.stopText;
+            RenderEndMission();
         }
     }
 }

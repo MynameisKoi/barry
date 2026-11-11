@@ -157,6 +157,19 @@ namespace Barry.UI
                         "dismiss",
                         "Dismiss");
 
+                case StopReason.MissionRequired:
+                    return CreateDanger(
+                        "Start a mission to drive",
+                        "Barry won’t move until a mission is active, so it was stopped. Stop and e-stop still work.",
+                        stopDelivered,
+                        new[]
+                        {
+                            "Pick an operator and press Start mission.",
+                            "Centre both sticks, then push to drive."
+                        },
+                        "start_mission",
+                        "Start a mission");
+
                 case StopReason.EmergencyStop:
                     return new StopOverlayModel(
                         "STOPPED",

@@ -48,6 +48,60 @@ namespace Barry.Api
         }
     }
 
+    /// <summary>One entry of GET /api/operators. The NFC tag_uid is deliberately NOT modelled: the headset never needs it.</summary>
+    [Serializable]
+    public sealed class OperatorInfo
+    {
+        public string operator_id;
+        public string name;
+        public string role;
+    }
+
+    /// <summary>GET /api/operators returns a bare JSON array; BarryApiClient wraps it as {"operators":[...]}.</summary>
+    [Serializable]
+    public sealed class OperatorsResponse
+    {
+        public OperatorInfo[] operators;
+    }
+
+    [Serializable]
+    public sealed class MissionStartRequest
+    {
+        public string operator_id;
+        public string zone;
+
+        public MissionStartRequest(string operatorId, string zone)
+        {
+            operator_id = operatorId;
+            this.zone = zone;
+        }
+    }
+
+    [Serializable]
+    public sealed class MissionStopRequest
+    {
+        public string reason;
+
+        public MissionStopRequest(string reason)
+        {
+            this.reason = reason;
+        }
+    }
+
+    /// <summary>GET /api/mission/status, and the body of start/stop.</summary>
+    [Serializable]
+    public sealed class MissionStatus
+    {
+        public bool active;
+        public string mission_id;
+        public string operator_id;
+        public string operator_name;
+        public string zone;
+        public string status;
+        public string started_at;
+        public string ended_at;
+    }
+
     [Serializable]
     public sealed class CommandResult
     {
@@ -56,7 +110,12 @@ namespace Barry.Api
         public string message;
         public string intensity;
 
+        public const string MissionRequiredStatus = "MISSION_REQUIRED";
+
         public bool Accepted => status == "accepted" || status == "stop_dispatched";
+
+        /// <summary>The gateway refused motion because no mission is active (after #89, via the relay result).</summary>
+        public bool IsMissionRequired => status == MissionRequiredStatus;
     }
 
     [Serializable]
@@ -199,7 +258,9 @@ namespace Barry.Api
             if (value is CommandResult result)
             {
                 if (string.IsNullOrWhiteSpace(result.status)) return "Command result is missing status.";
-                if (string.IsNullOrWhiteSpace(result.command)) return "Command result is missing command.";
+                // Gateway refusals (e.g. MISSION_REQUIRED) carry a message but no command.
+                if (string.IsNullOrWhiteSpace(result.command) && !result.IsMissionRequired)
+                    return "Command result is missing command.";
             }
             else if (value is ActionsResponse actions)
             {
@@ -226,6 +287,15 @@ namespace Barry.Api
                 if (camera.target_fps < 0 || camera.active_viewers < 0) return "Camera status contains negative values.";
                 if (camera.resolution != null && (camera.resolution.width <= 0 || camera.resolution.height <= 0))
                     return "Camera status has an invalid resolution.";
+            }
+            else if (value is OperatorsResponse operators)
+            {
+                if (operators.operators == null) return "Operators response is missing operators.";
+                foreach (OperatorInfo op in operators.operators)
+                {
+                    if (op == null || string.IsNullOrWhiteSpace(op.operator_id) || string.IsNullOrWhiteSpace(op.name))
+                        return "Operators response contains an invalid operator.";
+                }
             }
             else if (value is SessionResponse session)
             {

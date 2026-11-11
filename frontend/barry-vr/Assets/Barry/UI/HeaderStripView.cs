@@ -8,8 +8,8 @@ namespace Barry.UI
         [SerializeField] TMP_Text modeLabel;
         [SerializeField] ChipView robotChip;
         [SerializeField] ChipView controlChip;
+        [SerializeField] ChipView missionChip;     // MISSION · zone · operator (or NO MISSION)
         [SerializeField] ChipView emergencyChip;   // "E-STOP LATCHED", hidden unless latched
-        [SerializeField] GameObject modePill;      // MODE · MANUAL pill; hidden while latched: the header has no room for both
 
         public void Bind(HeaderChipsModel model)
         {
@@ -17,11 +17,15 @@ namespace Barry.UI
             controlChip.Set(model.Control);
         }
 
+        public void SetMission(HeaderChipModel chip)
+        {
+            if (missionChip != null) missionChip.Set(chip);
+        }
+
         public void SetEmergency(EmergencyHudModel model)
         {
             if (emergencyChip == null) return;
             emergencyChip.gameObject.SetActive(model.Visible);
-            if (modePill != null) modePill.SetActive(!model.Visible);
             if (model.Visible) emergencyChip.Set(model.Chip, model.Tone);
         }
 
