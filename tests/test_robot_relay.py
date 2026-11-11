@@ -8,6 +8,7 @@ import threading
 from typing import Any, Dict, List
 
 import httpx
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -143,8 +144,7 @@ def test_relay_requires_quest_key_on_every_route():
         ("DELETE", protocol.PATH_SESSION),
         ("POST", protocol.PATH_MOTION),
         ("POST", protocol.PATH_MOTION_DISCRETE),
-        ("POST", protocol.PATH_STOP),
-        ("POST", protocol.PATH_EMERGENCY_STOP),
+        # stop and emergency-stop are deliberately unkeyed: see test_stop_and_estop_work_without_quest_key.
         ("POST", protocol.PATH_EMERGENCY_RESET),
         ("POST", protocol.PATH_MOVEMENT_STYLE),
         ("POST", protocol.PATH_POSTURE),
@@ -161,6 +161,40 @@ def test_relay_requires_quest_key_on_every_route():
             )
             assert response.status_code == 401
     assert calls == []
+
+
+@pytest.mark.parametrize("path", [protocol.PATH_STOP, protocol.PATH_EMERGENCY_STOP])
+@pytest.mark.parametrize(
+    "quest_key, headers",
+    [
+        (QUEST_KEY, {protocol.AUTH_HEADER: ""}),       # headset sent no key
+        (QUEST_KEY, {protocol.AUTH_HEADER: "wrong"}),  # headset sent a wrong key
+        ("   ", {protocol.AUTH_HEADER: ""}),           # laptop has no QUEST_API_KEY at all
+    ],
+)
+def test_stop_and_estop_work_without_quest_key(path, quest_key, headers):
+    seen: List[Dict[str, str]] = []
+
+    def pi(request: httpx.Request) -> httpx.Response:
+        seen.append(dict(request.headers))
+        return httpx.Response(200, json={"ok": True})
+
+    client, _, _ = make_client(pi, quest_key=quest_key)
+    response = client.post(path, headers=headers)
+
+    assert response.status_code == 200
+    assert len(seen) == 1
+    # The laptop still authenticates itself to the Pi with its own key, never the headset's.
+    assert seen[0][protocol.AUTH_HEADER.lower()] == "laptop-pi-secret"
+
+
+def test_estop_reset_still_requires_quest_key():
+    def pi(_: httpx.Request) -> httpx.Response:
+        raise AssertionError("unauthenticated reset reached the Pi")
+
+    client, _, _ = make_client(pi)
+    response = client.post(protocol.PATH_EMERGENCY_RESET, headers={protocol.AUTH_HEADER: ""})
+    assert response.status_code == 401
 
 
 def test_unconfigured_quest_key_fails_closed():
