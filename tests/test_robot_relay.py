@@ -105,12 +105,16 @@ def test_laptop_key_is_injected_and_session_sequence_headers_are_unchanged():
 
 
 def test_discrete_motion_uses_short_motion_timeout():
+    seen: List[float] = []
+
     def pi(request: httpx.Request) -> httpx.Response:
-        assert request.extensions["timeout"]["read"] == 0.5
+        seen.append(request.extensions["timeout"]["read"])
         return httpx.Response(200, json={"ok": True})
 
-    client, _, _ = make_client(pi)
+    client, relay, _ = make_client(pi)
     assert client.post(protocol.PATH_MOTION_DISCRETE, json={"direction": "forward"}).status_code == 200
+    # Discrete moves use the same motion timeout as /motion (whatever value config gives it).
+    assert seen[0] == relay._motion_timeout_s
 
 
 def test_relay_logs_command_metadata_result_and_latency(caplog):

@@ -632,7 +632,7 @@ async def list_ai_analyses(
 
 @app.post("/api/ai/trigger-detection", response_model=DetectionAlert, tags=["AI Inspection"])
 async def trigger_simulated_detection(zone: Optional[str] = None):
-    """Triggers an AI object detection alert (simulated/live) and pushes to VR."""
+    """Explicit demo endpoint: emits a simulated alert and labels it as simulated."""
     alert = detection_service.generate_simulated_detection(zone=zone or "Restricted Inspection Zone")
 
     # Record detection event in database

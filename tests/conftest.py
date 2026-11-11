@@ -2,10 +2,11 @@
 
 import os
 
-# Enforce simulation robot mode and mock LLM during automated test suites
+# Enforce simulation robot mode, mock LLM, and synthetic camera during automated test suites
 os.environ["ROBOT_MODE"] = "simulation"
 os.environ["LLM_PROVIDER"] = "mock"
 os.environ["FALLBACK_LLM_PROVIDER"] = "mock"
+os.environ["CAMERA_DEVICE"] = "synthetic"
 
 import pytest
 from backend.ai.providers.mock_provider import MockProvider

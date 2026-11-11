@@ -42,5 +42,24 @@ namespace Barry.Tests.EditMode.Api
             Assert.That(ApiJson.TryParse(json, out CameraStatusResponse _, out string error), Is.False);
             Assert.That(error, Does.Contain("resolution"));
         }
+
+        [Test]
+        public void PostureRequest_SerializesTheFieldsThePiExpects()
+        {
+            string json = UnityEngine.JsonUtility.ToJson(new PostureRequest("medium", 1.5f, 0f, -2f));
+            Assert.That(json, Does.Contain("\"height\":\"medium\""));
+            Assert.That(json, Does.Contain("\"roll\":1.5"));
+            Assert.That(json, Does.Contain("\"pitch\":0"));
+            Assert.That(json, Does.Contain("\"yaw\":-2"));
+        }
+
+        [Test]
+        public void TelemetryControlState_ExposesTheEmergencyLatch()
+        {
+            Assert.That(ApiJson.TryParse(
+                "{\"battery\":80,\"orientation\":{},\"control_state\":{\"emergency_stopped\":true}}",
+                out TelemetryResponse telemetry, out string error), Is.True, error);
+            Assert.That(telemetry.control_state.emergency_stopped, Is.True);
+        }
     }
 }

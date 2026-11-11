@@ -46,7 +46,7 @@ class RobotApiRelay:
         stop_transport: Optional[httpx.AsyncBaseTransport] = None,
     ) -> None:
         self.config = config or RobotConfig.from_env()
-        self._motion_timeout_s = min(self.config.remote_timeout_s, 0.5)
+        self._motion_timeout_s = min(self.config.remote_timeout_s, 2.0)
         default_timeout = httpx.Timeout(self.config.remote_timeout_s)
         priority_timeout = httpx.Timeout(self._motion_timeout_s)
         common_headers = (

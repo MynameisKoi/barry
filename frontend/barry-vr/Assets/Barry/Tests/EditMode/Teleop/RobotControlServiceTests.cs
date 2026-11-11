@@ -151,6 +151,105 @@ namespace Barry.Teleop.Tests
             Assert.That(completedDelivered, Is.EqualTo(delivered));
         }
 
+        [Test]
+        public void EmergencyStop_IsSentEvenWhileAMotionRequestIsPending()
+        {
+            var transport = new FakeTransport();
+            RobotControlService service = DrivingService(transport, 10f);
+            service.SetCommand(new MotionCommand(0.5f, 0f, 0f));
+            service.Tick(0.1f);
+            Assert.That(service.MotionInFlight, Is.True);
+
+            service.RequestEmergencyStop();
+
+            Assert.That(transport.EmergencyStopCalls, Is.EqualTo(1));
+            Assert.That(service.MotionInFlight, Is.False);
+            Assert.That(service.StateMachine.State, Is.EqualTo(TeleopState.Stopped));
+            Assert.That(service.StateMachine.LastStopReason, Is.EqualTo(StopReason.EmergencyStop));
+        }
+
+        [Test]
+        public void EmergencyStop_IsSentEvenWhileANormalStopIsInFlight()
+        {
+            var transport = new FakeTransport();
+            RobotControlService service = DrivingService(transport, 10f);
+            service.RequestStop(StopReason.Operator);
+            Assert.That(transport.StopCalls, Is.EqualTo(1));
+
+            service.RequestEmergencyStop();
+
+            Assert.That(transport.EmergencyStopCalls, Is.EqualTo(1));
+            Assert.That(service.StateMachine.LastStopReason, Is.EqualTo(StopReason.EmergencyStop));
+        }
+
+        [Test]
+        public void EmergencyStop_DropsAStaleMotionReplyAndStopsMotionSending()
+        {
+            var transport = new FakeTransport();
+            RobotControlService service = DrivingService(transport, 10f);
+            service.SetCommand(new MotionCommand(0.5f, 0f, 0f));
+            service.Tick(0.1f);
+            service.RequestEmergencyStop();
+
+            transport.CompleteMotion(0, FailedResponse());   // stale: must not count as a link failure
+            service.Tick(0.1f);
+
+            Assert.That(service.ConsecutiveMotionFailures, Is.EqualTo(0));
+            Assert.That(transport.MotionRequests, Has.Count.EqualTo(1));   // nothing sent after the e-stop
+        }
+
+        [Test]
+        public void EmergencyStop_RepeatedPressesWhileInFlightSendOnce_AndReportDelivery()
+        {
+            var transport = new FakeTransport();
+            RobotControlService service = DrivingService(transport, 10f);
+            bool? delivered = null;
+            int requested = 0;
+            service.EmergencyStopRequested += () => requested++;
+            service.EmergencyStopCompleted += d => delivered = d;
+
+            service.RequestEmergencyStop();
+            service.RequestEmergencyStop();
+            Assert.That(transport.EmergencyStopCalls, Is.EqualTo(1));
+            Assert.That(requested, Is.EqualTo(2));
+
+            transport.CompleteEmergencyStop(new ApiResponse<CommandResult>(true, 200,
+                new CommandResult { status = "stop_dispatched", command = "emergency_stop" }, null));
+            Assert.That(delivered, Is.True);
+
+            service.RequestEmergencyStop();   // a new press after completion is sent again
+            Assert.That(transport.EmergencyStopCalls, Is.EqualTo(2));
+        }
+
+        [Test]
+        public void EmergencyStop_FailedDeliveryIsReported()
+        {
+            var transport = new FakeTransport();
+            RobotControlService service = DrivingService(transport, 10f);
+            bool? delivered = null;
+            service.EmergencyStopCompleted += d => delivered = d;
+
+            service.RequestEmergencyStop();
+            transport.CompleteEmergencyStop(FailedResponse());
+
+            Assert.That(delivered, Is.False);
+        }
+
+        [Test]
+        public void EmergencyStop_UpgradesAnEarlierStopReason()
+        {
+            var transport = new FakeTransport();
+            RobotControlService service = DrivingService(transport, 10f);
+            service.RequestStop(StopReason.Operator);
+            Assert.That(service.StateMachine.LastStopReason, Is.EqualTo(StopReason.Operator));
+
+            service.RequestEmergencyStop();
+            Assert.That(service.StateMachine.LastStopReason, Is.EqualTo(StopReason.EmergencyStop));
+
+            service.RequestStop(StopReason.SticksCentered);   // nothing downgrades an e-stop
+            Assert.That(service.StateMachine.LastStopReason, Is.EqualTo(StopReason.EmergencyStop));
+        }
+
         private static RobotControlService DrivingService(FakeTransport transport, float sendRate)
         {
             var state = new TeleopStateMachine();
@@ -172,9 +271,11 @@ namespace Barry.Teleop.Tests
             private readonly List<Action<ApiResponse<CommandResult>>> motionCallbacks =
                 new List<Action<ApiResponse<CommandResult>>>();
             private Action<ApiResponse<CommandResult>> stopCallback;
+            private Action<ApiResponse<CommandResult>> emergencyCallback;
 
             public readonly List<MotionRequest> MotionRequests = new List<MotionRequest>();
             public int StopCalls { get; private set; }
+            public int EmergencyStopCalls { get; private set; }
 
             public IEnumerator SendMotion(MotionRequest request, Action<ApiResponse<CommandResult>> completed)
             {
@@ -189,6 +290,15 @@ namespace Barry.Teleop.Tests
                 stopCallback = completed;
                 return Empty();
             }
+
+            public IEnumerator EmergencyStop(Action<ApiResponse<CommandResult>> completed)
+            {
+                EmergencyStopCalls++;
+                emergencyCallback = completed;
+                return Empty();
+            }
+
+            public void CompleteEmergencyStop(ApiResponse<CommandResult> response) => emergencyCallback(response);
 
             public void CompleteMotion(int index, ApiResponse<CommandResult> response) =>
                 motionCallbacks[index](response);

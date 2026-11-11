@@ -135,12 +135,14 @@ namespace Barry.App
 
         private BarryAppStopRouter stopRouter;
         private CameraAvailabilityWatchdog cameraWatchdog;
+        private bool recoveryPending;
 
         public BarryConfig Config => config;
         public BarryApiClient ApiClient { get; private set; }
         public InputMapping InputMapping { get; private set; }
         public RobotControlService RobotControl { get; private set; }
         public StatusMonitor StatusMonitor { get; private set; }
+        public EmergencyLatch EmergencyLatch { get; } = new EmergencyLatch();
         public XRSessionWatcher XRSessionWatcher => xrSessionWatcher;
         public MjpegStreamSource CameraStreamSource => cameraStreamSource;
 
@@ -181,6 +183,9 @@ namespace Barry.App
             xrSessionWatcher.StopRequested += stopRouter.Route;
             StatusMonitor.StatusPollFailed += stopRouter.Route;
             RobotControl.StopCompleted += OnStopCompleted;
+            RobotControl.EmergencyStopCompleted += EmergencyLatch.OnEmergencyStopCompleted;
+            StatusMonitor.TelemetryUpdated += EmergencyLatch.OnTelemetry;
+            EmergencyLatch.ExternallyLatched += OnExternallyLatched;
         }
 
         private void Start()
@@ -195,13 +200,28 @@ namespace Barry.App
             float deltaTime = Time.unscaledDeltaTime;
             RobotControl.Tick(deltaTime);
             StatusMonitor.Tick(deltaTime);
+            EmergencyLatch.Tick(deltaTime);
+            TryFinishEmergencyRecovery();
             if (cameraWatchdog.Update(deltaTime, cameraStreamSource.FrameAgeSeconds))
                 stopRouter.Route(StopReason.CameraUnavailable);
         }
 
         public void SetControllerInput(Vector2 leftStick, Vector2 rightStick)
         {
-            RobotControl.SetCommand(InputMapping.Map(leftStick, rightStick));
+            var cmd = InputMapping.Map(leftStick, rightStick);
+            if (cmd.IsCentered && !EmergencyLatch.IsLatched)
+            {
+                if (RobotControl.StateMachine.State == TeleopState.Stopped)
+                {
+                    RobotControl.StateMachine.AcknowledgeStop(sticksCentered: true);
+                    RobotControl.StateMachine.TryArm(sticksCentered: true, hasControl: true, linkAvailable: true, cameraAvailable: true);
+                }
+                else if (RobotControl.StateMachine.State == TeleopState.Disarmed)
+                {
+                    RobotControl.StateMachine.TryArm(sticksCentered: true, hasControl: true, linkAvailable: true, cameraAvailable: true);
+                }
+            }
+            RobotControl.SetCommand(cmd);
         }
 
         public bool TryArm(bool sticksCentered, bool linkAvailable, bool cameraAvailable)
@@ -226,6 +246,46 @@ namespace Barry.App
             RobotControl.RequestStop(StopReason.Operator);
         }
 
+        /// <summary>Dedicated e-stop (both grips + A, or the HUD): latches at once and sends /emergency-stop.</summary>
+        public void RequestEmergencyStop()
+        {
+            recoveryPending = false;
+            EmergencyLatch.OnEmergencyStopRequested();
+            RobotControl.RequestEmergencyStop();
+        }
+
+        /// <summary>
+        /// The HUD reset button. First press asks for confirmation; a second press within the window sends
+        /// /emergency-stop/reset. Never auto-resets.
+        /// </summary>
+        public void PressEmergencyReset()
+        {
+            if (EmergencyLatch.RequestReset() != ResetStep.SendReset) return;
+            StartCoroutine(ApiClient.ResetEmergency(response =>
+            {
+                bool ok = response.Success && response.Value != null && response.Value.Accepted;
+                EmergencyLatch.OnResetCompleted(ok, response.Error);
+                recoveryPending = ok;
+            }));
+        }
+
+        // After a confirmed reset the robot stays stopped. Teleop returns to Armed only when the sticks are
+        // centred; the next non-zero deflection is then the required fresh deflection (HANDOFF §1.4).
+        private void TryFinishEmergencyRecovery()
+        {
+            if (!recoveryPending || EmergencyLatch.IsLatched) return;
+            if (!LatestCommand.IsCentered) return;
+            RobotControl.StateMachine.AcknowledgeStop(sticksCentered: true);
+            TryArm(sticksCentered: true, linkAvailable: !StatusMonitor.IsFailureLatched, cameraAvailable: true);
+            if (TeleopState == TeleopState.Armed || TeleopState == TeleopState.Driving) recoveryPending = false;
+        }
+
+        private void OnExternallyLatched()
+        {
+            if (TeleopState != TeleopState.Stopped || LastStopReason != StopReason.EmergencyStop)
+                RobotControl.RequestStop(StopReason.EmergencyStop);
+        }
+
         private void OnStopCompleted(StopReason reason, bool delivered)
         {
             HasStopDeliveryResult = true;
@@ -240,7 +300,12 @@ namespace Barry.App
             if (StatusMonitor != null && stopRouter != null)
                 StatusMonitor.StatusPollFailed -= stopRouter.Route;
             if (RobotControl != null)
+            {
                 RobotControl.StopCompleted -= OnStopCompleted;
+                RobotControl.EmergencyStopCompleted -= EmergencyLatch.OnEmergencyStopCompleted;
+            }
+            if (StatusMonitor != null) StatusMonitor.TelemetryUpdated -= EmergencyLatch.OnTelemetry;
+            EmergencyLatch.ExternallyLatched -= OnExternallyLatched;
             if (cameraStreamSource != null)
                 cameraStreamSource.StopStream();
         }

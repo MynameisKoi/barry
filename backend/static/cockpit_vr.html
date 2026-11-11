@@ -189,8 +189,17 @@
         floorMesh.rotation.x = -Math.PI / 2;
         floorMesh.position.y = -0.02;
         scene.add(floorMesh);
+        // Holographic Cockpit Canopy Ribs (Framing the pilot space)
+        const ribMat = new THREE.LineBasicMaterial({ color: 0x00f0ff, transparent: true, opacity: 0.28 });
+        [-1, 1].forEach(side => {
+            const curve = new THREE.EllipseCurve(side * 1.6, 1.4, 1.3, 1.5, 0, Math.PI, false, 0);
+            const pts = curve.getPoints(40);
+            const ribGeo = new THREE.BufferGeometry().setFromPoints(pts.map(p => new THREE.Vector3(p.x, p.y, -2.15)));
+            scene.add(new THREE.Line(ribGeo, ribMat));
+        });
+
         // --- Interactive Holographic Panels ---
-        function createHoloPanel(w, h, canvasWidth, canvasHeight, pos, rotY) {
+        function createHoloPanel(w, h, canvasWidth, canvasHeight, pos, rotY = 0, rotX = 0) {
             const offscreenCanvas = document.createElement("canvas");
             offscreenCanvas.width = canvasWidth;
             offscreenCanvas.height = canvasHeight;
@@ -209,16 +218,17 @@
             const mesh = new THREE.Mesh(geo, mat);
             mesh.position.copy(pos);
             mesh.rotation.y = rotY;
+            if (rotX !== 0) mesh.rotation.x = rotX;
             scene.add(mesh);
 
             return { canvas: offscreenCanvas, ctx, texture, mesh };
         }
 
-        // 1. LEFT PANEL: STATUS & COMMAND SENT
+        // 1. LEFT PANEL: STATUS, TELEMETRY & COMMAND SENT (Spread out to left)
         const leftPanel = createHoloPanel(
-            1.4, 1.7, 560, 680,
-            new THREE.Vector3(-1.45, 1.35, -1.9),
-            Math.PI / 6.5 // Angled inward
+            1.35, 1.6, 540, 640,
+            new THREE.Vector3(-1.85, 1.40, -1.95),
+            Math.PI * 0.23, 0 // Angled ~41.4° inward
         );
 
         function drawLeftPanel() {
@@ -324,11 +334,11 @@
             ctx.font = "bold 16px -apple-system, monospace";
             ctx.fillText(val.toFixed(2), barX + barW + 24, y + 14);
         }
-        // 2. CENTER PANEL: LIVE ROBOT CAMERA
+        // 2. CENTER PANEL: LIVE ROBOT CAMERA (Forward Optics Display)
         const centerPanel = createHoloPanel(
-            2.2, 1.45, 880, 580,
-            new THREE.Vector3(0, 1.45, -2.15),
-            0 // Directly in front
+            2.1, 1.4, 840, 560,
+            new THREE.Vector3(0, 1.48, -2.4),
+            0, 0 // Center front
         );
 
         function drawCenterPanel() {
@@ -409,11 +419,11 @@
 
             texture.needsUpdate = true;
         }
-        // 3. BOTTOM PANEL: INTENSITY & EMERGENCY STOP DOCK
+        // 3. BOTTOM PANEL: INTENSITY & EMERGENCY STOP FLIGHT DOCK (Angled forward desk)
         const bottomPanel = createHoloPanel(
-            1.7, 0.45, 680, 180,
-            new THREE.Vector3(0, 0.62, -1.85),
-            0
+            1.6, 0.40, 640, 160,
+            new THREE.Vector3(0, 0.58, -1.75),
+            0, -Math.PI / 6.5 // Tilted ~27.7° upwards towards pilot
         );
 
         function drawBottomPanel() {
@@ -421,7 +431,7 @@
             ctx.clearRect(0, 0, c.width, c.height);
 
             // Translucent rounded bar with glowing border
-            ctx.fillStyle = "rgba(10, 16, 28, 0.9)";
+            ctx.fillStyle = "rgba(10, 16, 28, 0.92)";
             ctx.strokeStyle = "rgba(220, 230, 255, 0.95)";
             ctx.lineWidth = 3;
             roundRect(ctx, 4, 4, c.width - 8, c.height - 8, 20, true, true);
@@ -429,80 +439,183 @@
             // INTENSITY Label
             ctx.fillStyle = "#94a3b8";
             ctx.font = "bold 13px -apple-system, monospace";
-            ctx.fillText("INTENSITY", 28, 40);
+            ctx.fillText("INTENSITY", 28, 38);
 
             // Intensity Segmented Buttons: LOW, MEDIUM, HIGH
-            drawSegmentBtn(ctx, 24, 56, 68, 54, "LOW", state.intensity === "LOW");
-            drawSegmentBtn(ctx, 92, 56, 88, 54, "MEDIUM", state.intensity === "MEDIUM");
-            drawSegmentBtn(ctx, 180, 56, 74, 54, "HIGH", state.intensity === "HIGH");
+            drawSegmentBtn(ctx, 24, 52, 68, 52, "LOW", state.intensity === "LOW");
+            drawSegmentBtn(ctx, 92, 52, 88, 52, "MEDIUM", state.intensity === "MEDIUM");
+            drawSegmentBtn(ctx, 180, 52, 74, 52, "HIGH", state.intensity === "HIGH");
 
             // BIG RED STOP BUTTON
-            const stopX = 280;
-            const stopY = 32;
-            const stopW = 240;
-            const stopH = 88;
+            const stopX = 270;
+            const stopY = 28;
+            const stopW = 230;
+            const stopH = 84;
             ctx.fillStyle = state.emergencyStopped ? "#991b1b" : "#dc2626"; // Vibrant red
             roundRect(ctx, stopX, stopY, stopW, stopH, 14, true, false);
 
             ctx.fillStyle = "#ffffff";
             ctx.font = "bold 26px -apple-system, monospace";
             ctx.textAlign = "center";
-            ctx.fillText("STOP", stopX + stopW / 2, stopY + 44);
+            ctx.fillText("STOP", stopX + stopW / 2, stopY + 42);
 
             ctx.font = "13px -apple-system, monospace";
-            ctx.fillText("A button · or point + trigger", stopX + stopW / 2, stopY + 70);
+            ctx.fillText("A button · or laser trigger", stopX + stopW / 2, stopY + 68);
 
             // EXIT VR BUTTON
-            const exitX = 540;
-            const exitY = 48;
-            const exitW = 104;
-            const exitH = 56;
+            const exitX = 520;
+            const exitY = 44;
+            const exitW = 100;
+            const exitH = 54;
             ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
             ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
             ctx.lineWidth = 1.5;
             roundRect(ctx, exitX, exitY, exitW, exitH, 10, true, true);
 
             ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 16px -apple-system, monospace";
-            ctx.fillText("Exit VR", exitX + exitW / 2, exitY + 35);
+            ctx.font = "bold 15px -apple-system, monospace";
+            ctx.fillText("Exit VR", exitX + exitW / 2, exitY + 33);
             ctx.textAlign = "left"; // Reset
 
             texture.needsUpdate = true;
         }
 
-        function drawSegmentBtn(ctx, x, y, w, h, text, active) {
-            ctx.fillStyle = active ? "#6366f1" : "rgba(255, 255, 255, 0.08)";
-            ctx.strokeStyle = active ? "#a5b4fc" : "rgba(255, 255, 255, 0.2)";
-            ctx.lineWidth = 1;
-            roundRect(ctx, x, y, w, h, 8, true, true);
-
-            ctx.fillStyle = active ? "#ffffff" : "#94a3b8";
-            ctx.font = "bold 14px -apple-system, monospace";
-            ctx.textAlign = "center";
-            ctx.fillText(text, x + w / 2, y + h / 2 + 5);
-            ctx.textAlign = "left";
-        }
-        // 4. RIGHT PANEL: ACTIONS BADGE
+        // 4. RIGHT PANEL: ACTIONS, POSTURES & SENSORS (Spread out to right)
         const rightPanel = createHoloPanel(
-            0.55, 0.28, 220, 110,
-            new THREE.Vector3(1.45, 1.35, -1.9),
-            -Math.PI / 6.5
+            1.35, 1.6, 540, 640,
+            new THREE.Vector3(1.85, 1.40, -1.95),
+            -Math.PI * 0.23, 0 // Angled ~41.4° inward
         );
 
         function drawRightPanel() {
             const { ctx, canvas: c, texture } = rightPanel;
             ctx.clearRect(0, 0, c.width, c.height);
 
-            ctx.fillStyle = "rgba(10, 16, 28, 0.9)";
+            // Translucent rounded panel with glowing border
+            ctx.fillStyle = "rgba(10, 16, 28, 0.88)";
             ctx.strokeStyle = "rgba(220, 230, 255, 0.9)";
-            ctx.lineWidth = 2.5;
+            ctx.lineWidth = 3;
             roundRect(ctx, 4, 4, c.width - 8, c.height - 8, 16, true, true);
 
+            // Header: ACTIONS & POSTURES
             ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 18px -apple-system, monospace";
-            ctx.textAlign = "center";
-            ctx.fillText("ACTIONS · B", c.width / 2, c.height / 2 + 6);
-            ctx.textAlign = "left";
+            ctx.font = "bold 24px -apple-system, monospace";
+            ctx.fillText("ACTIONS & POSTURES", 32, 48);
+
+            ctx.fillStyle = "#94a3b8";
+            ctx.font = "14px -apple-system, monospace";
+            ctx.fillText("DOGZILLA S2 · DIRECT KINEMATICS", 32, 74);
+
+            // Divider Line
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(32, 88);
+            ctx.lineTo(c.width - 32, 88);
+            ctx.stroke();
+
+            // POSTURES Title
+            ctx.fillStyle = "#00f0ff";
+            ctx.font = "bold 16px -apple-system, monospace";
+            ctx.fillText("QUICK POSTURE PRESETS", 32, 118);
+
+            // Posture Tiles: 2 columns x 3 rows
+            const postures = [
+                { label: "STAND", id: "stand" },
+                { label: "SIT", id: "sit" },
+                { label: "LIE DOWN", id: "liedown" },
+                { label: "BOW", id: "bow" },
+                { label: "BALANCE", id: "balance" },
+                { label: "WAVE", id: "wave" }
+            ];
+
+            const tileW = 224;
+            const tileH = 50;
+            const startX = 32;
+            const startY = 136;
+            const gapX = 28;
+            const gapY = 14;
+
+            postures.forEach((p, idx) => {
+                const col = idx % 2;
+                const row = Math.floor(idx / 2);
+                const tx = startX + col * (tileW + gapX);
+                const ty = startY + row * (tileH + gapY);
+
+                const isActive = (state.lastCommand === p.id);
+                ctx.fillStyle = isActive ? "rgba(99, 102, 241, 0.35)" : "rgba(255, 255, 255, 0.08)";
+                ctx.strokeStyle = isActive ? "#a5b4fc" : "rgba(255, 255, 255, 0.2)";
+                ctx.lineWidth = 1.5;
+                roundRect(ctx, tx, ty, tileW, tileH, 10, true, true);
+
+                ctx.fillStyle = isActive ? "#ffffff" : "#d9e6f2";
+                ctx.font = "bold 15px -apple-system, monospace";
+                ctx.textAlign = "center";
+                ctx.fillText(p.label, tx + tileW / 2, ty + 31);
+                ctx.textAlign = "left";
+            });
+
+            // GAIT & MOTION Title
+            const gaitY = startY + 3 * (tileH + gapY) + 20;
+            ctx.fillStyle = "#00f0ff";
+            ctx.font = "bold 16px -apple-system, monospace";
+            ctx.fillText("GAIT & LOCOMOTION MODES", 32, gaitY);
+
+            // Gait Buttons: Trot, Crawl
+            const gaits = [
+                { label: "TROT GAIT (Agile)", id: "trot" },
+                { label: "CRAWL GAIT (Stable)", id: "crawl" }
+            ];
+            gaits.forEach((g, idx) => {
+                const tx = startX + idx * (tileW + gapX);
+                const ty = gaitY + 16;
+                ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
+                ctx.strokeStyle = "rgba(255, 255, 255, 0.2)";
+                ctx.lineWidth = 1.5;
+                roundRect(ctx, tx, ty, tileW, tileH, 10, true, true);
+
+                ctx.fillStyle = "#d9e6f2";
+                ctx.font = "bold 14px -apple-system, monospace";
+                ctx.textAlign = "center";
+                ctx.fillText(g.label, tx + tileW / 2, ty + 31);
+                ctx.textAlign = "left";
+            });
+
+            // AI & VISION Title
+            const aiY = gaitY + tileH + 34;
+            ctx.fillStyle = "#00f0ff";
+            ctx.font = "bold 16px -apple-system, monospace";
+            ctx.fillText("INTELLIGENCE & SENSORS", 32, aiY);
+
+            // AI Action Buttons
+            const aiActions = [
+                { label: "AI VISION SCAN", id: "ai_scan" },
+                { label: "ZERO IMU HEADING", id: "zero_imu" }
+            ];
+            aiActions.forEach((a, idx) => {
+                const tx = startX + idx * (tileW + gapX);
+                const ty = aiY + 16;
+                ctx.fillStyle = "rgba(16, 185, 129, 0.15)";
+                ctx.strokeStyle = "rgba(16, 185, 129, 0.4)";
+                ctx.lineWidth = 1.5;
+                roundRect(ctx, tx, ty, tileW, tileH, 10, true, true);
+
+                ctx.fillStyle = "#34d399";
+                ctx.font = "bold 14px -apple-system, monospace";
+                ctx.textAlign = "center";
+                ctx.fillText(a.label, tx + tileW / 2, ty + 31);
+                ctx.textAlign = "left";
+            });
+
+            // Footer info
+            ctx.fillStyle = "#6366f1";
+            ctx.beginPath();
+            ctx.arc(42, 608, 6, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = "#94a3b8";
+            ctx.font = "14px -apple-system, monospace";
+            ctx.fillText("Point VR laser or mouse click to command", 58, 613);
 
             texture.needsUpdate = true;
         }
@@ -535,28 +648,87 @@
         const mouse = new THREE.Vector2();
 
         async function handleBottomPanelClick(uvX, uvY) {
-            // uvX (0..1), uvY (0..1)
-            // Low button: x [0.038, 0.203], y [0.26, 0.74]
-            // Med button: x [0.219, 0.384], y [0.26, 0.74]
-            // High button: x [0.400, 0.565], y [0.26, 0.74]
-            // Stop button: x [0.638, 0.957], y [0.18, 0.82]
-            if (uvY >= 0.26 && uvY <= 0.74) {
-                if (uvX >= 0.038 && uvX <= 0.203) {
+            // Intensity Buttons
+            if (uvY >= 0.30 && uvY <= 0.75) {
+                if (uvX >= 0.03 && uvX <= 0.15) {
                     state.intensity = 'LOW';
                     state.speed = 0.3;
+                    playChime(600, 0.05);
                     drawBottomPanel();
-                } else if (uvX >= 0.219 && uvX <= 0.384) {
+                } else if (uvX >= 0.14 && uvX <= 0.29) {
                     state.intensity = 'MEDIUM';
                     state.speed = 0.6;
+                    playChime(700, 0.05);
                     drawBottomPanel();
-                } else if (uvX >= 0.400 && uvX <= 0.565) {
+                } else if (uvX >= 0.28 && uvX <= 0.41) {
                     state.intensity = 'HIGH';
                     state.speed = 1.0;
+                    playChime(850, 0.05);
                     drawBottomPanel();
                 }
             }
-            if (uvX >= 0.638 && uvX <= 0.957 && uvY >= 0.18 && uvY <= 0.82) {
+            // Stop button
+            if (uvX >= 0.42 && uvX <= 0.79 && uvY >= 0.25 && uvY <= 0.85) {
                 await triggerEmergencyStop();
+            }
+            // Exit VR button
+            if (uvX >= 0.80 && uvX <= 0.98 && uvY >= 0.30 && uvY <= 0.75) {
+                const session = renderer.xr.getSession();
+                if (session) session.end();
+            }
+        }
+
+        async function handleRightPanelClick(uvX, uvY) {
+            playChime(850, 0.08);
+            let action = null;
+            let posturePreset = null;
+
+            if (uvX >= 0.05 && uvX <= 0.48) {
+                if (uvY >= 0.70 && uvY <= 0.80) posturePreset = "stand";
+                else if (uvY >= 0.60 && uvY <= 0.70) posturePreset = "liedown";
+                else if (uvY >= 0.50 && uvY <= 0.60) posturePreset = "balance";
+                else if (uvY >= 0.37 && uvY <= 0.47) action = "trot";
+                else if (uvY >= 0.21 && uvY <= 0.31) action = "ai_scan";
+            } else if (uvX >= 0.52 && uvX <= 0.95) {
+                if (uvY >= 0.70 && uvY <= 0.80) posturePreset = "sit";
+                else if (uvY >= 0.60 && uvY <= 0.70) posturePreset = "bow";
+                else if (uvY >= 0.50 && uvY <= 0.60) posturePreset = "wave";
+                else if (uvY >= 0.37 && uvY <= 0.47) action = "crawl";
+                else if (uvY >= 0.21 && uvY <= 0.31) action = "zero_imu";
+            }
+
+            if (posturePreset) {
+                state.lastCommand = posturePreset;
+                drawRightPanel();
+                try {
+                    await fetch('/api/robot/command', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: posturePreset })
+                    });
+                } catch (e) {}
+            } else if (action) {
+                if (action === "ai_scan") {
+                    try { await fetch('/api/v1/missions/scan', { method: 'POST' }); } catch(e) {}
+                } else if (action === "zero_imu") {
+                    state.roll = 0; state.pitch = 0; drawCenterPanel();
+                } else {
+                    sendLocomotion(action);
+                }
+            }
+        }
+
+        function dispatchRaycastInteraction(ray) {
+            const interactiveMeshes = [bottomPanel.mesh, rightPanel.mesh];
+            const hits = ray.intersectObjects(interactiveMeshes);
+            if (hits.length > 0) {
+                const hit = hits[0];
+                const uv = hit.uv;
+                if (hit.object === bottomPanel.mesh) {
+                    handleBottomPanelClick(uv.x, uv.y);
+                } else if (hit.object === rightPanel.mesh) {
+                    handleRightPanelClick(uv.x, uv.y);
+                }
             }
         }
 
@@ -564,17 +736,29 @@
             mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
             mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
             raycaster.setFromCamera(mouse, camera);
-            const intersects = raycaster.intersectObject(bottomMesh);
-            if (intersects.length > 0) {
-                const uv = intersects[0].uv;
-                handleBottomPanelClick(uv.x, uv.y);
-            }
+            dispatchRaycastInteraction(raycaster);
         });
 
-        // VR Controller Support
+        // VR Controller Support with Visual Laser Pointers
+        function buildLaserPointer() {
+            const geo = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(0, 0, 0),
+                new THREE.Vector3(0, 0, -3.5)
+            ]);
+            const mat = new THREE.LineBasicMaterial({
+                color: 0x00f0ff,
+                transparent: true,
+                opacity: 0.55
+            });
+            return new THREE.Line(geo, mat);
+        }
+
         const controller1 = renderer.xr.getController(0);
+        controller1.add(buildLaserPointer());
         scene.add(controller1);
+
         const controller2 = renderer.xr.getController(1);
+        controller2.add(buildLaserPointer());
         scene.add(controller2);
 
         function handleControllerSelect(controller) {
@@ -582,11 +766,7 @@
             tempMatrix.identity().extractRotation(controller.matrixWorld);
             raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
             raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
-            const intersects = raycaster.intersectObject(bottomMesh);
-            if (intersects.length > 0) {
-                const uv = intersects[0].uv;
-                handleBottomPanelClick(uv.x, uv.y);
-            }
+            dispatchRaycastInteraction(raycaster);
         }
 
         controller1.addEventListener('selectstart', () => handleControllerSelect(controller1));
