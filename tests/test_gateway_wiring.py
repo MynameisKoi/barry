@@ -6,6 +6,8 @@ import time
 import httpx
 import pytest
 from fastapi import FastAPI
+from starlette.requests import Request
+from starlette.responses import Response
 
 from backend.ai.control.brain import MockBrain
 from backend.ai.control.executor import LoopLimits
@@ -189,3 +191,63 @@ async def test_remote_mode_adapter_returns_clear_relay_conflict(simulator):
         await runner.wait()
     assert runner.task.steps[0].result["status"] == "CONFLICT_RELAY_ACTIVE"
     assert not simulator.moving
+
+
+@pytest.mark.asyncio
+async def test_remote_conflict_never_blocks_voice_stop_or_estop(simulator):
+    adapter = VoiceGatewayAdapter(CommandGateway(simulator, mission_check=lambda: True), remote_conflict=True)
+    simulator.move_analog(MotionCommand(forward=0.4))
+    stopped = await adapter.stop(source="voice")
+    assert stopped["status"] == "STOP_DISPATCHED"
+    assert not simulator.moving
+
+    simulator.move_analog(MotionCommand(forward=0.4))
+    estopped = await adapter.emergency_stop()
+    assert estopped["status"] == "ACCEPTED"
+    assert simulator.emergency_stopped and not simulator.moving
+
+
+@pytest.mark.parametrize("path, expected_source", [
+    ("/api/v1/motion", "hand"),
+    ("/api/v1/motion/discrete", "hand"),
+    ("/api/v1/stop", "hand"),
+    ("/api/v1/emergency-stop", "emergency"),
+])
+@pytest.mark.asyncio
+async def test_quest_relay_controls_notify_llm_preemption(monkeypatch, path, expected_source):
+    import backend.main as main
+
+    notifications = []
+    monkeypatch.setenv("QUEST_API_KEY", KEY)
+    monkeypatch.setattr(main.app.state, "gateway", type("G", (), {
+        "notify_preempt": lambda self, source: notifications.append(source)
+    })(), raising=False)
+    scope = {
+        "type": "http", "method": "POST", "path": path, "raw_path": path.encode(),
+        "query_string": b"", "headers": [(b"x-robot-key", KEY.encode())],
+        "server": ("test", 80), "client": ("test", 1234), "scheme": "http",
+        "http_version": "1.1",
+    }
+    request = Request(scope)
+    response = await main.cancel_llm_for_legacy_hand_controls(request, lambda _: asyncio.sleep(0, result=Response()))
+    assert response.status_code == 200
+    assert notifications == [expected_source]
+
+
+@pytest.mark.asyncio
+async def test_unauthenticated_quest_relay_does_not_preempt_llm(monkeypatch):
+    import backend.main as main
+
+    notifications = []
+    monkeypatch.setenv("QUEST_API_KEY", KEY)
+    monkeypatch.setattr(main.app.state, "gateway", type("G", (), {
+        "notify_preempt": lambda self, source: notifications.append(source)
+    })(), raising=False)
+    path = "/api/v1/motion"
+    request = Request({
+        "type": "http", "method": "POST", "path": path, "raw_path": path.encode(),
+        "query_string": b"", "headers": [], "server": ("test", 80),
+        "client": ("test", 1234), "scheme": "http", "http_version": "1.1",
+    })
+    await main.cancel_llm_for_legacy_hand_controls(request, lambda _: asyncio.sleep(0, result=Response()))
+    assert notifications == []
