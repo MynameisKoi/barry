@@ -34,20 +34,22 @@ QUERY_PARAM = "token"
 class CameraAuth:
     """Callable FastAPI dependency that validates the camera access token."""
 
-    def __init__(self, api_key: Optional[str]) -> None:
+    def __init__(self, api_key: Optional[str], *, allow_anonymous: bool = False) -> None:
         # Empty/whitespace-only keys count as "not configured".
         self._key = api_key.strip().encode("utf-8") if api_key and api_key.strip() else None
+        self._allow_anonymous = allow_anonymous
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "CameraAuth":
         """Read ``CAMERA_API_KEY`` from the environment (or the given mapping)."""
         env = os.environ if env is None else env
-        return cls(env.get(API_KEY_ENV))
+        allow_anon = env.get("CAMERA_API_KEY_ALLOW_ANONYMOUS", "").lower() in ("1", "true", "yes")
+        return cls(env.get(API_KEY_ENV), allow_anonymous=allow_anon)
 
     @property
     def configured(self) -> bool:
         """True when a non-empty key is set."""
-        return self._key is not None
+        return self._key is not None or self._allow_anonymous
 
     def verify(self, candidate: Optional[str]) -> bool:
         """Constant-time check of a presented token. False if none configured."""
@@ -57,6 +59,8 @@ class CameraAuth:
 
     def __call__(self, request: Request) -> None:
         """Dependency: raise 503 if unconfigured, 401 if no valid token."""
+        if self._allow_anonymous:
+            return
         if not self.configured:
             raise HTTPException(
                 status.HTTP_503_SERVICE_UNAVAILABLE,

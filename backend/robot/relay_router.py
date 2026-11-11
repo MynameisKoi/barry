@@ -20,14 +20,18 @@ QUEST_API_KEY_ENV = "QUEST_API_KEY"
 class QuestRelayAuth:
     """Fail-closed authentication for Quest requests entering the laptop relay."""
 
-    def __init__(self, api_key: str | None) -> None:
+    def __init__(self, api_key: str | None, *, allow_anonymous: bool = False) -> None:
         self._key = api_key.strip().encode("utf-8") if api_key and api_key.strip() else None
+        self._allow_anonymous = allow_anonymous
 
     @classmethod
     def from_env(cls) -> "QuestRelayAuth":
-        return cls(os.environ.get(QUEST_API_KEY_ENV))
+        allow_anon = os.environ.get("QUEST_API_KEY_ALLOW_ANONYMOUS", "").lower() in ("1", "true", "yes")
+        return cls(os.environ.get(QUEST_API_KEY_ENV), allow_anonymous=allow_anon)
 
     def __call__(self, request: Request) -> None:
+        if self._allow_anonymous:
+            return
         if self._key is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
