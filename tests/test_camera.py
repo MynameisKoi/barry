@@ -19,15 +19,13 @@ def test_camera_stream_chunk_generator():
     assert len(chunk) > 1000
 
 
-def test_ai_detection_processing():
-    """Verifies AI detection service produces alerts and bounding boxes."""
+def test_ai_detection_processing_never_fabricates_without_model():
+    """No model means no detections, even when a frame is present."""
     frame = camera_streamer.capture_frame()
-    alerts = detection_service.process_frame(frame, zone="Sector-Delta")
-    assert len(alerts) > 0
-    first = alerts[0]
-    assert first.type == "detection"
-    assert first.confidence >= 0.50
-    assert len(first.bounding_box) == 4
+    from backend.ai.detection import AIDetectionService
+    service = AIDetectionService(model_path="/missing/yolo11n.onnx")
+    assert service.process_frame(frame, zone="Sector-Delta") == []
+    assert service.process_frame(None, zone="Sector-Delta") == []
 
 
 def test_flipper_uid_regex():
