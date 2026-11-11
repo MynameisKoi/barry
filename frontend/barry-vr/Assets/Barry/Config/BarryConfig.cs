@@ -64,6 +64,18 @@ namespace Barry.Config
             string configuredCameraApiKey = cameraApiKey;
             if (PlayerPrefs.HasKey(PrefsKey))
                 JsonUtility.FromJsonOverwrite(PlayerPrefs.GetString(PrefsKey), this);
+
+            try
+            {
+                string localConfigPath = System.IO.Path.Combine(Application.dataPath, "..", "barry_config.json");
+                if (System.IO.File.Exists(localConfigPath))
+                {
+                    string json = System.IO.File.ReadAllText(localConfigPath);
+                    JsonUtility.FromJsonOverwrite(json, this);
+                }
+            }
+            catch { }
+
             robotApiKey = configuredRobotApiKey;
             cameraApiKey = configuredCameraApiKey;
             Sanitize();

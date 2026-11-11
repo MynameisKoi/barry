@@ -12,8 +12,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 8f79e2a1c41ac4456acf3d4282ff125f, type: 3}
   m_Name: BarryConfig
   m_EditorClassIdentifier: Barry.Config::Barry.Config.BarryConfig
-  backendUrl: http://192.168.0.156:8000
-  cameraStreamUrl: http://192.168.0.156:8000/api/v1/camera/stream
+  backendUrl: http://127.0.0.1:8000
+  cameraStreamUrl: http://127.0.0.1:8000/api/v1/camera/stream
   target: 0
   deadZone: 0.12
   sendRateHz: 10
