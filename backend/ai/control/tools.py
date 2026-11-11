@@ -1,10 +1,11 @@
-"""Robot tool schemas for the LLM planner, and the validator for every call it makes.
+"""Robot tool schemas for the LLM brain, and the validator for every call it makes.
 
 The schemas are derived from the Phase 0 robot contract (``backend/robot``). They are sent to
 the model with ``strict: true`` so arguments arrive schema-shaped, but numeric ranges are NOT
 expressed as JSON-Schema ``minimum``/``maximum`` (strict mode does not take them). The ranges are
-stated in the descriptions and enforced here by :func:`validate_call`: any invalid call rejects
-the whole plan, and the gateway (#57) applies its own limits again on top.
+stated in the descriptions and enforced here by :func:`validate_call`: an invalid call is never
+executed (the loop returns it to the model as an ``is_error`` tool result), and the gateway (#57)
+applies its own limits again on top.
 """
 
 from __future__ import annotations
@@ -23,13 +24,12 @@ MAX_DEGREES = 180.0
 INTENSITIES = tuple(i.value for i in Intensity)
 GAITS = tuple(g.value for g in Gait)
 ACTION_IDS = tuple(sorted(APPROVED_ACTIONS))
-MAX_PLAN_STEPS = 12
 
 READ_ONLY_TOOLS = frozenset({"get_status", "get_detections"})
 
 
 class PlanValidationError(ValueError):
-    """A tool call is malformed or out of range; the whole plan is rejected."""
+    """A tool call is malformed or out of range; it is not executed."""
 
 
 @dataclass(frozen=True)
@@ -137,10 +137,3 @@ def validate_call(name: Any, args: Any) -> ToolCall:
             raise PlanValidationError(f"run_action.action_id must be one of {list(ACTION_IDS)}")
         return ToolCall(name, {"action_id": action_id})
     return ToolCall(name, {})  # stop, get_status, get_detections
-
-
-def validate_plan(calls: list[tuple[Any, Any]]) -> list[ToolCall]:
-    """Validate every call; any invalid call (or an oversized plan) rejects the whole plan."""
-    if len(calls) > MAX_PLAN_STEPS:
-        raise PlanValidationError(f"plan has {len(calls)} steps, at most {MAX_PLAN_STEPS} allowed")
-    return [validate_call(name, args) for name, args in calls]
