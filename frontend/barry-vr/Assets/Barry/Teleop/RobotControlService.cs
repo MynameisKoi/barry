@@ -37,6 +37,7 @@ namespace Barry.Teleop
         private readonly Action<IEnumerator> startCoroutine;
         private float sampleAccumulator;
         private float sendRateHz;
+        private readonly Func<bool> sessionReady;
         private bool motionInFlight;
         private bool stopInFlight;
         private bool emergencyStopInFlight;
@@ -68,8 +69,11 @@ namespace Barry.Teleop
             IRobotCommandTransport transport,
             Action<IEnumerator> startCoroutine,
             TeleopStateMachine stateMachine = null,
-            float sendRateHz = 10f)
+            float sendRateHz = 10f,
+            Func<bool> sessionReady = null)
         {
+            // Motion needs a control session; stop and e-stop never do. Null = always ready (tests, no leasing).
+            this.sessionReady = sessionReady ?? (() => true);
             this.transport = transport ?? throw new ArgumentNullException(nameof(transport));
             this.startCoroutine = startCoroutine ?? throw new ArgumentNullException(nameof(startCoroutine));
             StateMachine = stateMachine ?? new TeleopStateMachine();
@@ -95,6 +99,9 @@ namespace Barry.Teleop
             sampleAccumulator %= interval;
 
             if (motionInFlight || stopInFlight || StateMachine.State != TeleopState.Driving) return;
+            // No session: hold. The stick is still deflected, so the next tick after the session is back resumes THIS push;
+            // if the stick was centred meanwhile the state is Stopped and nothing is sent.
+            if (!sessionReady()) return;
             if (hasSentMotion && latestCommand == sentCommand && latestCommand.IsCentered) return;
             SendLatestMotion();
         }
@@ -160,6 +167,12 @@ namespace Barry.Teleop
         {
             if (requestId != activeRequestId) return;
             motionInFlight = false;
+            if (ControlSessionErrors.IsRejected(response.StatusCode, response.Error))
+            {
+                // The session lapsed or was replaced. Not a link failure: BarryApp re-acquires and sending continues
+                // only while the stick is still deflected (never after a stop).
+                return;
+            }
             if (IsMissionRequired(response))
             {
                 // Not a link failure and never retried: stop, tell the operator, wait for a mission.

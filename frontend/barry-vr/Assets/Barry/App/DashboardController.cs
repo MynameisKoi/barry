@@ -9,7 +9,7 @@ namespace Barry.App
 {
     /// <summary>
     /// Binds BarryApp state to the Dashboard views and routes controller buttons (HANDOFF §6).
-    /// Control-lease calls are on hold; the dead-man grip is deliberately not implemented.
+    /// BarryApp owns the control session (acquire, re-acquire on 409, release on quit); the dead-man grip is deliberately not implemented.
     /// </summary>
     public sealed class DashboardController : MonoBehaviour
     {
@@ -166,7 +166,7 @@ namespace Barry.App
                 }));
             }
 
-            bool hasControl = true;   // lease on hold: Dashboard is reachable directly
+            bool hasControl = app.Session.HasSession;   // a real control session, or the chip says so
             var cmd = app.LatestCommand;
             var hud = EmergencyHudModel.From(app.EmergencyLatch);
             header.Bind(HeaderChipsModel.Create(app.LatestStatus, hasControl));
