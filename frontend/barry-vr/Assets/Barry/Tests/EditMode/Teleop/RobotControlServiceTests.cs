@@ -298,6 +298,109 @@ namespace Barry.Teleop.Tests
             Assert.That(RobotControlService.IsMissionRequired(new ApiResponse<CommandResult>(false, 423, null, "Emergency stop is latched")), Is.False);
         }
 
+        // ---- control session (#117): motion needs one, stop and e-stop never do
+
+        private static ApiResponse<CommandResult> SessionRejected() =>
+            new ApiResponse<CommandResult>(false, 409, null, "Invalid or stale control session/sequence.");
+
+        private static RobotControlService DrivingWithSession(FakeTransport transport, Func<bool> ready)
+        {
+            var state = new TeleopStateMachine();
+            Assert.That(state.TryArm(true, true, true, true), Is.True);
+            state.ApplyCommand(new MotionCommand(0.1f, 0f, 0f));
+            return new RobotControlService(transport, _ => { }, state, 10f, ready);
+        }
+
+        [Test]
+        public void MotionIsHeld_WhileThereIsNoSession_AndSentOnceThereIs()
+        {
+            var transport = new FakeTransport();
+            bool hasSession = false;
+            RobotControlService service = DrivingWithSession(transport, () => hasSession);
+            service.SetCommand(new MotionCommand(0.5f, 0f, 0f));
+
+            service.Tick(0.1f);
+            service.Tick(0.1f);
+            Assert.That(transport.MotionRequests, Is.Empty);
+            Assert.That(service.StateMachine.State, Is.EqualTo(TeleopState.Driving));   // held, not stopped
+
+            hasSession = true;
+            service.Tick(0.1f);
+            Assert.That(transport.MotionRequests, Has.Count.EqualTo(1));                 // the SAME push continues
+        }
+
+        [Test]
+        public void ASessionRejection_IsNotALinkFailure_AndNeverStopsTheRobot()
+        {
+            var transport = new FakeTransport();
+            RobotControlService service = DrivingWithSession(transport, () => true);
+            service.SetCommand(new MotionCommand(0.5f, 0f, 0f));
+
+            for (int i = 0; i < 5; i++)
+            {
+                service.Tick(0.1f);
+                transport.CompleteMotion(i, SessionRejected());
+            }
+
+            Assert.That(service.ConsecutiveMotionFailures, Is.EqualTo(0));
+            Assert.That(transport.StopCalls, Is.EqualTo(0));
+            Assert.That(service.StateMachine.State, Is.EqualTo(TeleopState.Driving));
+        }
+
+        [Test]
+        public void AfterARejection_SendingContinuesOnlyWhileTheStickIsStillDeflected()
+        {
+            var transport = new FakeTransport();
+            bool hasSession = true;
+            RobotControlService service = DrivingWithSession(transport, () => hasSession);
+            service.SetCommand(new MotionCommand(0.5f, 0f, 0f));
+            service.Tick(0.1f);
+            hasSession = false;                                   // BarryApp dropped the dead id
+            transport.CompleteMotion(0, SessionRejected());
+
+            service.SetCommand(MotionCommand.Zero);               // the operator let go while the session was gone
+            hasSession = true;                                    // the new session arrives
+            service.Tick(0.1f);
+            service.Tick(0.1f);
+
+            Assert.That(transport.MotionRequests, Has.Count.EqualTo(1));            // nothing resumed
+            Assert.That(service.StateMachine.State, Is.EqualTo(TeleopState.Stopped));
+        }
+
+        [Test]
+        public void AnOrdinary409_StillCountsAsAFailure()
+        {
+            var transport = new FakeTransport();
+            RobotControlService service = DrivingWithSession(transport, () => true);
+            service.SetCommand(new MotionCommand(0.5f, 0f, 0f));
+            service.Tick(0.1f);
+            transport.CompleteMotion(0, new ApiResponse<CommandResult>(false, 409, null, "Command invalidated by stop"));
+            Assert.That(service.ConsecutiveMotionFailures, Is.EqualTo(1));
+        }
+
+        [Test]
+        public void StopAndEmergencyStop_AreSentWithNoSession()
+        {
+            var transport = new FakeTransport();
+            RobotControlService service = DrivingWithSession(transport, () => false);
+
+            service.RequestStop(StopReason.Operator);
+            Assert.That(transport.StopCalls, Is.EqualTo(1));
+
+            service.RequestEmergencyStop();
+            Assert.That(transport.EmergencyStopCalls, Is.EqualTo(1));
+        }
+
+        [Test]
+        public void StopFromTheStickCentring_IsSentWithNoSession()
+        {
+            var transport = new FakeTransport();
+            RobotControlService service = DrivingWithSession(transport, () => false);
+            service.SetCommand(MotionCommand.Zero);
+            Assert.That(transport.StopCalls, Is.EqualTo(1));
+            Assert.That(service.StateMachine.State, Is.EqualTo(TeleopState.Stopped));
+        }
+
         private static RobotControlService DrivingService(FakeTransport transport, float sendRate)
         {
             var state = new TeleopStateMachine();

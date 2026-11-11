@@ -29,9 +29,13 @@ namespace Barry.Api
 
         private readonly string baseUrl;
         private readonly string apiKey;
-        private long sequence;
+        private readonly CommandSequencer sequencer = new CommandSequencer();
 
         public string SessionId { get; private set; }
+
+        /// <summary>A sequenced command was refused for want of a valid control session (HTTP 409). Raised before the
+        /// command's own callback so the owner can drop the session and re-acquire.</summary>
+        public event Action SessionRejected;
         public int TimeoutSeconds { get; set; } = 2;
 
         public BarryApiClient(string baseUrl, string apiKey = null)
@@ -41,12 +45,50 @@ namespace Barry.Api
             this.apiKey = apiKey;
         }
 
-        public IEnumerator AcquireSession(Action<ApiResponse<SessionResponse>> completed) =>
-            Send("POST", ApiPrefix + "/session", null, false, completed, session =>
+        /// <summary>
+        /// Asks for a NEW control session. The relay always issues a new id and drops the previous one (single operator,
+        /// last caller wins), so this is called to acquire or to recover, never as a keep-alive: the session stays alive
+        /// while sequenced commands flow. The sequence counter restarts with every new session.
+        /// </summary>
+        public IEnumerator AcquireSession(Action<ApiResponse<SessionResponse>> completed)
+        {
+            SessionId = null;   // never send the old id while asking for a new one
+            return Send("POST", ApiPrefix + "/session", null, false, completed, session =>
             {
                 SessionId = session.session_id;
-                sequence = 0;
+                sequencer.Reset();
             });
+        }
+
+        /// <summary>Forget the session (it was rejected or released) so no request carries a dead id.</summary>
+        public void ClearSession()
+        {
+            SessionId = null;
+            sequencer.Reset();
+        }
+
+        /// <summary>DELETE /session: stops the robot and releases the lease. Sequenced, like the relay requires.</summary>
+        public IEnumerator ReleaseSession(Action<ApiResponse<CommandResult>> completed) =>
+            Send("DELETE", ApiPrefix + "/session", null, true, completed, _ => ClearSession());
+
+        /// <summary>Best-effort DELETE /session for app quit, where a coroutine would never get to finish.</summary>
+        public void ReleaseSessionBlocking(int timeoutMs = 700)
+        {
+            if (string.IsNullOrEmpty(SessionId)) return;
+            using (var request = new UnityWebRequest(baseUrl + ApiPrefix + "/session", "DELETE"))
+            {
+                request.downloadHandler = new DownloadHandlerBuffer();
+                request.timeout = 1;
+                if (!string.IsNullOrEmpty(apiKey)) request.SetRequestHeader("X-Robot-Key", apiKey);
+                request.SetRequestHeader("X-Control-Session", SessionId);
+                request.SetRequestHeader("X-Command-Seq", sequencer.Next().ToString());
+                request.SetRequestHeader("X-Command-Sent-At", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString());
+                request.SendWebRequest();
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                while (!request.isDone && clock.ElapsedMilliseconds < timeoutMs) System.Threading.Thread.Sleep(5);
+            }
+            ClearSession();
+        }
 
         public IEnumerator SendMotion(MotionRequest body, Action<ApiResponse<CommandResult>> completed) =>
             Send("POST", ApiPrefix + "/motion", body, true, completed);
@@ -135,7 +177,7 @@ namespace Barry.Api
                 if (!string.IsNullOrEmpty(SessionId)) request.SetRequestHeader("X-Control-Session", SessionId);
                 if (sequenced)
                 {
-                    request.SetRequestHeader("X-Command-Seq", (++sequence).ToString());
+                    request.SetRequestHeader("X-Command-Seq", sequencer.Next().ToString());
                     request.SetRequestHeader("X-Command-Sent-At", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString());
                 }
 
@@ -143,7 +185,9 @@ namespace Barry.Api
                 string text = request.downloadHandler?.text;
                 if (request.result != UnityWebRequest.Result.Success)
                 {
-                    completed?.Invoke(new ApiResponse<T>(false, request.responseCode, null, ReadError(text, request.error)));
+                    string failure = ReadError(text, request.error);
+                    if (sequenced && ControlSessionErrors.IsRejected(request.responseCode, failure)) SessionRejected?.Invoke();
+                    completed?.Invoke(new ApiResponse<T>(false, request.responseCode, null, failure));
                     yield break;
                 }
 

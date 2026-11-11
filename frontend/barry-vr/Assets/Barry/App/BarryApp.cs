@@ -145,6 +145,8 @@ namespace Barry.App
         public EmergencyLatch EmergencyLatch { get; } = new EmergencyLatch();
         /// <summary>Mission status/operators/start/end. Missions gate motion only; stop and e-stop never wait on this.</summary>
         public MissionMonitor Mission { get; private set; }
+        /// <summary>The control session the relay requires for motion/style/actions/posture/reset. Stop and e-stop never need it.</summary>
+        public ControlSessionManager Session { get; private set; }
         /// <summary>The LLM brain task. Polls only while running; never gates or delays stop / e-stop.</summary>
         public LlmTaskMonitor Llm { get; private set; }
         public XRSessionWatcher XRSessionWatcher => xrSessionWatcher;
@@ -171,10 +173,13 @@ namespace Barry.App
             BarryAppSettings settings = BarryAppSettings.From(config);
             ApiClient = new BarryApiClient(settings.BackendUrl, settings.ApiKey);
             InputMapping = new InputMapping(settings.DeadZone);
+            Session = new ControlSessionManager(new BarryControlSessionApi(ApiClient), routine => StartCoroutine(routine));
+            ApiClient.SessionRejected += Session.OnSessionRejected;
             RobotControl = new RobotControlService(
                 new BarryApiCommandTransport(ApiClient),
                 routine => StartCoroutine(routine),
-                sendRateHz: settings.SendRateHz);
+                sendRateHz: settings.SendRateHz,
+                sessionReady: () => Session.HasSession);
             Mission = new MissionMonitor(new BarryMissionApi(ApiClient), routine => StartCoroutine(routine));
             Llm = new LlmTaskMonitor(new BarryLlmApi(ApiClient), routine => StartCoroutine(routine));
             StatusMonitor = new StatusMonitor(
@@ -200,6 +205,7 @@ namespace Barry.App
 
         private void Start()
         {
+            Session.Begin();   // acquire a control session; motion is held until there is one
             StatusMonitor.PollNow();
             Mission.PollNow();
             cameraWatchdog.Reset();
@@ -212,6 +218,7 @@ namespace Barry.App
             RobotControl.Tick(deltaTime);
             StatusMonitor.Tick(deltaTime);
             EmergencyLatch.Tick(deltaTime);
+            Session.Tick(deltaTime);   // recovery only: retries while there is no session, sends nothing while there is one
             Mission.Tick(deltaTime);
             Llm.Tick(deltaTime);
             TryFinishEmergencyRecovery();
@@ -239,8 +246,8 @@ namespace Barry.App
 
         public bool TryArm(bool sticksCentered, bool linkAvailable, bool cameraAvailable)
         {
-            // Control leasing is intentionally on hold. Do not acquire a session;
-            // the backend remains the final authority when it receives commands.
+            // Arming does not wait for the control session: motion is held by RobotControlService until
+            // there is one, and stop / e-stop never need it.
             bool armed = RobotControl.StateMachine.TryArm(
                 sticksCentered: sticksCentered,
                 hasControl: true,
@@ -323,8 +330,15 @@ namespace Barry.App
             StopCompleted?.Invoke(reason, delivered);
         }
 
+        private void OnApplicationQuit()
+        {
+            // Release the lease so the web cockpit can take over at once (also stops the robot). Best effort.
+            Session?.ReleaseOnQuit();
+        }
+
         private void OnDestroy()
         {
+            if (ApiClient != null && Session != null) ApiClient.SessionRejected -= Session.OnSessionRejected;
             if (xrSessionWatcher != null && stopRouter != null)
                 xrSessionWatcher.StopRequested -= stopRouter.Route;
             if (StatusMonitor != null && stopRouter != null)
