@@ -125,6 +125,18 @@ def test_relay_logs_command_metadata_result_and_latency(caplog):
     assert "path=/api/v1/motion status=200 latency_ms=" in caplog.text
 
 
+def test_audit_metadata_is_sanitized_before_storage():
+    def pi(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ok": True})
+
+    client, _, events = make_client(pi)
+    client.post(protocol.PATH_STOP, headers={
+        protocol.SOURCE_HEADER: "invalid", protocol.COMMAND_ID_HEADER: "  id\r\n" + "x" * 80,
+    })
+    assert events[0]["source"] == "unknown"
+    assert events[0]["command_id"] == "id" + "x" * 62
+
+
 def test_all_quest_robot_paths_forward_to_matching_pi_paths():
     seen: List[tuple[str, str]] = []
 

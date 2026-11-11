@@ -30,7 +30,8 @@ from backend.robot.protocol import (
     PATH_EMERGENCY_STOP, PATH_HEALTH, PATH_MOTION, PATH_MOTION_DISCRETE,
     PATH_MOVEMENT_STYLE, PATH_POSTURE, PATH_RESET, PATH_SESSION, PATH_STATUS,
     PATH_STOP, PATH_TELEMETRY, SENT_AT_HEADER, SEQ_HEADER, SESSION_HEADER,
-    SOURCE_HEADER, COMMAND_ID_HEADER, COMMAND_SOURCES,
+    SOURCE_HEADER, COMMAND_ID_HEADER,
+    sanitize_command_id, sanitize_command_source,
 )
 
 logger = logging.getLogger(__name__)
@@ -159,11 +160,20 @@ def create_app(robot: RobotInterface, config: RobotConfig) -> FastAPI:
         source: Optional[str] = Header(None, alias=SOURCE_HEADER),
         command_id: Optional[str] = Header(None, alias=COMMAND_ID_HEADER),
     ) -> tuple[str, Optional[str]]:
-        resolved_source = source if source is not None else "hand"
-        if resolved_source not in COMMAND_SOURCES:
+        resolved_source = sanitize_command_source(source)
+        if resolved_source == "unknown":
             raise HTTPException(400, "Unknown command source")
-        logger.info("Robot command metadata source=%s command_id=%s", resolved_source, command_id)
-        return resolved_source, command_id
+        clean_id = sanitize_command_id(command_id)
+        logger.info("Robot command metadata source=%s command_id=%s", resolved_source, clean_id)
+        return resolved_source, clean_id
+
+    async def priority_metadata(
+        source: Optional[str] = Header(None, alias=SOURCE_HEADER),
+        command_id: Optional[str] = Header(None, alias=COMMAND_ID_HEADER),
+    ) -> None:
+        logger.info("Robot command metadata source=%s command_id=%s",
+                    sanitize_command_source(source, missing="unknown"),
+                    sanitize_command_id(command_id))
 
     async def command_context(
         session_id: Optional[str] = Header(None, alias=SESSION_HEADER),
@@ -262,12 +272,12 @@ def create_app(robot: RobotInterface, config: RobotConfig) -> FastAPI:
         """Dispatch one allowlisted directional movement command."""
         return await dispatch(lambda: robot.move_discrete(body.direction, body.intensity), generation, True)
 
-    @api.post(PATH_STOP, dependencies=[Depends(authenticate), Depends(command_metadata)])
+    @api.post(PATH_STOP, dependencies=[Depends(authenticate), Depends(priority_metadata)])
     async def stop() -> dict[str, Any]:
         """Dispatch priority stop without requiring a session or sequence."""
         return (await state.stop()).to_dict()
 
-    @api.post(PATH_EMERGENCY_STOP, dependencies=[Depends(authenticate), Depends(command_metadata)])
+    @api.post(PATH_EMERGENCY_STOP, dependencies=[Depends(authenticate), Depends(priority_metadata)])
     async def emergency_stop() -> dict[str, Any]:
         """Latch emergency stop and return the standard command-result shape."""
         async with state.state_lock:

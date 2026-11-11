@@ -96,8 +96,8 @@ class RobotApiRelay:
         except httpx.RequestError as exc:
             logger.warning("Pi Robot API unavailable for %s %s: %s", request.method, path, exc)
             logger.info("Robot command source=%s command_id=%s path=%s status=%s latency_ms=%.1f",
-                        request.headers.get(protocol.SOURCE_HEADER, "hand"),
-                        request.headers.get(protocol.COMMAND_ID_HEADER), path, 503,
+                        protocol.sanitize_command_source(request.headers.get(protocol.SOURCE_HEADER)),
+                        protocol.sanitize_command_id(request.headers.get(protocol.COMMAND_ID_HEADER)), path, 503,
                         (time.perf_counter() - started) * 1000)
             return JSONResponse(
                 status_code=503,
@@ -110,8 +110,8 @@ class RobotApiRelay:
             if name in upstream.headers
         }
         logger.info("Robot command source=%s command_id=%s path=%s status=%s latency_ms=%.1f",
-                    request.headers.get(protocol.SOURCE_HEADER, "hand"),
-                    request.headers.get(protocol.COMMAND_ID_HEADER), path, upstream.status_code,
+                    protocol.sanitize_command_source(request.headers.get(protocol.SOURCE_HEADER)),
+                    protocol.sanitize_command_id(request.headers.get(protocol.COMMAND_ID_HEADER)), path, upstream.status_code,
                     (time.perf_counter() - started) * 1000)
         return Response(
             content=upstream.content,

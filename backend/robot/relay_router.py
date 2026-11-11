@@ -79,8 +79,8 @@ def create_robot_relay_router(
         try:
             log_event(
                 event_type="robot_command", description=description,
-                source=request.headers.get(protocol.SOURCE_HEADER, "hand"),
-                command_id=request.headers.get(protocol.COMMAND_ID_HEADER),
+                source=protocol.sanitize_command_source(request.headers.get(protocol.SOURCE_HEADER)),
+                command_id=protocol.sanitize_command_id(request.headers.get(protocol.COMMAND_ID_HEADER)),
                 result_code=response.status_code,
                 latency_ms=(time.perf_counter() - started) * 1000,
             )
