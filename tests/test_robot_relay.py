@@ -88,6 +88,8 @@ def test_laptop_key_is_injected_and_session_sequence_headers_are_unchanged():
             protocol.SESSION_HEADER: "session-123",
             protocol.SEQ_HEADER: "0042",
             protocol.SENT_AT_HEADER: "1731000000123",
+            protocol.SOURCE_HEADER: "voice",
+            protocol.COMMAND_ID_HEADER: "cmd-42",
         },
     )
 
@@ -98,6 +100,8 @@ def test_laptop_key_is_injected_and_session_sequence_headers_are_unchanged():
     assert seen[protocol.SESSION_HEADER.lower()] == "session-123"
     assert seen[protocol.SEQ_HEADER.lower()] == "0042"
     assert seen[protocol.SENT_AT_HEADER.lower()] == "1731000000123"
+    assert seen[protocol.SOURCE_HEADER.lower()] == "voice"
+    assert seen[protocol.COMMAND_ID_HEADER.lower()] == "cmd-42"
 
 
 def test_discrete_motion_uses_short_motion_timeout():
@@ -107,6 +111,18 @@ def test_discrete_motion_uses_short_motion_timeout():
 
     client, _, _ = make_client(pi)
     assert client.post(protocol.PATH_MOTION_DISCRETE, json={"direction": "forward"}).status_code == 200
+
+
+def test_relay_logs_command_metadata_result_and_latency(caplog):
+    def pi(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ok": True})
+
+    client, _, _ = make_client(pi)
+    client.post(protocol.PATH_MOTION,
+                json={"forward": 0.5, "strafe": 0, "turn": 0},
+                headers={protocol.SOURCE_HEADER: "llm", protocol.COMMAND_ID_HEADER: "llm-7"})
+    assert "source=llm command_id=llm-7" in caplog.text
+    assert "path=/api/v1/motion status=200 latency_ms=" in caplog.text
 
 
 def test_all_quest_robot_paths_forward_to_matching_pi_paths():
@@ -234,12 +250,24 @@ def test_motion_audit_only_logs_transitions_and_failures():
     assert len(events) == 1
     assert "motion started" in events[0]["description"]
 
-    response = client.post(
-        protocol.PATH_MOTION, json={"forward": 0, "strafe": 0, "turn": 0}
-    )
+    response = client.post(protocol.PATH_MOTION, json={"forward": 0, "strafe": 0, "turn": 0})
     assert response.status_code == 200
     assert len(events) == 2
     assert "motion stopped" in events[1]["description"]
+
+
+def test_motion_audit_row_contains_metadata_result_and_latency():
+    def pi(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": "accepted"})
+
+    client, _, events = make_client(pi)
+    client.post(protocol.PATH_MOTION,
+                json={"forward": 0.5, "strafe": 0, "turn": 0},
+                headers={protocol.SOURCE_HEADER: "voice", protocol.COMMAND_ID_HEADER: "voice-1"})
+    assert events[0]["source"] == "voice"
+    assert events[0]["command_id"] == "voice-1"
+    assert events[0]["result_code"] == 200
+    assert events[0]["latency_ms"] >= 0
 
 
 def test_stop_resets_motion_audit_state_for_next_drive():

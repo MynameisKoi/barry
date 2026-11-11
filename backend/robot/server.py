@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -29,7 +30,10 @@ from backend.robot.protocol import (
     PATH_EMERGENCY_STOP, PATH_HEALTH, PATH_MOTION, PATH_MOTION_DISCRETE,
     PATH_MOVEMENT_STYLE, PATH_POSTURE, PATH_RESET, PATH_SESSION, PATH_STATUS,
     PATH_STOP, PATH_TELEMETRY, SENT_AT_HEADER, SEQ_HEADER, SESSION_HEADER,
+    SOURCE_HEADER, COMMAND_ID_HEADER, COMMAND_SOURCES,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class MotionRequest(BaseModel):
@@ -151,11 +155,22 @@ def create_app(robot: RobotInterface, config: RobotConfig) -> FastAPI:
         if not config.api_key or not hmac.compare_digest(value or "", config.api_key):
             raise HTTPException(401, "Invalid robot API key")
 
+    async def command_metadata(
+        source: Optional[str] = Header(None, alias=SOURCE_HEADER),
+        command_id: Optional[str] = Header(None, alias=COMMAND_ID_HEADER),
+    ) -> tuple[str, Optional[str]]:
+        resolved_source = source if source is not None else "hand"
+        if resolved_source not in COMMAND_SOURCES:
+            raise HTTPException(400, "Unknown command source")
+        logger.info("Robot command metadata source=%s command_id=%s", resolved_source, command_id)
+        return resolved_source, command_id
+
     async def command_context(
         session_id: Optional[str] = Header(None, alias=SESSION_HEADER),
         seq: Optional[int] = Header(None, alias=SEQ_HEADER),
         sent_at: Optional[float] = Header(None, alias=SENT_AT_HEADER),
         _: None = Depends(authenticate),
+        metadata: tuple[str, Optional[str]] = Depends(command_metadata),
     ) -> int:
         await state.expire_session()
         async with state.state_lock:
@@ -247,12 +262,12 @@ def create_app(robot: RobotInterface, config: RobotConfig) -> FastAPI:
         """Dispatch one allowlisted directional movement command."""
         return await dispatch(lambda: robot.move_discrete(body.direction, body.intensity), generation, True)
 
-    @api.post(PATH_STOP, dependencies=[Depends(authenticate)])
+    @api.post(PATH_STOP, dependencies=[Depends(authenticate), Depends(command_metadata)])
     async def stop() -> dict[str, Any]:
         """Dispatch priority stop without requiring a session or sequence."""
         return (await state.stop()).to_dict()
 
-    @api.post(PATH_EMERGENCY_STOP, dependencies=[Depends(authenticate)])
+    @api.post(PATH_EMERGENCY_STOP, dependencies=[Depends(authenticate), Depends(command_metadata)])
     async def emergency_stop() -> dict[str, Any]:
         """Latch emergency stop and return the standard command-result shape."""
         async with state.state_lock:

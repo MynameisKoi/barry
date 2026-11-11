@@ -122,6 +122,18 @@ def test_auth_session_conflict_renewal_and_stale_sequence():
         assert client.post("/api/v1/motion", headers=headers, json=body).status_code == 409
 
 
+def test_command_source_is_logged_defaults_to_hand_and_rejects_unknown(caplog):
+    _, app = setup()
+    with TestClient(app) as client:
+        _, headers = session(client)
+        body = {"forward": 0, "strafe": 0, "turn": 0}
+        response = client.post("/api/v1/motion", headers=headers, json=body)
+        assert response.status_code == 200
+        assert "source=hand" in caplog.text
+        bad = {**headers, "X-Command-Seq": "2", "X-Command-Source": "bogus"}
+        assert client.post("/api/v1/motion", headers=bad, json=body).status_code == 400
+
+
 def test_stop_and_emergency_stop_need_no_session():
     robot, app = setup()
     with TestClient(app) as client:

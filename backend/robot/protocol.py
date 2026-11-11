@@ -46,6 +46,9 @@ AUTH_HEADER = "X-Robot-Key"
 SESSION_HEADER = "X-Control-Session"
 SEQ_HEADER = "X-Command-Seq"
 SENT_AT_HEADER = "X-Command-Sent-At"
+SOURCE_HEADER = "X-Command-Source"
+COMMAND_ID_HEADER = "X-Command-Id"
+COMMAND_SOURCES = frozenset({"hand", "voice", "llm", "emergency"})
 
 # --- paths --------------------------------------------------------------
 PATH_HEALTH = "/healthz"

@@ -99,6 +99,10 @@ class DatabaseManager:
                 )
                 """
             )
+            self._ensure_column(cursor, "events", "source", "TEXT")
+            self._ensure_column(cursor, "events", "command_id", "TEXT")
+            self._ensure_column(cursor, "events", "result_code", "INTEGER")
+            self._ensure_column(cursor, "events", "latency_ms", "REAL")
 
             # 4. Structured Inspection Events table
             cursor.execute(
