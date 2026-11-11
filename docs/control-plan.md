@@ -1,6 +1,6 @@
 # BARRY Control Plan: Hand, Voice, and LLM
 
-Status: **draft for review**. Nothing in this document is implemented yet.
+Status: **design reference.** Phase 0 is mostly done (Pi Robot API v1). Voice mode (Phase 5) now covers both fixed commands and spoken conversation with the LLM, and ranks above the LLM. The build order, current state and per-phase work are in [build-plan.md](build-plan.md).
 
 ## Goal
 
@@ -10,7 +10,7 @@ The operator controls the DOGZILLA from the Meta Quest 3S in three ways:
 |---|---|---|
 | **Hand** | Quest controllers (thumbstick, buttons) | Real-time steering |
 | **Voice** | Push-to-talk, fixed command list | Hands-free simple moves |
-| **LLM** | Spoken or typed goal, handled by a local LLM on the laptop | Short multi-step tasks |
+| **LLM** | Spoken or typed goal, handled by a cloud LLM (Anthropic `claude-sonnet-5-5`) called from the laptop | Short multi-step tasks |
 | **Emergency** | Quest controllers, sent **directly to the Pi**; raw camera feed **directly from the Pi** | Laptop or backend is down: stop the robot or move it to safety |
 
 Hand, voice, and LLM all go through the laptop, where the Quest receives the camera feed and object detection alerts. Emergency mode bypasses the laptop entirely: hand control uses exactly the same controls and command format as normal hand mode (only the destination changes), and the Quest shows the raw camera feed straight from the Pi. Emergency mode has no object detection and no LLM.
@@ -151,14 +151,16 @@ A fallback for when the laptop or its backend is unavailable. Hand control only.
 ## Phase 5: Voice mode
 
 - Push-to-talk on the Quest.
-- Audio goes to the laptop; speech-to-text runs on the laptop. The transcription model is a prerequisite for this phase and is shared with LLM mode.
+- Audio goes to the laptop; speech-to-text is the OpenAI transcription API (cloud), called from the laptop. Anthropic has no speech-to-text API. The transcription model is a prerequisite for this phase and is shared with LLM mode. (Decided 2026-11-10.)
 - A fixed command list, for example: forward, back, turn left, turn right, stop, emergency stop, "forward N seconds".
 - Each command is a bounded move. Stop and emergency stop are matched first.
 - Unrecognized speech does nothing. The VR shows "Didn't understand".
 
 ## Phase 6: LLM mode
 
-- The LLM runs locally on the laptop.
+- The LLM is a cloud API: Anthropic `claude-sonnet-5-5`, called from the laptop (Decided 2026-11-10).
+- **Plans run immediately with no confirm step.** This supersedes the confirm steps in Phase 5 and below. The safety net is the gateway's limits (bounded moves, speed caps), and "stop" or any hand input cancels the task.
+- Voice and LLM modes need internet access and `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` in `.env`. Hand and emergency modes are unaffected.
 - Its tool list is **derived from the Phase 0 contract**, not designed separately. Draft:
   - `move(direction, seconds, speed)`
   - `turn(degrees)`
@@ -181,12 +183,12 @@ The Pi camera stream already exists after Phase 4. This phase uses it for normal
 
 ## Open questions
 
-1. **Transcription model:** which model to run on the laptop (e.g. a Whisper variant), and whether it must work offline.
+1. **Transcription model:** which model to run on the laptop (e.g. a Whisper variant), and whether it must work offline. **Decided 2026-11-10:** OpenAI transcription API (cloud); not offline.
 2. **Entering emergency mode:** manual only (operator presses a button), or the Quest offers it automatically when the laptop stops responding? Leaning: Quest offers it, operator confirms.
 3. **Emergency speed cap:** what value?
 4. **Emergency video quality:** what resolution and frame rate are good enough, given the Pi's CPU and Wi-Fi?
 5. **Voice vs LLM selection:** an explicit mode switch in VR, or automatic fallback from voice to LLM? Leaning: explicit switch.
-6. **LLM confirmation:** run plans immediately, or show them in VR and wait for "confirm"? Leaning: confirm first.
-7. **Laptop hardware:** is a GPU available? This determines which local LLM and transcription model are practical.
+6. **LLM confirmation:** run plans immediately, or show them in VR and wait for "confirm"? Leaning: confirm first. **Decided 2026-11-10:** run plans immediately, no confirm step; the gateway's limits and stop/hand input are the safety net.
+7. **Laptop hardware:** is a GPU available? This determines which local LLM and transcription model are practical. **Decided 2026-11-10:** not needed; LLM and speech-to-text are both cloud.
 8. **Camera source for normal modes:** laptop camera (current) or robot camera via the Pi (Phase 7)?
 9. **Contract details for Phase 0:** keep REST paths under `/api/robot/*`, or version them (`/api/v2/robot/*`) during the Unity migration?
