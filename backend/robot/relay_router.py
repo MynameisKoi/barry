@@ -19,6 +19,25 @@ LogEvent = Callable[..., Any]
 QUEST_API_KEY_ENV = "QUEST_API_KEY"
 # Safety paths that must get through while a motion request is in flight: the dedicated
 # priority client, never queued behind motion.
+REPEAT_INTERVAL_S = 0.2
+CONTINUOUS_WINDOW_ENV = "ROBOT_CONTINUOUS_MOTION_WINDOW_S"
+CONTINUOUS_WINDOW_DEFAULT_S = 1.0
+CONTINUOUS_WINDOW_MIN_S, CONTINUOUS_WINDOW_MAX_S = 0.2, 2.0
+
+
+def continuous_window_s() -> float:
+    """How long after the last real Quest motion command the laptop keeps repeating it before
+    stopping. ``ROBOT_CONTINUOUS_MOTION_WINDOW_S`` clamped to 0.2-2.0; invalid -> 1.0."""
+    raw = os.environ.get(CONTINUOUS_WINDOW_ENV)
+    try:
+        value = float(raw) if raw is not None else CONTINUOUS_WINDOW_DEFAULT_S
+    except ValueError:
+        return CONTINUOUS_WINDOW_DEFAULT_S
+    if value != value or value in (float("inf"), float("-inf")):
+        return CONTINUOUS_WINDOW_DEFAULT_S
+    return min(max(value, CONTINUOUS_WINDOW_MIN_S), CONTINUOUS_WINDOW_MAX_S)
+
+
 PRIORITY_PATHS = frozenset({protocol.PATH_STOP, protocol.PATH_EMERGENCY_STOP})
 
 
@@ -78,31 +97,53 @@ def create_robot_relay_router(
     repeat_task: asyncio.Task | None = None
     last_motion_time = 0.0
 
+    def cancel_repeat() -> None:
+        """Stop re-sending motion NOW. Called before forwarding any stop-class command, so a slow,
+        unreachable or erroring Pi cannot leave the loop re-sending the last motion afterwards."""
+        if repeat_task and not repeat_task.done():
+            repeat_task.cancel()
+
     async def repeat_loop(body_bytes: bytes, headers: dict):
+        """Re-send the last Quest motion every 0.2 s for up to the continuous-motion window since the
+        last real Quest command, then stop. Cancelled (no stop sent here) when a newer Quest command or
+        /stop replaces it. Stops on ANY other exit while motion is still active: window elapsed, or a
+        repeat request that raised or came back non-2xx."""
         nonlocal motion_active
+        me = asyncio.current_task()
+        window = continuous_window_s()
         try:
-            while motion_active and (time.monotonic() - last_motion_time) < 2.0:
-                await asyncio.sleep(0.2)
+            while motion_active:
+                remaining = window - (time.monotonic() - last_motion_time)
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(min(REPEAT_INTERVAL_S, remaining))
                 if not motion_active:
                     break
-                await get_relay()._client.request(
+                if time.monotonic() - last_motion_time >= window:
+                    break
+                response = await get_relay()._client.request(
                     "POST",
                     protocol.PATH_MOTION,
                     content=body_bytes,
                     headers=headers,
                     timeout=1.5,
                 )
-        except Exception:
-            pass
-        finally:
-            if motion_active and (time.monotonic() - last_motion_time) >= 2.0:
-                motion_active = False
-                try:
-                    await get_relay()._stop_client.request(
-                        "POST", protocol.PATH_STOP, headers=headers, timeout=1.5
-                    )
-                except Exception:
-                    pass
+                if not 200 <= response.status_code < 300:
+                    logger.warning("Continuous-motion repeat failed with HTTP %s; stopping.", response.status_code)
+                    break
+        except asyncio.CancelledError:
+            raise  # replaced by a newer command or cancelled by /stop: whoever did that owns the stop
+        except Exception as exc:
+            logger.warning("Continuous-motion repeat failed (%s); stopping.", type(exc).__name__)
+        # Reached on window elapsed, a failed repeat, or motion already ended elsewhere.
+        if motion_active and repeat_task is me:
+            motion_active = False
+            try:
+                await get_relay()._stop_client.request(
+                    "POST", protocol.PATH_STOP, headers=headers, timeout=1.5
+                )
+            except Exception:
+                logger.warning("Continuous-motion stop could not be delivered to the Pi.")
 
     def audit(description: str, request: Request, response: Response, started: float) -> None:
         try:
@@ -196,9 +237,8 @@ def create_robot_relay_router(
 
     @router.post("/stop")
     async def stop(request: Request):
-        nonlocal motion_active, repeat_task
-        if repeat_task and not repeat_task.done():
-            repeat_task.cancel()
+        nonlocal motion_active
+        cancel_repeat()
         response = await forward(request, protocol.PATH_STOP, "stop")
         if 200 <= response.status_code < 300:
             motion_active = False
@@ -207,7 +247,9 @@ def create_robot_relay_router(
     @router.post("/emergency-stop")
     async def emergency_stop(request: Request):
         nonlocal motion_active
-        # Priority lane (PRIORITY_PATHS) and audited on every request, like /stop.
+        # Priority lane (PRIORITY_PATHS) and audited on every request, like /stop. The repeat loop is
+        # cancelled first and unconditionally: whatever the Pi answers, no more motion is re-sent.
+        cancel_repeat()
         response = await forward(request, protocol.PATH_EMERGENCY_STOP, "emergency_stop")
         if 200 <= response.status_code < 300:
             motion_active = False
@@ -224,6 +266,7 @@ def create_robot_relay_router(
     @router.post("/reset")
     async def reset(request: Request):
         nonlocal motion_active
+        cancel_repeat()   # a full robot reset must never be followed by a stale motion repeat
         response = await forward(request, protocol.PATH_RESET, "reset")
         if 200 <= response.status_code < 300:
             motion_active = False

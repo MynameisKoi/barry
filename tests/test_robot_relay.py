@@ -541,3 +541,210 @@ def test_emergency_stop_and_reset_end_the_motion_audit_state():
         assert client.post(ender).status_code == 200
         assert client.post(protocol.PATH_MOTION_DISCRETE, json=DISCRETE).status_code == 200
         assert sum("motion started" in e["description"] for e in events) == 2, ender
+
+
+# ---------------------------------------------------------------- continuous-motion window
+
+import time  # noqa: E402
+
+from backend.robot.relay_router import continuous_window_s  # noqa: E402
+
+MOVE = {"forward": 0.5, "strafe": 0, "turn": 0}
+
+
+class _Pi:
+    """Fake Pi recording motion repeats and stops with monotonic timestamps."""
+
+    def __init__(self, motion_status=200, fail_repeats_after=None):
+        self.motions: List[float] = []
+        self.stops: List[float] = []
+        self.motion_status = motion_status
+        self.fail_repeats_after = fail_repeats_after
+
+    def normal(self, request: httpx.Request) -> httpx.Response:
+        assert request.url.path == protocol.PATH_MOTION
+        self.motions.append(time.monotonic())
+        if self.fail_repeats_after is not None and len(self.motions) > self.fail_repeats_after:
+            raise httpx.ConnectError("pi unreachable")
+        return httpx.Response(self.motion_status, json={"status": "accepted"})
+
+    def priority(self, request: httpx.Request) -> httpx.Response:
+        assert request.url.path == protocol.PATH_STOP
+        self.stops.append(time.monotonic())
+        return httpx.Response(200, json={"status": "stop_dispatched"})
+
+
+def _wait_for(predicate, timeout):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
+def test_window_default_is_one_second_and_clamped(monkeypatch):
+    monkeypatch.delenv("ROBOT_CONTINUOUS_MOTION_WINDOW_S", raising=False)
+    assert continuous_window_s() == 1.0
+    for raw, expected in [("0.5", 0.5), ("0.05", 0.2), ("-3", 0.2), ("9", 2.0), ("2", 2.0),
+                          ("abc", 1.0), ("", 1.0), ("nan", 1.0), ("inf", 1.0)]:
+        monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION_WINDOW_S", raw)
+        assert continuous_window_s() == expected, raw
+
+
+def test_quest_sends_one_motion_then_nothing_stop_comes_after_one_second(monkeypatch):
+    monkeypatch.delenv("ROBOT_CONTINUOUS_MOTION_WINDOW_S", raising=False)
+    monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION", "true")
+    pi = _Pi()
+    client, _, _ = make_client(pi.normal, stop_handler=pi.priority)
+    with client:
+        sent = time.monotonic()
+        assert client.post(protocol.PATH_MOTION, json=MOVE).status_code == 200
+        assert _wait_for(lambda: pi.stops, 2.5), "no stop was sent"
+    elapsed = pi.stops[0] - sent
+    assert 0.9 <= elapsed < 1.5, elapsed             # ~1.0 s, not 2.0
+    assert len(pi.motions) >= 3                       # it kept repeating until then
+    assert len(pi.stops) == 1
+
+
+def test_env_override_changes_the_stop_time(monkeypatch):
+    monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION_WINDOW_S", "0.5")
+    monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION", "true")
+    pi = _Pi()
+    client, _, _ = make_client(pi.normal, stop_handler=pi.priority)
+    with client:
+        sent = time.monotonic()
+        client.post(protocol.PATH_MOTION, json=MOVE)
+        assert _wait_for(lambda: pi.stops, 2.0)
+    assert 0.4 <= pi.stops[0] - sent < 0.9
+
+
+def test_invalid_env_uses_the_default_window(monkeypatch):
+    monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION_WINDOW_S", "not-a-number")
+    monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION", "true")
+    pi = _Pi()
+    client, _, _ = make_client(pi.normal, stop_handler=pi.priority)
+    with client:
+        sent = time.monotonic()
+        client.post(protocol.PATH_MOTION, json=MOVE)
+        assert _wait_for(lambda: pi.stops, 2.5)
+    assert 0.9 <= pi.stops[0] - sent < 1.5
+
+
+def test_failed_repeat_request_still_sends_stop(monkeypatch):
+    monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION_WINDOW_S", "2.0")   # window would not have elapsed
+    monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION", "true")
+    pi = _Pi(fail_repeats_after=1)       # the first (Quest) request works; the repeats raise
+    client, _, _ = make_client(pi.normal, stop_handler=pi.priority)
+    with client:
+        sent = time.monotonic()
+        client.post(protocol.PATH_MOTION, json=MOVE)
+        assert _wait_for(lambda: pi.stops, 1.5), "repeat failure did not stop the robot"
+    assert pi.stops[0] - sent < 1.0       # well before the 2.0 s window
+    assert len(pi.stops) == 1
+
+
+def test_non_2xx_repeat_response_also_stops(monkeypatch):
+    monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION_WINDOW_S", "2.0")
+    monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION", "true")
+    pi = _Pi()
+    statuses = iter([200] + [423] * 50)
+    def normal(request: httpx.Request) -> httpx.Response:
+        pi.motions.append(time.monotonic())
+        return httpx.Response(next(statuses), json={"detail": "x"})
+    client, _, _ = make_client(normal, stop_handler=pi.priority)
+    with client:
+        client.post(protocol.PATH_MOTION, json=MOVE)
+        assert _wait_for(lambda: pi.stops, 1.5)
+
+
+def test_quest_stop_cancels_the_loop_immediately_and_sends_exactly_one_stop(monkeypatch):
+    monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION_WINDOW_S", "1.0")
+    monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION", "true")
+    pi = _Pi()
+    client, _, _ = make_client(pi.normal, stop_handler=pi.priority)
+    with client:
+        client.post(protocol.PATH_MOTION, json=MOVE)
+        time.sleep(0.3)
+        assert client.post(protocol.PATH_STOP).status_code == 200
+        repeats_at_stop = len(pi.motions)
+        time.sleep(1.4)                  # past where the window would have ended
+    assert len(pi.motions) == repeats_at_stop     # no repeats after /stop
+    assert len(pi.stops) == 1                     # only the Quest's stop, none from the loop
+
+
+def test_a_newer_quest_command_replaces_the_loop_without_a_stop(monkeypatch):
+    monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION_WINDOW_S", "0.6")
+    monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION", "true")
+    pi = _Pi()
+    client, _, _ = make_client(pi.normal, stop_handler=pi.priority)
+    with client:
+        t0 = time.monotonic()
+        client.post(protocol.PATH_MOTION, json=MOVE)
+        time.sleep(0.4)
+        client.post(protocol.PATH_MOTION, json=MOVE)    # refreshes the window
+        time.sleep(0.4)                                 # 0.8 s after the first: old window would have ended
+        assert pi.stops == []
+        assert _wait_for(lambda: pi.stops, 1.5)
+    assert pi.stops[0] - t0 >= 0.95                     # ~0.4 + 0.6 after the second command
+
+
+def test_continuous_motion_can_be_turned_off(monkeypatch):
+    monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION", "false")
+    pi = _Pi()
+    client, _, _ = make_client(pi.normal, stop_handler=pi.priority)
+    with client:
+        client.post(protocol.PATH_MOTION, json=MOVE)
+        time.sleep(0.6)
+    assert len(pi.motions) == 1 and pi.stops == []
+
+
+# ---------------------------------------------------------------- stop-class commands cancel the loop first
+
+def _run_stop_class_while_repeating(monkeypatch, path, pi_status):
+    """A repeat loop is running; `path` is sent and the Pi answers `pi_status` (or is unreachable when
+    None). Returns (motions_at_command, motions_after_waiting, response_status)."""
+    monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION_WINDOW_S", "2.0")
+    monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION", "true")
+    motions: List[float] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path == protocol.PATH_MOTION:
+            motions.append(time.monotonic())
+            return httpx.Response(200, json={"status": "accepted"})
+        if pi_status is None:
+            raise httpx.ConnectError("pi unreachable")
+        return httpx.Response(pi_status, json={"detail": "pi error"})
+
+    client, _, _ = make_client(respond, stop_handler=respond)
+    with client:
+        assert client.post(protocol.PATH_MOTION, json=MOVE).status_code == 200
+        assert _wait_for(lambda: len(motions) >= 3, 2.0), "repeat loop never started"
+        status = client.post(path).status_code
+        at_command = len(motions)
+        time.sleep(0.8)                  # four repeat intervals
+        return at_command, len(motions), status
+
+
+def test_emergency_stop_cancels_repeat_even_when_the_pi_returns_503(monkeypatch):
+    at_command, after, status = _run_stop_class_while_repeating(monkeypatch, protocol.PATH_EMERGENCY_STOP, 503)
+    assert status == 503
+    assert after == at_command, "motion kept being re-sent after the e-stop"
+
+
+def test_emergency_stop_cancels_repeat_when_the_pi_is_unreachable(monkeypatch):
+    at_command, after, status = _run_stop_class_while_repeating(monkeypatch, protocol.PATH_EMERGENCY_STOP, None)
+    assert status == 503                 # the relay's own "Pi unavailable"
+    assert after == at_command
+
+
+def test_reset_cancels_repeat_even_when_the_pi_returns_503(monkeypatch):
+    at_command, after, status = _run_stop_class_while_repeating(monkeypatch, protocol.PATH_RESET, 503)
+    assert status == 503
+    assert after == at_command, "motion kept being re-sent after a reset"
+
+
+def test_stop_still_cancels_repeat_when_the_pi_returns_503(monkeypatch):
+    at_command, after, status = _run_stop_class_while_repeating(monkeypatch, protocol.PATH_STOP, 503)
+    assert status == 503
+    assert after == at_command
