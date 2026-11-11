@@ -97,6 +97,8 @@ namespace Barry.App.Editor
             var strip = BuildControlStrip();
             float below = 25f * Mathf.Deg2Rad;
             Place(strip.gameObject, new Vector3(0, Eye - 0.9f * Mathf.Sin(below), 0.9f * Mathf.Cos(below)), Quaternion.Euler(15f, 0, 0));
+            var banner = BuildEmergencyBanner();
+            Place(banner.gameObject, new Vector3(0, Eye + 0.12f, 1.6f), Quaternion.identity);
 
             // App + controller.
             var appGo = new GameObject("BarryApp");
@@ -111,6 +113,7 @@ namespace Barry.App.Editor
             SetRef(ctrl, "statusPanel", status.GetComponentInChildren<StatusPanelView>(true));
             SetRef(ctrl, "actionsPanel", actions.GetComponentInChildren<ActionsPanelView>(true));
             SetRef(ctrl, "controlStrip", strip.GetComponentInChildren<ControlStripView>(true));
+            SetRef(ctrl, "emergencyBanner", banner.GetComponentInChildren<EmergencyBannerView>(true));
 
             var themeGo = new GameObject("ThemeApplier");
             var ta = themeGo.AddComponent<ThemeApplier>();
@@ -122,7 +125,7 @@ namespace Barry.App.Editor
 
             // Save prefabs (panels), then the scene.
             string pdir = Root + "/UI/Prefabs";
-            foreach (var g in new[] { header, camera, status, actions, strip })
+            foreach (var g in new[] { header, camera, status, actions, strip, banner })
                 PrefabUtility.SaveAsPrefabAssetAndConnect(g.gameObject, $"{pdir}/{g.name}.prefab", InteractionMode.AutomatedAction);
 
             PlayerSettings.insecureHttpOption = InsecureHttpOption.AlwaysAllowed;   // the only Player setting changed
@@ -158,9 +161,13 @@ namespace Barry.App.Editor
             Txt(mode.transform, "ModeMore", "· more modes later", 13, ThemeRole.TextSecondary, FontRole.Mono);
 
             var right = Row(c.transform, "Right", 10, TextAnchor.MiddleRight, leftEdge: false, inset: 20);
+            var estop = Chip(right, "EmergencyChip", 32, 12, 8, 8, 13, overlay: false);   // hidden unless E-STOP LATCHED
+            estop.gameObject.SetActive(false);
             var robot = Chip(right, "RobotChip", 32, 12, 8, 8, 13, overlay: false);
             var control = Chip(right, "ControlChip", 32, 12, 8, 8, 13, overlay: false);
 
+            SetRef(view, "emergencyChip", estop);
+            SetRef(view, "modePill", mode.gameObject);
             SetRef(view, "modeLabel", modeText);
             SetRef(view, "robotChip", robot);
             SetRef(view, "controlChip", control);
@@ -385,6 +392,49 @@ namespace Barry.App.Editor
             so.FindProperty("exitButton").objectReferenceValue = exit;
             so.FindProperty("stopHint").objectReferenceValue = hint;
             so.ApplyModifiedPropertiesWithoutUndo();
+            Relayout(c);
+            return c;
+        }
+
+        /// <summary>
+        /// Latched e-stop banner (Phase 3a): shown only while the e-stop is latched. 1 mm per px at 1.6 m, so
+        /// the text meets the §4 cap-height rule. The Reset button needs two presses (see EmergencyLatch).
+        /// </summary>
+        static Canvas BuildEmergencyBanner()
+        {
+            Begin(1f, 1.6f);
+            var c = NewCanvas("EmergencyBanner", 1200, 360);
+            var view = c.gameObject.AddComponent<EmergencyBannerView>();
+
+            var content = Box(c.transform, "Content", 0, 0, 0, 0, stretch: 0);
+            Skin(content, M(24), look.dangerSoft, look.dangerSolid, M(4f), fillRole: ThemeRole.DangerSoft, borderRole: ThemeRole.Danger);
+
+            var top = Row(content.transform, "Top", 16, TextAnchor.MiddleLeft, leftEdge: true, inset: 32, top: 28, fitVertical: true);
+            var chip = Chip(top, "EmergencyChip", 40, 16, 10, 12, 22, overlay: false);
+            var title = Txt(content.transform, "Title", EmergencyHudModel.Title, 36, ThemeRole.TextPrimary, FontRole.Body, bold: true, rect: P(32, 88, 1136, 48));
+            var detail = Txt(content.transform, "Detail", EmergencyHudModel.Detail, 26, ThemeRole.TextPrimary, FontRole.Body, rect: P(32, 140, 760, 100));
+            detail.textWrappingMode = TextWrappingModes.Normal;
+            detail.alignment = TextAlignmentOptions.TopLeft;
+
+            var resetImg = Box(content.transform, "Reset", 820, 130, 348, 100);
+            Skin(resetImg, M(16), look.dangerSolid, Color.clear, 0f, fillRole: ThemeRole.Danger);
+            resetImg.raycastTarget = true;
+            var reset = resetImg.gameObject.AddComponent<Button>(); reset.targetGraphic = resetImg;
+            var resetLabel = Txt(resetImg.transform, "Text", "Reset e-stop", 30, Color.white, FontRole.Body, bold: true, align: TextAlignmentOptions.Center);
+            resetLabel.textWrappingMode = TextWrappingModes.Normal;
+            Stretch(resetLabel.rectTransform, 8);
+
+            var footer = Txt(content.transform, "Footer", EmergencyHudModel.Footer, 24, ThemeRole.TextSecondary, FontRole.Mono, rect: P(32, 262, 1136, 76));
+            footer.textWrappingMode = TextWrappingModes.Normal;
+            footer.alignment = TextAlignmentOptions.TopLeft;
+
+            SetRef(view, "content", content.gameObject);
+            SetRef(view, "chip", chip);
+            SetRef(view, "title", title);
+            SetRef(view, "detail", detail);
+            SetRef(view, "footer", footer);
+            SetRef(view, "resetButton", reset);
+            SetRef(view, "resetLabel", resetLabel);
             Relayout(c);
             return c;
         }

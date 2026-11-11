@@ -157,6 +157,23 @@ namespace Barry.UI
                         "dismiss",
                         "Dismiss");
 
+                case StopReason.EmergencyStop:
+                    return new StopOverlayModel(
+                        "STOPPED",
+                        StopOverlayTone.Danger,
+                        "Emergency stop",
+                        "The emergency stop is latched. Barry will not move until it is reset.",
+                        stopDelivered,
+                        new[]
+                        {
+                            "Make sure Barry and the area around it are safe.",
+                            "Press Reset e-stop, then press it again within 3 s to confirm.",
+                            "Centre both sticks, then push to drive."
+                        },
+                        "reset_estop",
+                        "Reset e-stop",
+                        true);
+
                 case StopReason.Operator:
                     return CreateDanger(
                         "Stopped by you",

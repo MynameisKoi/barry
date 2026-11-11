@@ -19,8 +19,10 @@ namespace Barry.App
         [SerializeField] StatusPanelView statusPanel;
         [SerializeField] ActionsPanelView actionsPanel;
         [SerializeField] ControlStripView controlStrip;
+        [SerializeField] EmergencyBannerView emergencyBanner;
 
-        InputAction moveAction, turnAction, stopAction, toggleActionsAction, intensityAction;
+        InputAction moveAction, turnAction, stopAction, toggleActionsAction, intensityAction, gripLeftAction, gripRightAction;
+        readonly EmergencyStopGesture emergencyGesture = new EmergencyStopGesture();
         ActionsPanelModel actionsModel;
         ActionsResponse actionsResponse;
         CameraStatusResponse cameraStatus;
@@ -35,21 +37,27 @@ namespace Barry.App
             stopAction = new InputAction("Stop", InputActionType.Button, "<XRController>{RightHand}/primaryButton");
             toggleActionsAction = new InputAction("Actions", InputActionType.Button, "<XRController>{RightHand}/secondaryButton");
             intensityAction = new InputAction("Intensity", InputActionType.Button, "<XRController>{LeftHand}/primaryButton");
+            // Dedicated e-stop = both grips + A (stopAction) held ~0.3 s. Provisional (HANDOFF §6): verify on the headset.
+            gripLeftAction = new InputAction("GripLeft", InputActionType.Button, "<XRController>{LeftHand}/gripPressed");
+            gripRightAction = new InputAction("GripRight", InputActionType.Button, "<XRController>{RightHand}/gripPressed");
             stopAction.performed += _ => app.RequestOperatorStop();
             toggleActionsAction.performed += _ => ToggleActions();
             intensityAction.performed += _ => CycleIntensity();
-            foreach (var a in new[] { moveAction, turnAction, stopAction, toggleActionsAction, intensityAction }) a.Enable();
+            foreach (var a in new[] { moveAction, turnAction, stopAction, toggleActionsAction, intensityAction, gripLeftAction, gripRightAction }) a.Enable();
+            emergencyGesture.Reset();
 
             controlStrip.StopClicked += app.RequestOperatorStop;
             controlStrip.IntensityChosen += SetIntensity;
             controlStrip.ExitClicked += Exit;
+            if (emergencyBanner != null) emergencyBanner.ResetClicked += app.PressEmergencyReset;
             actionsPanel.ActionChosen += RunAction;
             actionsPanel.ActionHovered += id => { actionsModel?.SetHovered(id); actionsPanel.Bind(actionsModel); };
         }
 
         void OnDisable()
         {
-            foreach (var a in new[] { moveAction, turnAction, stopAction, toggleActionsAction, intensityAction }) a?.Dispose();
+            foreach (var a in new[] { moveAction, turnAction, stopAction, toggleActionsAction, intensityAction, gripLeftAction, gripRightAction }) a?.Dispose();
+            if (emergencyBanner != null && app != null) emergencyBanner.ResetClicked -= app.PressEmergencyReset;
             if (controlStrip != null)
             {
                 controlStrip.StopClicked -= app.RequestOperatorStop;
@@ -70,7 +78,11 @@ namespace Barry.App
 
         void Update()
         {
-            app.SetControllerInput(moveAction.ReadValue<Vector2>(), turnAction.ReadValue<Vector2>());
+            // The e-stop outranks everything else this frame (no other button action or stick sample runs).
+            bool estop = emergencyGesture.Update(
+                gripLeftAction.IsPressed(), gripRightAction.IsPressed(), stopAction.IsPressed(), Time.unscaledDeltaTime);
+            if (estop) app.RequestEmergencyStop();
+            else app.SetControllerInput(moveAction.ReadValue<Vector2>(), turnAction.ReadValue<Vector2>());
 
             cameraPoll -= Time.unscaledDeltaTime;
             if (cameraPoll <= 0f)
@@ -85,7 +97,10 @@ namespace Barry.App
 
             bool hasControl = true;   // lease on hold: Dashboard is reachable directly
             var cmd = app.LatestCommand;
+            var hud = EmergencyHudModel.From(app.EmergencyLatch);
             header.Bind(HeaderChipsModel.Create(app.LatestStatus, hasControl));
+            header.SetEmergency(hud);
+            if (emergencyBanner != null) emergencyBanner.Bind(hud);
             statusPanel.Bind(StatusPanelModel.Create(app.LatestStatus, app.LatestTelemetry, cameraStatus, cmd, hasControl, rtt >= 0 ? rtt : (float?)null));
             cameraScreen.SetOrientation(app.LatestTelemetry);
             if (actionsModel != null) actionsModel.UpdateAvailability(cmd, app.TeleopState, hasControl);

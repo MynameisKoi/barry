@@ -32,6 +32,23 @@ namespace Barry.Api
     }
 
     [Serializable]
+    public sealed class PostureRequest
+    {
+        public string height;
+        public float roll;
+        public float pitch;
+        public float yaw;
+
+        public PostureRequest(string height, float roll = 0f, float pitch = 0f, float yaw = 0f)
+        {
+            this.height = height;
+            this.roll = roll;
+            this.pitch = pitch;
+            this.yaw = yaw;
+        }
+    }
+
+    [Serializable]
     public sealed class CommandResult
     {
         public string status;

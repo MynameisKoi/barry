@@ -24,7 +24,8 @@ namespace Barry.Teleop
         BackendUnreachable,
         StatusUnavailable,
         CameraUnavailable,
-        Operator
+        Operator,
+        EmergencyStop
     }
 
     public sealed class TeleopStateMachine
@@ -69,7 +70,14 @@ namespace Barry.Teleop
         public bool Stop(StopReason reason)
         {
             if (reason == StopReason.None) throw new ArgumentException("A stop reason is required.", nameof(reason));
-            if (State == TeleopState.Stopped) return false;
+            if (State == TeleopState.Stopped)
+            {
+                // An e-stop upgrades an earlier stop's reason; nothing else overrides an e-stop.
+                if (reason != StopReason.EmergencyStop || LastStopReason == StopReason.EmergencyStop) return false;
+                LastStopReason = reason;
+                requiresFreshDeflection = true;
+                return true;
+            }
             LastStopReason = reason;
             requiresFreshDeflection = true;
             TransitionTo(TeleopState.Stopped);
