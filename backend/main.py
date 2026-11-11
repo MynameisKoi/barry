@@ -57,6 +57,7 @@ from backend.models import (
 )
 from backend.robot.config import RobotConfig
 from backend.robot.factory import create_robot
+from backend.gateway.detections import LiveDetections
 from backend.gateway.gateway import CommandGateway
 from backend.robot.interface import RobotInterface
 from backend.robot.relay import RobotApiRelay
@@ -165,7 +166,11 @@ async def lifespan(app: FastAPI):
 
     if robot is None:
         robot = create_robot(mode=ROBOT_MODE)
-    app.state.gateway = CommandGateway(robot)
+    app.state.gateway = CommandGateway(
+        robot,
+        # On-demand YOLO on the shared camera's newest frame (camera is created later in lifespan).
+        live_detections=LiveDetections(lambda: getattr(app.state, "camera", None), detection_service.detector),
+    )
     configure_gateway_provider(lambda: app.state.gateway)
     # Resolve the adapter and bind the LLM preemption hook before serving requests.
     llm_gateway_adapter.gateway
