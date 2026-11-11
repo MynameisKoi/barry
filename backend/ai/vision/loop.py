@@ -23,15 +23,40 @@ class DetectionLoop:
         try: self.source.close()
         except Exception: pass
     def _run(self):
+        retry_delay = 0.5
         try:
-            self.source.open(); self._available=True
             while not self._stop.is_set():
-                started=time.monotonic(); detections=self.detector.detect(self.source.read())
-                with self._lock: self._latest,self._updated_at=detections,time.monotonic()
-                self._stop.wait(max(0,1/self.fps-(time.monotonic()-started)))
-        except Exception:
-            with self._lock: self._latest,self._updated_at=[],0.0
+                try:
+                    self.source.open()
+                    self._available = True
+                    retry_delay = 0.5
+                    while not self._stop.is_set():
+                        started = time.monotonic()
+                        try:
+                            detections = self.detector.detect(self.source.read())
+                        except Exception:
+                            self._available = False
+                            with self._lock:
+                                self._latest, self._updated_at = [], 0.0
+                            self.source.close()
+                            break
+                        with self._lock:
+                            self._latest, self._updated_at = detections, time.monotonic()
+                        self._stop.wait(max(0, 1/self.fps-(time.monotonic()-started)))
+                except Exception:
+                    self._available = False
+                    with self._lock:
+                        self._latest, self._updated_at = [], 0.0
+                    try:
+                        self.source.close()
+                    except Exception:
+                        pass
+                if not self._stop.is_set():
+                    self._stop.wait(retry_delay)
+                    retry_delay = min(retry_delay * 2, 5.0)
         finally:
-            self._available=False
-            try: self.source.close()
-            except Exception: pass
+            self._available = False
+            try:
+                self.source.close()
+            except Exception:
+                pass
