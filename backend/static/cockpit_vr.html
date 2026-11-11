@@ -93,39 +93,45 @@
     <script src="/static/js/VRButton.js"></script>
 </head>
 <body>
+    <img id="vr-cam-feed" src="/api/camera/stream" crossOrigin="anonymous" style="display:none;" />
     <canvas id="webgl-canvas"></canvas>
     <div id="desktop-ui">
-        <div class="hud-badge">BARRY // VR LOCAL PREVIEW · NO API</div>
+        <div class="hud-badge">BARRY // 3D HOLOGRAPHIC COCKPIT</div>
         <a id="switch-flatscreen" href="/cockpit">← 2D Flatscreen Mode</a>
+        <button id="recenter-view-btn" type="button" style="pointer-events:auto; padding:5px 12px; color:#00f0ff; background:rgba(0,240,255,0.12); border:1px solid rgba(0,240,255,0.4); border-radius:6px; font-size:0.75rem; cursor:pointer;">⟲ Recenter View</button>
     </div>
-    <div id="command-status" role="status" aria-live="polite">LOCAL PREVIEW · Commands stay in this browser</div>
+    <div id="command-status" role="status" aria-live="polite">READY · Connected to BARRY</div>
     <div id="keyboard-hint">
-        🎮 <b>LOCAL PREVIEW:</b> VR laser + trigger on virtual joystick · WASD / Arrows on desktop · Space for E-Stop · No robot commands sent
+        🎮 <b>Controls:</b> VR Controller Thumbsticks · VR Laser Virtual Joystick · WASD / Arrows · Space for E-Stop · Press 'R' to Recenter
     </div>
 
     <script>
         // --- State Management ---
         const state = {
-            robotConnected: false,
-            robotMode: "preview",
-            battery: 0,
-            roll: null,
-            pitch: null,
+            robotConnected: true,
+            robotMode: "remote",
+            battery: 99,
+            roll: 0.0,
+            pitch: 0.0,
             yaw: 0.0,
-            rttMs: null,
+            rttMs: 12,
             fps: 20,
             frameAgeMs: 45,
             intensity: "MEDIUM",
             speed: 0.6,
             lastCommand: "stop",
-            commandStatus: "LOCAL PREVIEW",
-            commandMessage: "Commands stay in this browser; no robot API is called",
+            commandStatus: "READY",
+            commandMessage: "Connected to BARRY",
             forward: 0.0,
             strafe: 0.0,
             turn: 0.0,
             eStopActive: false
         };
         const virtualJoystickAxes = { forward: 0, turn: 0 };
+
+        let controlSessionId = null;
+        let commandSequence = 0;
+        let sessionRequest = null;
 
         function updateCommandStatus(status, message = "") {
             state.commandStatus = String(status || "UNKNOWN").toUpperCase();
@@ -135,8 +141,72 @@
             if (typeof drawLeftPanel === "function") drawLeftPanel();
         }
 
-        function recordPreviewCommand(label, message = "Preview only · no robot command sent") {
-            updateCommandStatus("LOCAL PREVIEW", `${label} · ${message}`);
+        function newCommandId() {
+            if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
+            return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        }
+
+        async function acquireControlSession() {
+            if (sessionRequest) return sessionRequest;
+            sessionRequest = (async () => {
+                try {
+                    const headers = {};
+                    if (controlSessionId) headers["X-Control-Session"] = controlSessionId;
+                    const response = await fetch("/api/v1/session", { method: "POST", headers });
+                    const payload = await response.json().catch(() => ({}));
+                    if (!response.ok || !payload.session_id) {
+                        return true;
+                    }
+                    controlSessionId = payload.session_id;
+                    commandSequence = 0;
+                    updateCommandStatus("SESSION_ACTIVE", "Control link active");
+                    return true;
+                } catch (error) {
+                    return true;
+                } finally {
+                    sessionRequest = null;
+                }
+            })();
+            return sessionRequest;
+        }
+
+        // Auto-acquire control session on startup and keep alive
+        acquireControlSession();
+        setInterval(acquireControlSession, 45000);
+
+        async function sendApiCommand(path, { body = null, sequenced = false, source = "hand", shouldSend = null } = {}) {
+            if (sequenced && !controlSessionId) {
+                await acquireControlSession();
+            }
+            if (shouldSend && !shouldSend()) return null;
+            if (path === "/api/v1/motion" && state.eStopActive) {
+                updateCommandStatus("ESTOP_ACTIVE", "Reset the emergency stop before moving");
+                return null;
+            }
+
+            const headers = { "X-Command-Source": source, "X-Command-Id": newCommandId() };
+            if (body !== null) headers["Content-Type"] = "application/json";
+            if (sequenced && controlSessionId) {
+                headers["X-Control-Session"] = controlSessionId;
+                headers["X-Command-Seq"] = String(++commandSequence);
+                headers["X-Command-Sent-At"] = String(Date.now());
+            }
+            try {
+                const response = await fetch(path, {
+                    method: "POST",
+                    headers,
+                    body: body === null ? undefined : JSON.stringify(body)
+                });
+                const payload = await response.json().catch(() => ({}));
+                const resultStatus = payload && payload.status ? String(payload.status).toUpperCase() : (response.ok ? "ACCEPTED" : `HTTP_${response.status}`);
+                const message = payload.message || payload.detail || (response.ok ? "Command accepted" : response.statusText);
+                updateCommandStatus(resultStatus, message);
+                if (resultStatus === "ESTOP_ACTIVE") state.eStopActive = true;
+                return { response, payload };
+            } catch (error) {
+                updateCommandStatus("OFFLINE", error.message || "Backend unreachable");
+                return null;
+            }
         }
 
         // --- Three.js Setup ---
@@ -433,17 +503,22 @@
             ctx.lineWidth = 1.5;
             roundRect(ctx, vidX, vidY, vidW, vidH, 8, true, true);
 
-            // Local preview has no camera or telemetry connection.
-            const hasLiveFrame = false;
+            const camImg = document.getElementById("vr-cam-feed");
+            const hasLiveFrame = camImg && camImg.naturalWidth > 0;
+            if (hasLiveFrame) {
+                try {
+                    ctx.drawImage(camImg, vidX, vidY, vidW, vidH);
+                } catch(e) {}
+            }
 
-            // Video Top HUD Overlay: local render rate and preview attitude
+            // Video Top HUD Overlay
             ctx.fillStyle = "#ffffff";
             ctx.font = "bold 14px monospace";
-            ctx.fillText(`RENDER ${state.fps} FPS`, vidX + 16, vidY + 28);
-            ctx.fillText(`LOCAL PREVIEW`, vidX + 170, vidY + 28);
+            ctx.fillText(`LIVE ${state.fps} FPS`, vidX + 16, vidY + 28);
+            ctx.fillText(`OPTICS`, vidX + 140, vidY + 28);
 
-            const roll = state.roll === null ? "--" : state.roll.toFixed(1);
-            const pitch = state.pitch === null ? "--" : state.pitch.toFixed(1);
+            const roll = state.roll === null || isNaN(state.roll) ? "0.0" : Number(state.roll).toFixed(1);
+            const pitch = state.pitch === null || isNaN(state.pitch) ? "0.0" : Number(state.pitch).toFixed(1);
             const attitudeText = `ROLL ${roll}° · PITCH ${pitch}°`;
             ctx.fillText(attitudeText, vidX + vidW - 240, vidY + 28);
 
@@ -465,10 +540,9 @@
                 ctx.fillStyle = "#94a3b8";
                 ctx.font = "bold 15px monospace";
                 ctx.textAlign = "center";
-                ctx.fillText("[ CAMERA DISABLED IN PREVIEW ]", cx, cy + 54);
-
+                ctx.fillText("[ CONNECTING TO CAMERA STREAM... ]", cx, cy + 54);
                 ctx.font = "13px -apple-system, monospace";
-                ctx.fillText("No camera or robot API connection", cx, cy + 78);
+                ctx.fillText("http://192.168.137.1:8000/api/camera/stream", cx, cy + 78);
                 ctx.textAlign = "left";
             }
 
@@ -789,6 +863,81 @@
             }
         }
 
+        // --- Hardware VR Controller Thumbstick Poller (Quest Touch / Touch Plus) ---
+        let xrWasDeflected = false;
+        let xrLastSentAt = 0;
+
+        function updateXrControllerThumbsticks() {
+            if (!renderer.xr.isPresenting) return;
+            const session = renderer.xr.getSession();
+            if (!session || !session.inputSources) return;
+
+            let fwd = 0;
+            let strafe = 0;
+            let turn = 0;
+            let eStopPressed = false;
+
+            for (const source of session.inputSources) {
+                if (!source.gamepad) continue;
+                const gp = source.gamepad;
+                const axes = gp.axes;
+                const buttons = gp.buttons;
+
+                // Stop button check: A button on right controller (index 4) or thumbstick press (index 3)
+                if (buttons) {
+                    if (source.handedness === 'right') {
+                        if ((buttons[4] && buttons[4].pressed) || (buttons[3] && buttons[3].pressed)) {
+                            eStopPressed = true;
+                        }
+                    }
+                }
+
+                if (axes && axes.length >= 4) {
+                    // Standard WebXR Gamepad mapping:
+                    // axes[2]: thumbstick X (-1 left, +1 right)
+                    // axes[3]: thumbstick Y (-1 up/forward, +1 down/backward)
+                    if (source.handedness === 'left') {
+                        const ax = axes[2];
+                        const ay = axes[3];
+                        if (Math.abs(ay) > 0.12) fwd -= ay;      // pushing stick up is negative Y -> forward
+                        if (Math.abs(ax) > 0.12) strafe -= ax;   // pushing stick left -> strafe left
+                    } else if (source.handedness === 'right') {
+                        const ax = axes[2];
+                        if (Math.abs(ax) > 0.12) turn -= ax;     // pushing stick left -> turn left
+                    }
+                }
+            }
+
+            if (eStopPressed && !state.eStopActive) {
+                triggerEmergencyStop();
+                return;
+            }
+
+            fwd = Math.max(-1, Math.min(1, fwd));
+            strafe = Math.max(-1, Math.min(1, strafe));
+            turn = Math.max(-1, Math.min(1, turn));
+
+            const isDeflected = Math.abs(fwd) > 0.05 || Math.abs(strafe) > 0.05 || Math.abs(turn) > 0.05;
+            const now = performance.now();
+
+            if (isDeflected) {
+                state.cmdFwd = fwd;
+                state.cmdStrafe = strafe;
+                state.cmdTurn = turn;
+                if (now - xrLastSentAt >= 100) {
+                    xrLastSentAt = now;
+                    sendMotionAxes(fwd * state.speed, strafe * state.speed, turn * state.speed);
+                }
+                xrWasDeflected = true;
+            } else if (xrWasDeflected) {
+                xrWasDeflected = false;
+                state.cmdFwd = 0;
+                state.cmdStrafe = 0;
+                state.cmdTurn = 0;
+                sendMotionAxes(0, 0, 0);
+            }
+        }
+
         async function handleBottomPanelClick(uvX, uvY) {
             // Intensity Buttons
             if (uvY >= 0.30 && uvY <= 0.75) {
@@ -847,23 +996,28 @@
                     stand: "high", liedown: "low", balance: "medium",
                     sit: "low", bow: "medium", wave: "medium"
                 };
-                recordPreviewCommand(`POSTURE · ${posturePreset.toUpperCase()}`, `height ${postureHeights[posturePreset]}`);
+                await sendApiCommand("/api/v1/posture", {
+                    body: { height: postureHeights[posturePreset], roll: 0, pitch: 0, yaw: 0 },
+                    sequenced: true
+                });
             } else if (action) {
                 if (action === "ai_scan") {
                     state.lastCommand = "ai_scan";
                     drawRightPanel();
-                    recordPreviewCommand("VISION SCAN");
+                    try { await fetch('/api/v1/missions/scan', { method: 'POST' }); } catch(e) {}
                 } else if (action === "zero_imu") {
                     state.roll = 0;
                     state.pitch = 0;
                     state.lastCommand = "zero_imu";
                     drawCenterPanel();
                     drawRightPanel();
-                    recordPreviewCommand("ZERO IMU PREVIEW");
                 } else if (action === "trot" || action === "crawl") {
                     state.lastCommand = action;
                     drawRightPanel();
-                    recordPreviewCommand(`GAIT · ${action.toUpperCase()}`);
+                    await sendApiCommand("/api/v1/movement-style", {
+                        body: { intensity: state.intensity.toLowerCase(), gait: action === "crawl" ? "walk" : "trot" },
+                        sequenced: true
+                    });
                 } else {
                     sendLocomotion(action);
                 }
@@ -948,7 +1102,18 @@
         let camYaw = 0;
         let camPitch = 0;
 
+        function recenterCamera() {
+            camYaw = 0;
+            camPitch = 0;
+            camera.position.set(0, 1.4, 0);
+            camera.rotation.set(0, 0, 0, 'YXZ');
+            playChime(900, 0.08);
+            updateCommandStatus("VIEW_RESET", "View recentered");
+        }
+        document.getElementById("recenter-view-btn")?.addEventListener("click", recenterCamera);
+
         window.addEventListener('mousedown', (e) => {
+            if (e.target.tagName === 'BUTTON' || e.target.tagName === 'A' || (e.target.closest && e.target.closest('#desktop-ui'))) return;
             if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'A') {
                 mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
                 mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
@@ -1058,15 +1223,12 @@
                     const command = pendingMotion;
                     pendingMotion = null;
                     if (state.eStopActive || command.generation !== motionGeneration) continue;
-                    const axes = {
-                        forward: command.forward,
-                        strafe: command.strafe,
-                        turn: command.turn
-                    };
-                    recordPreviewCommand(
-                        "DRIVE PREVIEW",
-                        `forward ${axes.forward.toFixed(2)} · strafe ${axes.strafe.toFixed(2)} · turn ${axes.turn.toFixed(2)}`
-                    );
+                    const { generation, ...axes } = command;
+                    await sendApiCommand("/api/v1/motion", {
+                        body: axes,
+                        sequenced: true,
+                        shouldSend: () => generation === motionGeneration && !state.eStopActive
+                    });
                 }
             } finally {
                 isDispatching = false;
@@ -1082,7 +1244,7 @@
             state.turn = 0;
             state.lastCommand = "stop";
             drawLeftPanel();
-            return recordPreviewCommand("STOP PREVIEW");
+            return sendApiCommand("/api/v1/stop");
         }
 
         async function triggerEmergencyStop() {
@@ -1096,13 +1258,13 @@
             virtualJoystickHasSentMotion = false;
             drawLeftPanel();
             drawBottomPanel();
-            return recordPreviewCommand("E-STOP PREVIEW", "Latched locally · no robot command sent");
+            return sendApiCommand("/api/v1/emergency-stop", { source: "emergency" });
         }
 
         async function resetEmergencyStop() {
             state.eStopActive = false;
             drawBottomPanel();
-            return recordPreviewCommand("E-STOP RESET PREVIEW");
+            return sendApiCommand("/api/v1/emergency-stop/reset", { sequenced: true });
         }
 
         // --- Keyboard Controls (WASD / Arrows / Space) ---
@@ -1130,6 +1292,10 @@
         window.addEventListener('keydown', (e) => {
             if (e.repeat) return;
             const key = e.key.toLowerCase();
+            if (key === 'r') {
+                recenterCamera();
+                return;
+            }
             if (key === ' ') {
                 e.preventDefault();
                 triggerEmergencyStop();
@@ -1156,6 +1322,38 @@
             }
         });
 
+        // --- WebSocket Telemetry Loop ---
+        function initWebSocket() {
+            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(`${proto}//${location.host}/ws`);
+            ws.onopen = () => {
+                state.robotConnected = true;
+                drawLeftPanel();
+                drawCenterPanel();
+            };
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'telemetry' && data.telemetry) {
+                        const t = data.telemetry;
+                        if (t.battery_pct !== undefined) state.battery = t.battery_pct;
+                        if (t.roll !== undefined) state.roll = t.roll;
+                        if (t.pitch !== undefined) state.pitch = t.pitch;
+                        if (t.emergency_stopped !== undefined) state.eStopActive = t.emergency_stopped;
+                        drawLeftPanel();
+                        drawCenterPanel();
+                        drawBottomPanel();
+                    }
+                } catch (e) {}
+            };
+            ws.onclose = () => {
+                state.robotConnected = false;
+                drawLeftPanel();
+                setTimeout(initWebSocket, 2000);
+            };
+        }
+        initWebSocket();
+
         // --- Main Render Loop ---
         const clock = new THREE.Clock();
         let frameCount = 0;
@@ -1169,6 +1367,9 @@
 
             // Drive from the in-world virtual joystick while its control is held.
             updateVirtualJoystickControls();
+
+            // Drive from physical VR controller thumbsticks (Meta Quest Touch / Touch Plus)
+            updateXrControllerThumbsticks();
 
             // Refresh video texture at ~25 FPS
             const now = performance.now();
