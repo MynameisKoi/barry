@@ -22,9 +22,7 @@ def _shared_gateway() -> CommandGateway:
 
 
 class CommandGatewayAdapter:
-    def __init__(self, gateway: CommandGateway | Callable[[], CommandGateway], *,
-                 remote_conflict: bool | Callable[[], bool] | None = None,
-                 source: str = "llm") -> None:
+    def __init__(self, gateway: CommandGateway | Callable[[], CommandGateway], *, source: str = "llm") -> None:
         self._gateway_source = gateway
         self.source = source
         self._preempt_callbacks: list[Callable[[str], Any]] = []
@@ -75,9 +73,8 @@ class CommandGatewayAdapter:
 class VoiceGatewayAdapter(CommandGatewayAdapter):
     """Voice entry points use the same CommandGateway with source=voice."""
 
-    def __init__(self, gateway: CommandGateway | Callable[[], CommandGateway], *,
-                 remote_conflict: bool | Callable[[], bool] | None = None) -> None:
-        super().__init__(gateway, remote_conflict=remote_conflict, source="voice")
+    def __init__(self, gateway: CommandGateway | Callable[[], CommandGateway]) -> None:
+        super().__init__(gateway, source="voice")
 
     async def motion(self, command: MotionCommand) -> dict[str, Any]:
         return self._dict(await self.gateway.motion(command, source="voice"))

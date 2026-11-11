@@ -24,12 +24,12 @@ KEY = "quest-key"
 AUTH = {"X-Robot-Key": KEY}
 
 
-def setup_app(sim, *, brain=None, transcriber=None, mission=True, remote=False, max_bounded_s=0.1):
+def setup_app(sim, *, brain=None, transcriber=None, mission=True, max_bounded_s=0.1):
     gateway = CommandGateway(sim, mission_check=lambda: mission, max_bounded_s=max_bounded_s)
-    adapter = CommandGatewayAdapter(gateway, remote_conflict=remote)
+    adapter = CommandGatewayAdapter(gateway)
     llm_router = create_llm_router(QuestRelayAuth(KEY), brain or MockBrain(), adapter,
                                    LoopLimits(max_steps=12, max_turns=8, timeout_s=4))
-    voice_adapter = VoiceGatewayAdapter(gateway, remote_conflict=remote)
+    voice_adapter = VoiceGatewayAdapter(gateway)
     app = FastAPI()
     app.include_router(llm_router)
     if transcriber:
@@ -185,7 +185,7 @@ async def test_stop_and_estop_cancel_whole_llm_task(simulator, interrupt):
 
 @pytest.mark.asyncio
 async def test_remote_mode_adapter_uses_gateway_without_relay_conflict(simulator):
-    app, _, _, runner = setup_app(simulator, remote=True)
+    app, _, _, runner = setup_app(simulator)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         await client.post("/api/v1/llm/plan", json={"goal": "forward 1 second"}, headers=AUTH)
         await runner.wait()
@@ -194,8 +194,8 @@ async def test_remote_mode_adapter_uses_gateway_without_relay_conflict(simulator
 
 
 @pytest.mark.asyncio
-async def test_remote_conflict_never_blocks_voice_stop_or_estop(simulator):
-    adapter = VoiceGatewayAdapter(CommandGateway(simulator, mission_check=lambda: True), remote_conflict=True)
+async def test_voice_stop_or_estop_reaches_gateway(simulator):
+    adapter = VoiceGatewayAdapter(CommandGateway(simulator, mission_check=lambda: True))
     simulator.move_analog(MotionCommand(forward=0.4))
     stopped = await adapter.stop(source="voice")
     assert stopped["status"] == "STOP_DISPATCHED"

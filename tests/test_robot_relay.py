@@ -72,6 +72,24 @@ def test_stale_quest_sequence_is_rejected_without_pi_call():
     assert paths.count(protocol.PATH_MOTION) == 1
 
 
+def test_quest_session_delete_stops_motion_and_invalidates_the_session(monkeypatch):
+    monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION", "false")
+    paths = []
+    def pi(request):
+        paths.append(request.url.path)
+        if request.url.path == protocol.PATH_SESSION:
+            return httpx.Response(201, json={"session_id": "pi-session"})
+        return httpx.Response(200, json={"status": "accepted", "command": "motion"})
+    client, _, _, _ = client_for(pi)
+    headers = quest_headers(client)
+    assert client.post(protocol.PATH_MOTION, json={"forward": .2}, headers=headers).status_code == 200
+    delete_headers = dict(headers); delete_headers[protocol.SEQ_HEADER] = "1"
+    assert client.delete(protocol.PATH_SESSION, headers=delete_headers).status_code == 200
+    stale = dict(headers); stale[protocol.SEQ_HEADER] = "2"
+    assert client.post(protocol.PATH_MOTION, json={"forward": .2}, headers=stale).status_code == 409
+    assert paths.count(protocol.PATH_STOP) >= 1
+
+
 def test_motion_requires_mission_then_succeeds_after_start():
     active = False
     def pi(request):
@@ -178,3 +196,67 @@ def test_remote_priority_lane_uses_configured_short_timeout(monkeypatch, overrid
                                           remote_timeout_s=2.5), transport=httpx.MockTransport(pi))
     robot.stop()
     assert seen == [expected]
+
+
+@pytest.mark.asyncio
+async def test_llm_bounded_move_uses_gateway_remote_lease_and_source_metadata():
+    seen = []
+    def pi(request):
+        seen.append(request)
+        if request.url.path == protocol.PATH_SESSION:
+            return httpx.Response(201, json={"session_id": "one-gateway-session"})
+        if request.url.path == protocol.PATH_STOP:
+            return httpx.Response(200, json={"status": "stop_dispatched", "command": "stop"})
+        return httpx.Response(200, json={"status": "accepted", "command": "motion"})
+    robot = RemoteRobotClient(RobotConfig(mode=RobotMode.REMOTE, remote_url="http://pi.test", api_key="pi-key"),
+                              transport=httpx.MockTransport(pi))
+    from backend.gateway.gateway import CommandGateway
+    gateway = CommandGateway(robot, mission_check=lambda: True, max_bounded_s=.1)
+    result = await gateway.run_bounded("forward", .05, .3, source="llm")
+    move = next(request for request in seen if request.url.path == protocol.PATH_MOTION)
+    assert result.status == "STOP_DISPATCHED"
+    assert move.headers[protocol.SOURCE_HEADER] == "llm"
+    assert move.headers[protocol.COMMAND_ID_HEADER]
+    assert move.headers[protocol.SESSION_HEADER] == "one-gateway-session"
+
+
+@pytest.mark.asyncio
+async def test_hand_hold_blocks_llm_until_window_expires():
+    def pi(request):
+        return httpx.Response(201 if request.url.path == protocol.PATH_SESSION else 200,
+                              json={"session_id": "pi-session", "status": "accepted", "command": "motion"})
+    client, gateway, _, _ = client_for(pi)
+    headers = quest_headers(client)
+    response = client.post(protocol.PATH_MOTION, json={"forward": .2}, headers=headers)
+    assert response.status_code == 200
+    blocked = await gateway.run_bounded("forward", .01, .2, source="llm")
+    assert blocked.status == "BUSY"
+    gateway.hand_hold_s = .01
+    await asyncio.sleep(.02)
+    expired = await gateway.run_bounded("forward", .01, .2, source="llm")
+    assert expired.status in {"ACCEPTED", "STOP_DISPATCHED"}
+
+
+def test_priority_stop_reaches_pi_while_gateway_motion_is_blocked(monkeypatch):
+    monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION", "false")
+    motion_started, release_motion, stop_seen = threading.Event(), threading.Event(), threading.Event()
+    def pi(request):
+        if request.url.path == protocol.PATH_SESSION:
+            return httpx.Response(201, json={"session_id": "pi-session"})
+        if request.url.path == protocol.PATH_MOTION:
+            motion_started.set(); release_motion.wait(2)
+            return httpx.Response(200, json={"status": "accepted", "command": "motion"})
+        if request.url.path == protocol.PATH_STOP:
+            stop_seen.set()
+            return httpx.Response(200, json={"status": "stop_dispatched", "command": "stop"})
+        return httpx.Response(200, json={"status": "accepted", "command": "unknown"})
+    client, _, _, _ = client_for(pi)
+    headers = quest_headers(client)
+    worker = threading.Thread(target=lambda: client.post(protocol.PATH_MOTION,
+        json={"forward": .4}, headers=headers))
+    worker.start()
+    assert motion_started.wait(1)
+    response = client.post(protocol.PATH_STOP)
+    assert response.status_code == 200 and stop_seen.is_set()
+    release_motion.set(); worker.join(1)
+    assert not worker.is_alive()

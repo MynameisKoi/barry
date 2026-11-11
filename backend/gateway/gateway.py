@@ -92,7 +92,8 @@ class CommandGateway:
             self._last_hand_at = time.monotonic()
         try:
             result = await self._robot_call("stop", source=source, cid=cid)
-            return self._result(result, source, cid)
+            details = {"intensity": result.intensity.value} if getattr(result, "intensity", None) else None
+            return self._result(result, source, cid, details)
         except Exception:
             self.online = False
             return self._offline(source, cid)
@@ -388,6 +389,10 @@ class CommandGateway:
         await self._cancel_active()
         result = await self._robot_call("reset", source=source, cid=cid)
         return self._result(result, source, cid)
+
+    async def list_actions(self, *, source: str = "hand") -> list[Any]:
+        cid = self._id(source)
+        return await self._robot_call("list_actions", source=source, cid=cid)
 
     async def _run_owned(self, awaitable: Any, source: str, cid: str) -> GatewayResult:
         async with self._arbitration_lock:
