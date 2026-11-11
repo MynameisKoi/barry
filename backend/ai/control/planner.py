@@ -7,6 +7,7 @@ Claude API choices for ``claude-sonnet-5-5`` (see the PR description):
   moves, so deep reasoning buys little, and low effort skips thinking on simple goals.
 * Server-side refusal fallback is on (``fallbacks: "default"``); a refusal that survives it is
   returned as ``status="refused"`` and never executed.
+* max_tokens=8000 is only a ceiling (thinking tokens count against it); it does not add latency.
 * One call, no tool-result loop: the tool calls ARE the plan. Parallel tool use keeps their order.
 """
 
@@ -84,7 +85,7 @@ class AnthropicPlanner:
         try:
             response = await client.beta.messages.create(
                 model=self._model,
-                max_tokens=2048,
+                max_tokens=8000,
                 system=SYSTEM_PROMPT,
                 tools=TOOL_DEFS,
                 tool_choice={"type": "auto"},

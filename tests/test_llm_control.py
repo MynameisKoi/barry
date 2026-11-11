@@ -156,6 +156,7 @@ async def test_anthropic_tool_use_blocks_become_validated_plan():
     assert call["tool_choice"] == {"type": "auto"}          # forced tool_choice 400s on this model
     assert call["fallbacks"] == "default" and "server-side-fallback-2026-07-01" in call["betas"]
     assert call["output_config"] == {"effort": "low"}
+    assert call["max_tokens"] == 8000                        # room for adaptive-thinking tokens
     assert "thinking" not in call                            # disabled thinking 400s on this model
     assert call["tools"] is not None and all(t["strict"] for t in call["tools"])
     assert "idle" in call["messages"][0]["content"] and "forward then turn" in call["messages"][0]["content"]
