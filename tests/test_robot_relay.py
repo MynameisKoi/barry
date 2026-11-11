@@ -102,7 +102,7 @@ def make_client(handler, *, stop_handler=None, quest_key=QUEST_KEY):
     return GatewayTestClient(app, headers={protocol.AUTH_HEADER: QUEST_KEY}), robot, events
 
 
-def test_status_and_body_keep_the_quest_command_result_contract():
+def test_status_and_body_are_passed_through_unchanged():
     pi_body = b'{"status":"accepted","command":"motion","message":"ok"}'
 
     def pi(request: httpx.Request) -> httpx.Response:
@@ -130,7 +130,7 @@ def test_status_and_body_keep_the_quest_command_result_contract():
     assert "motion started" in events[0]["description"]
 
 
-def test_laptop_key_and_gateway_session_metadata_reach_the_pi():
+def test_laptop_key_is_injected_and_session_sequence_headers_are_unchanged():
     seen: Dict[str, str] = {}
 
     def pi(request: httpx.Request) -> httpx.Response:
