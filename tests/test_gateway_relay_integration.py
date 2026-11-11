@@ -12,13 +12,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
-from backend.gateway.gateway import CommandGateway
+from backend.gateway.gateway import CommandGateway, GatewayResult
 from backend.robot import protocol
 from backend.robot.config import RobotConfig
 from backend.robot.interface import MotionCommand, RobotMode
 from backend.robot.relay import RobotApiRelay
 from backend.robot.remote import RemoteRobotClient
 from backend.robot.relay_router import QuestRelayAuth, create_robot_relay_router
+from backend.robot.simulator import RobotSimulator
 
 KEY = "quest-key"
 
@@ -260,3 +261,48 @@ def test_priority_stop_reaches_pi_while_gateway_motion_is_blocked(monkeypatch):
     assert response.status_code == 200 and stop_seen.is_set()
     release_motion.set(); worker.join(1)
     assert not worker.is_alive()
+
+
+@pytest.mark.parametrize(("code", "http_status"), [
+    ("MISSION_REQUIRED", 403), ("BUSY", 409), ("CANCELLED", 409),
+    ("ESTOP_ACTIVE", 409), ("OFFLINE", 503), ("INVALID", 422),
+    ("REJECTED", 422), ("FAILED", 422),
+])
+def test_gateway_refusal_detail_includes_machine_readable_status(code, http_status):
+    gateway = CommandGateway(RobotSimulator(), mission_check=lambda: True)
+    message = "A representative refusal message."
+    async def refusal(_command, *, source):
+        return GatewayResult(code, message, gateway._id(source), source)
+    gateway.motion = refusal
+    app = FastAPI()
+    app.include_router(create_robot_relay_router(lambda: gateway, lambda **kw: None, QuestRelayAuth(KEY)))
+    client = TestClient(app)
+    headers = quest_headers(client)
+    response = client.post(protocol.PATH_MOTION,
+        json={"forward": .2, "strafe": 0, "turn": 0}, headers=headers)
+    assert response.status_code == http_status
+    body = response.json()
+    assert body["detail"].startswith(f"{code}: ")
+    assert body["message"] == message
+    expected_status = code.lower() if code in {"FAILED", "REJECTED"} else "rejected"
+    assert body["status"] == expected_status
+    assert body["command"] == "motion"
+    assert body["command_id"]
+    assert body["source"] == "hand"
+
+
+def test_quest_command_id_is_preserved_to_pi(monkeypatch):
+    monkeypatch.setenv("ROBOT_CONTINUOUS_MOTION", "false")
+    seen = []
+    def pi(request):
+        seen.append(request)
+        if request.url.path == protocol.PATH_SESSION:
+            return httpx.Response(201, json={"session_id": "pi-session"})
+        return httpx.Response(200, json={"status": "accepted", "command": "motion"})
+    client, _, _, _ = client_for(pi)
+    headers = quest_headers(client)
+    headers[protocol.COMMAND_ID_HEADER] = "quest-trace-123"
+    response = client.post(protocol.PATH_MOTION, json={"forward": .2}, headers=headers)
+    assert response.status_code == 200
+    motion = next(item for item in seen if item.url.path == protocol.PATH_MOTION)
+    assert motion.headers[protocol.COMMAND_ID_HEADER] == "quest-trace-123"

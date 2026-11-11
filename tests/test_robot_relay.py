@@ -156,7 +156,7 @@ def test_laptop_key_is_injected_and_session_sequence_headers_are_unchanged():
     assert int(seen[protocol.SEQ_HEADER.lower()]) > 0
     assert protocol.SENT_AT_HEADER.lower() in seen
     assert seen[protocol.SOURCE_HEADER.lower()] == "hand"
-    assert seen[protocol.COMMAND_ID_HEADER.lower()] != "cmd-42"
+    assert seen[protocol.COMMAND_ID_HEADER.lower()] == "cmd-42"
 
 
 def test_discrete_motion_uses_short_motion_timeout():

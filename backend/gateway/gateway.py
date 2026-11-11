@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import math
 import os
 import time
@@ -53,6 +54,9 @@ class CommandGateway:
             self._emergency_stopped = False
         self._preempt_callbacks: list[Callable[[str], Any]] = []
         self.online = True
+        self._command_id_override: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+            f"gateway_command_id_{id(self)}", default=None
+        )
         # backend.gateway.detections.LiveDetections (or None = no detector wired).
         self.live_detections = live_detections
 
@@ -394,6 +398,16 @@ class CommandGateway:
         cid = self._id(source)
         return await self._robot_call("list_actions", source=source, cid=cid)
 
+    async def with_command_id(self, command_id: str | None, operation: Callable[[], Any]) -> Any:
+        """Run a command using a sanitized caller ID, while retaining generated IDs otherwise."""
+        if not command_id:
+            return await operation()
+        token = self._command_id_override.set(command_id)
+        try:
+            return await operation()
+        finally:
+            self._command_id_override.reset(token)
+
     async def _run_owned(self, awaitable: Any, source: str, cid: str) -> GatewayResult:
         async with self._arbitration_lock:
             current = self._active_task
@@ -442,7 +456,7 @@ class CommandGateway:
 
     def _id(self, source: str) -> str:
         self._validate_source(source)
-        return str(uuid.uuid4())
+        return self._command_id_override.get() or str(uuid.uuid4())
 
     @staticmethod
     def _validate_source(source: str) -> None:

@@ -83,10 +83,19 @@ def create_robot_relay_router(
             http_status = status_override or (result.details.get("http_status") if result.details and result.details.get("http_status") else None) or (200 if result.status in {"ACCEPTED", "STOP_DISPATCHED"} else
                 409 if result.status in {"BUSY", "CANCELLED", "ESTOP_ACTIVE"} else
                 503 if result.status == "OFFLINE" else 403 if result.status == "MISSION_REQUIRED" else 422)
+            if http_status >= 400:
+                body["detail"] = f"{result.status}: {result.message}"
         else:
             body = result.to_dict()
             http_status = status_override or (200 if result.ok else 422)
+            if http_status >= 400:
+                body["detail"] = f"{result.status.value.upper()}: {result.message}"
         return JSONResponse(body, status_code=http_status)
+
+    async def gateway_call(request: Request, method: str, *args: Any, **kwargs: Any) -> Any:
+        gateway = get_gateway()
+        command_id = protocol.sanitize_command_id(request.headers.get(protocol.COMMAND_ID_HEADER))
+        return await gateway.with_command_id(command_id, lambda: getattr(gateway, method)(*args, **kwargs))
 
     async def cancel_repeat() -> None:
         """Cancel and join the continuous hand-repeat task before stop-class commands."""
@@ -98,7 +107,7 @@ def create_robot_relay_router(
             except asyncio.CancelledError:
                 pass
 
-    async def repeat_loop(repeat_call: Callable[[], Any]) -> None:
+    async def repeat_loop(repeat_call: Callable[[], Any], stop_call: Callable[[], Any]) -> None:
         """Repeat hand motion through the gateway and stop if the repeat fails or expires."""
         nonlocal motion_active
         me = asyncio.current_task()
@@ -122,7 +131,7 @@ def create_robot_relay_router(
             if should_stop and motion_active and repeat_task is me:
                 motion_active = False
                 try:
-                    await get_gateway().stop(source="hand")
+                    await stop_call()
                 except Exception:
                     logger.warning("Continuous-motion stop could not be delivered through the gateway.")
 
@@ -167,7 +176,7 @@ def create_robot_relay_router(
         if isinstance(invalid, Response): return invalid
         await cancel_repeat()
         motion_active = False
-        result = await get_gateway().stop(source="hand")
+        result = await gateway_call(request, "stop", source="hand")
         session_id = None
         session_expires_at = 0.0
         return result_response(result)
@@ -184,22 +193,22 @@ def create_robot_relay_router(
                 if not direction:
                     raise ValueError("direction is required")
                 await cancel_repeat()
-                result = await get_gateway().move_discrete(direction, intensity, source="hand")
+                result = await gateway_call(request, "move_discrete", direction, intensity, source="hand")
                 moving = True
-                repeat_call = lambda: get_gateway().move_discrete(direction, intensity, source="hand")
+                repeat_call = lambda: gateway_call(request, "move_discrete", direction, intensity, source="hand")
             else:
                 command = MotionCommand(data.get("forward", 0), data.get("strafe", 0), data.get("turn", 0))
                 moving = not command.is_zero
                 if moving:
                     await cancel_repeat()
-                result = await get_gateway().motion(command, source="hand")
-                repeat_call = lambda: get_gateway().motion(command, source="hand")
+                result = await gateway_call(request, "motion", command, source="hand")
+                repeat_call = lambda: gateway_call(request, "motion", command, source="hand")
         except (ValueError, TypeError, AttributeError) as exc:
             return JSONResponse({"status": "rejected", "command": "motion", "message": str(exc)}, status_code=422)
         response = result_response(result, command="motion/discrete" if discrete else "motion")
         if not response.status_code // 100 == 2:
             if motion_active:
-                await get_gateway().stop(source="hand")
+                await gateway_call(request, "stop", source="hand")
                 motion_active = False
             audit(f"Quest motion failed; HTTP {response.status_code}.", request, response, started)
         elif moving and not motion_active:
@@ -211,7 +220,8 @@ def create_robot_relay_router(
         if moving and response.status_code // 100 == 2:
             last_motion_time = time.monotonic()
             if os.environ.get("ROBOT_CONTINUOUS_MOTION", "true").lower() in ("1", "true", "yes"):
-                repeat_task = asyncio.create_task(repeat_loop(repeat_call))
+                stop_call = lambda: gateway_call(request, "stop", source="hand")
+                repeat_task = asyncio.create_task(repeat_loop(repeat_call, stop_call))
         elif not moving:
             await cancel_repeat()
         return response
@@ -227,7 +237,7 @@ def create_robot_relay_router(
         nonlocal motion_active
         await cancel_repeat()
         motion_active = False
-        started = time.perf_counter(); result = await get_gateway().stop(source="hand")
+        started = time.perf_counter(); result = await gateway_call(request, "stop", source="hand")
         response = result_response(result, command="stop"); audit(f"Quest stop; HTTP {response.status_code}.", request, response, started); return response
 
     @router.post("/emergency-stop")
@@ -235,7 +245,7 @@ def create_robot_relay_router(
         nonlocal motion_active
         await cancel_repeat()
         motion_active = False
-        started = time.perf_counter(); result = await get_gateway().emergency_stop(source="emergency")
+        started = time.perf_counter(); result = await gateway_call(request, "emergency_stop", source="emergency")
         response = result_response(result, command="emergency_stop"); audit(f"Quest emergency_stop; HTTP {response.status_code}.", request, response, started); return response
 
     @router.post("/emergency-stop/reset")
@@ -246,7 +256,7 @@ def create_robot_relay_router(
         if isinstance(invalid, Response): return invalid
         await cancel_repeat()
         motion_active = False
-        response = result_response(await get_gateway().reset_emergency_stop(source="hand"), command="emergency_stop_reset")
+        response = result_response(await gateway_call(request, "reset_emergency_stop", source="hand"), command="emergency_stop_reset")
         audit(f"Relayed emergency_stop_reset; HTTP {response.status_code}.", request, response, started)
         return response
 
@@ -254,7 +264,7 @@ def create_robot_relay_router(
     async def posture(request: Request):
         invalid = await checked(request)
         if isinstance(invalid, Response): return invalid
-        return result_response(await get_gateway().set_posture(await request.json(), source="hand"), command="posture")
+        return result_response(await gateway_call(request, "set_posture", await request.json(), source="hand"), command="posture")
 
     @router.post("/reset")
     async def reset(request: Request):
@@ -264,7 +274,7 @@ def create_robot_relay_router(
         if isinstance(invalid, Response): return invalid
         await cancel_repeat()
         motion_active = False
-        response = result_response(await get_gateway().reset(source="hand"), command="reset")
+        response = result_response(await gateway_call(request, "reset", source="hand"), command="reset")
         audit(f"Relayed reset; HTTP {response.status_code}.", request, response, started)
         return response
 
@@ -273,7 +283,7 @@ def create_robot_relay_router(
         invalid = await checked(request)
         if isinstance(invalid, Response): return invalid
         data = await request.json()
-        return result_response(await get_gateway().set_style(data.get("intensity"), data.get("gait"), source="hand"), command="movement_style")
+        return result_response(await gateway_call(request, "set_style", data.get("intensity"), data.get("gait"), source="hand"), command="movement_style")
 
     @router.get("/actions")
     async def actions(request: Request):
@@ -285,7 +295,7 @@ def create_robot_relay_router(
         started = time.perf_counter()
         invalid = await checked(request)
         if isinstance(invalid, Response): return invalid
-        response = result_response(await get_gateway().run_action(action_id, source="hand"), command=f"action:{action_id}")
+        response = result_response(await gateway_call(request, "run_action", action_id, source="hand"), command=f"action:{action_id}")
         audit(f"Relayed action:{action_id}; HTTP {response.status_code}.", request, response, started)
         return response
 
