@@ -107,3 +107,4 @@ After editing `/etc/barry/robot.env`, run `sudo systemctl restart barry-robot`.
 - `Permission denied` on the serial port: `barry-robot` is not in `dialout`, or the vendor service still holds the port.
 - Service restarts in a loop: check `journalctl -u barry-robot`. An unknown `ROBOT_MODE` or a non-numeric value in the env file stops startup.
 - Laptop gets `401`: the `ROBOT_API_KEY` on the Pi and the laptop differ.
+- `/healthz` errors and journalctl shows `ROBOT_API_KEY is required`: set the key in `/etc/barry/robot.env` and restart (`sudo systemctl restart barry-robot`).
