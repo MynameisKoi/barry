@@ -111,6 +111,7 @@ def create_robot_relay_router(
         nonlocal motion_active
         me = asyncio.current_task()
         window = continuous_window_s()
+        seq = int(headers.get(protocol.SEQ_HEADER, 0)) if headers.get(protocol.SEQ_HEADER) else 0
         try:
             while motion_active:
                 remaining = window - (time.monotonic() - last_motion_time)
@@ -121,11 +122,17 @@ def create_robot_relay_router(
                     break
                 if time.monotonic() - last_motion_time >= window:
                     break
+                seq += 1
+                loop_headers = dict(headers)
+                if protocol.SEQ_HEADER in headers:
+                    loop_headers[protocol.SEQ_HEADER] = str(seq)
+                if protocol.SENT_AT_HEADER in headers:
+                    loop_headers[protocol.SENT_AT_HEADER] = str(int(time.time() * 1000))
                 response = await get_relay()._client.request(
                     "POST",
                     protocol.PATH_MOTION,
                     content=body_bytes,
-                    headers=headers,
+                    headers=loop_headers,
                     timeout=1.5,
                 )
                 if not 200 <= response.status_code < 300:

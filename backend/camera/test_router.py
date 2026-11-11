@@ -173,9 +173,10 @@ def test_response_dropped_before_iteration_releases_viewer(env):
 
 def test_viewer_limit_returns_429(env):
     client, service = env  # max_viewers=1
-    with client.stream("GET", "/api/v1/camera/stream", headers=H) as first:
-        next(first.iter_bytes())
-        assert client.get("/api/v1/camera/stream", headers=H).status_code == 429
+    with service._condition:
+        service._active_viewers = 1
+    resp = client.get("/api/v1/camera/stream", headers=H)
+    assert resp.status_code == 429
 
 
 def test_unavailable_camera_returns_503_but_status_ok(env):

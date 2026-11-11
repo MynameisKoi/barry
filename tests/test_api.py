@@ -114,9 +114,12 @@ def test_websocket_ai_alert_broadcast():
             )
             assert resp.status_code == 200
 
-            msg1 = ws.receive_json()
-            msg2 = ws.receive_json()
-            received_types = {msg1["type"], msg2["type"]}
+            received_types = set()
+            for _ in range(5):
+                msg = ws.receive_json()
+                received_types.add(msg["type"])
+                if "inspection_event" in received_types and "ai_alert" in received_types:
+                    break
             assert "inspection_event" in received_types
             assert "ai_alert" in received_types
 

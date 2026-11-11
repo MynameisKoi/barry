@@ -819,17 +819,43 @@
             } catch (e) {}
         }
 
-        // --- Robot Command Dispatcher ---
+        // --- High-Performance Non-Blocking Robot Command Dispatcher ---
+        let teleopWs = null;
+        let isDispatching = false;
+        let pendingCommand = null;
+        let lastSentAction = 'stop';
+
         async function sendLocomotion(action, speed = state.speed) {
-            playChime(750, 0.05);
+            if (action === 'stop' && lastSentAction === 'stop' && !pendingCommand) return;
+            pendingCommand = { action, speed };
+            if (isDispatching) return;
+
+            isDispatching = true;
             try {
-                await fetch('/api/robot/command', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: action, speed: speed })
-                });
+                while (pendingCommand) {
+                    const cmd = pendingCommand;
+                    pendingCommand = null;
+                    lastSentAction = cmd.action;
+
+                    if (teleopWs && teleopWs.readyState === WebSocket.OPEN) {
+                        teleopWs.send(JSON.stringify({
+                            type: 'robot_command',
+                            action: cmd.action,
+                            speed: cmd.speed
+                        }));
+                        await new Promise(r => setTimeout(r, 60));
+                    } else {
+                        await fetch('/api/robot/command', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action: cmd.action, speed: cmd.speed })
+                        });
+                    }
+                }
             } catch (e) {
                 console.error("Locomotion dispatch failed", e);
+            } finally {
+                isDispatching = false;
             }
         }
 
@@ -839,11 +865,15 @@
             drawBottomPanel();
             try {
                 if (state.eStopActive) {
-                    await fetch('/api/robot/command', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ action: 'emergency_stop', speed: 0.0 })
-                    });
+                    if (teleopWs && teleopWs.readyState === WebSocket.OPEN) {
+                        teleopWs.send(JSON.stringify({ type: 'emergency_stop' }));
+                    } else {
+                        await fetch('/api/robot/command', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action: 'emergency_stop', speed: 0.0 })
+                        });
+                    }
                 } else {
                     await fetch('/api/robot/reset-emergency', { method: 'POST' });
                 }
@@ -853,25 +883,61 @@
         }
 
         // --- Keyboard Controls (WASD / Arrows / Space) ---
-        window.addEventListener('keydown', (e) => {
-            const key = e.key.toLowerCase();
-            if (key === 'w' || key === 'arrowup') { state.cmdFwd = 1.0; sendLocomotion('forward'); }
-            else if (key === 's' || key === 'arrowdown') { state.cmdFwd = -1.0; sendLocomotion('backward'); }
-            else if (key === 'a' || key === 'arrowleft') { state.cmdStrafe = -1.0; sendLocomotion('strafe_left'); }
-            else if (key === 'd' || key === 'arrowright') { state.cmdStrafe = 1.0; sendLocomotion('strafe_right'); }
-            else if (key === 'q') { state.cmdTurn = -1.0; sendLocomotion('turn_left'); }
-            else if (key === 'e') { state.cmdTurn = 1.0; sendLocomotion('turn_right'); }
-            else if (key === ' ') { triggerEmergencyStop(); }
+        const activeKeys = new Set();
+        let keyTeleopInterval = null;
+
+        function updateKeyMovement() {
+            let fwd = 0.0;
+            let strafe = 0.0;
+            let turn = 0.0;
+            let action = 'stop';
+
+            if (activeKeys.has('w') || activeKeys.has('arrowup')) { fwd += 1.0; action = 'forward'; }
+            if (activeKeys.has('s') || activeKeys.has('arrowdown')) { fwd -= 1.0; action = 'backward'; }
+            if (activeKeys.has('a')) { strafe -= 1.0; action = 'strafe_left'; }
+            if (activeKeys.has('d')) { strafe += 1.0; action = 'strafe_right'; }
+            if (activeKeys.has('arrowleft') || activeKeys.has('q')) { turn += 1.0; action = 'turn_left'; }
+            if (activeKeys.has('arrowright') || activeKeys.has('e')) { turn -= 1.0; action = 'turn_right'; }
+
+            state.cmdFwd = fwd;
+            state.cmdStrafe = strafe;
+            state.cmdTurn = turn;
             drawLeftPanel();
+
+            if (fwd !== 0 || strafe !== 0 || turn !== 0) {
+                playChime(750, 0.04);
+                sendLocomotion(action, state.speed);
+            } else {
+                sendLocomotion('stop', 0.0);
+            }
+        }
+
+        window.addEventListener('keydown', (e) => {
+            if (e.repeat) return;
+            const key = e.key.toLowerCase();
+            if (key === ' ') {
+                triggerEmergencyStop();
+                return;
+            }
+            if (['w', 's', 'a', 'd', 'q', 'e', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) {
+                activeKeys.add(key);
+                updateKeyMovement();
+                if (!keyTeleopInterval) {
+                    keyTeleopInterval = setInterval(updateKeyMovement, 120);
+                }
+            }
         });
 
         window.addEventListener('keyup', (e) => {
             const key = e.key.toLowerCase();
-            if (['w', 's', 'arrowup', 'arrowdown'].includes(key)) state.cmdFwd = 0.0;
-            if (['a', 'd', 'arrowleft', 'arrowright'].includes(key)) state.cmdStrafe = 0.0;
-            if (['q', 'e'].includes(key)) state.cmdTurn = 0.0;
-            if (![' '].includes(key)) sendLocomotion('stop');
-            drawLeftPanel();
+            if (activeKeys.has(key)) {
+                activeKeys.delete(key);
+                updateKeyMovement();
+                if (activeKeys.size === 0 && keyTeleopInterval) {
+                    clearInterval(keyTeleopInterval);
+                    keyTeleopInterval = null;
+                }
+            }
         });
 
         // --- WebSocket Telemetry Loop ---
@@ -880,6 +946,7 @@
             const ws = new WebSocket(`${proto}//${location.host}/ws`);
             ws.onopen = () => {
                 state.connected = true;
+                teleopWs = ws;
                 drawLeftPanel();
                 drawCenterPanel();
             };

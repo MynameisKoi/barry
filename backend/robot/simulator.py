@@ -92,7 +92,12 @@ from backend.robot.interface import (
 _DRAIN_PER_STEP = 0.1
 _DRAIN_PER_TURN = 0.08
 
-_MOVE_ACTIONS = {"forward", "backward", "left", "right"}
+_MOVE_ACTIONS = {
+    "forward", "backward", "back",
+    "left", "right",
+    "turn_left", "turn_right",
+    "strafe_left", "strafe_right",
+}
 
 #: Firmware string reported by the simulated ``read_version()``.
 _SIM_FIRMWARE = "simulator-1.0"
@@ -571,15 +576,22 @@ class RobotSimulator(RobotInterface):
                 self.moving = False
                 return self._result(False, "Movement blocked: Battery depleted.")
 
-            if action_clean in ("forward", "backward"):
+            if action_clean in ("forward", "backward", "back"):
                 direction = 1.0 if action_clean == "forward" else -1.0
                 distance = direction * clamped_speed * self.step_m
                 rad = math.radians(self.heading)
                 self.x = round(self.x + distance * math.cos(rad), 3)
                 self.y = round(self.y + distance * math.sin(rad), 3)
                 self._drain_battery(_DRAIN_PER_STEP)
+            elif action_clean in ("strafe_left", "strafe_right"):
+                direction = -1.0 if action_clean == "strafe_left" else 1.0
+                distance = direction * clamped_speed * self.step_m
+                rad = math.radians(self.heading + 90.0)
+                self.x = round(self.x + distance * math.cos(rad), 3)
+                self.y = round(self.y + distance * math.sin(rad), 3)
+                self._drain_battery(_DRAIN_PER_STEP)
             else:
-                direction = 1.0 if action_clean == "left" else -1.0
+                direction = 1.0 if action_clean in ("left", "turn_left") else -1.0
                 self.heading = round((self.heading + direction * self.turn_deg) % 360.0, 1)
                 self._drain_battery(_DRAIN_PER_TURN)
 

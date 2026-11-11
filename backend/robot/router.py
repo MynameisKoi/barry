@@ -8,6 +8,7 @@ dependency on ``backend.main``.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Awaitable, Callable, Dict
 
 from fastapi import APIRouter, HTTPException, status
@@ -48,7 +49,7 @@ def create_robot_router(
     async def send_robot_command(command: RobotCommandRequest):
         """Sends movement command (forward, backward, left, right, stop, emergency_stop)."""
         action = command.action.lower().strip()
-        result = get_robot().move(action=action, speed=command.speed)
+        result = await asyncio.to_thread(get_robot().move, action=action, speed=command.speed)
 
         event_type = "emergency_stop" if action == "emergency_stop" else "robot_command"
         log_event(
@@ -71,7 +72,7 @@ def create_robot_router(
     @router.post("/reset-emergency")
     async def reset_emergency_stop():
         """Clears the emergency stop lock on the robot."""
-        result = get_robot().reset_emergency_stop()
+        result = await asyncio.to_thread(get_robot().reset_emergency_stop)
         log_event(
             event_type="emergency_stop_reset",
             description="Emergency stop lock cleared by operator.",
@@ -82,7 +83,7 @@ def create_robot_router(
     @router.post("/stop")
     async def stop_robot_endpoint():
         """Brings the robot to a controlled stop."""
-        result = get_robot().stop()
+        result = await asyncio.to_thread(get_robot().stop)
         log_event(event_type="robot_command", description="Action: stop (controlled stop)")
         await _broadcast_status()
         return result
@@ -90,7 +91,8 @@ def create_robot_router(
     @router.post("/posture")
     async def set_robot_posture(payload: PostureUpdateRequest):
         """Updates DOGZILLA body height (z), attitude (roll/pitch/yaw), gait_type, pace, or preset."""
-        result = get_robot().set_posture(
+        result = await asyncio.to_thread(
+            get_robot().set_posture,
             height_z=payload.height_z,
             roll=payload.roll,
             pitch=payload.pitch,

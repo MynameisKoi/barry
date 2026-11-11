@@ -3,9 +3,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-python3.12 -m venv "$TMP/venv"
+PYTHON_BIN="$(which python3.12 || which python3)"
+"$PYTHON_BIN" -m venv "$TMP/venv"
 "$TMP/venv/bin/python" -m pip install --upgrade pip
-"$TMP/venv/bin/pip" install "ultralytics==8.3.0" "torch==2.5.1" "torchvision==0.20.1" "onnx==1.17.0" "ml-dtypes<0.5"
+"$TMP/venv/bin/pip" install --extra-index-url https://download.pytorch.org/whl/cpu "ultralytics==8.3.0" "torch>=2.4.0" "torchvision" "onnx>=1.16.0"
 export PATH="$TMP/venv/bin:$PATH"
 mkdir -p "$ROOT/models"
 cd "$TMP"

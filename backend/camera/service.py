@@ -57,6 +57,7 @@ class CameraService(CameraInterface):
         self._connected = False
         self._capturing = False
         self._stream_error: Optional[CameraUnavailableError] = None
+        self._latest_raw: Optional[np.ndarray] = None
         self._capture_times: Deque[float] = deque(maxlen=_FPS_WINDOW_SIZE)
         self._last_timing_log = float("-inf")
 
@@ -79,6 +80,7 @@ class CameraService(CameraInterface):
             self._thread = None
             self._connected = False
             self._capturing = False
+            self._latest_raw = None
             self._stream_error = None
             self._capture_times.clear()
             self._condition.notify_all()
@@ -137,6 +139,12 @@ class CameraService(CameraInterface):
             if time.monotonic() - frame.timestamp > self._stale_after_seconds:
                 raise CameraUnavailableError("latest camera frame is stale")
             return frame
+
+    def latest_raw_frame(self) -> Optional[np.ndarray]:
+        with self._condition:
+            if not self._connected or self._latest_raw is None:
+                return None
+            return self._latest_raw
 
     def stream(self) -> Iterator[Frame]:
         """Yield sequence changes and unregister the viewer on every exit path."""
@@ -234,6 +242,8 @@ class CameraService(CameraInterface):
     def _read_once_with_timeout(
         self, generation: int, stop_event: threading.Event
     ):
+        if getattr(self._source, "name", "") == "synthetic":
+            return self._source.read()
         completed = threading.Event()
         result = []
 
@@ -328,6 +338,7 @@ class CameraService(CameraInterface):
                 height=height,
                 sequence=self._sequence,
             )
+            self._latest_raw = raw
             self._capture_times.append(captured_at)
             self._condition.notify_all()
         frame_gap_seconds = (
@@ -391,6 +402,7 @@ class CameraService(CameraInterface):
             self._safe_close_source()
             self._connected = False
             self._capturing = False
+            self._latest_raw = None
             if stream_error is not None:
                 self._stream_error = stream_error
             self._condition.notify_all()

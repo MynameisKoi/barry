@@ -38,3 +38,28 @@ class FrameSource(ABC):
     @abstractmethod
     def close(self) -> None:
         """Release source resources. Implementations must be idempotent."""
+
+
+class CameraServiceSource(FrameSource):
+    """Adapts a running CameraService as a FrameSource without duplicate connections."""
+
+    def __init__(self, service) -> None:
+        self._service = service
+
+    @property
+    def name(self) -> str:
+        source = getattr(self._service, "_source", None)
+        return f"service:{getattr(source, 'name', 'camera')}"
+
+    def open(self) -> None:
+        pass
+
+    def read(self) -> np.ndarray:
+        raw = self._service.latest_raw_frame()
+        if raw is None:
+            from .interface import FrameCaptureError
+            raise FrameCaptureError("no camera frame available from camera service")
+        return raw
+
+    def close(self) -> None:
+        pass

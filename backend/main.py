@@ -130,10 +130,12 @@ async def telemetry_broadcaster():
         while True:
             await asyncio.sleep(1.0)
             if ws_manager.active_connections:
+                detections = [d.model_dump() for d in detection_service.detections()]
                 status_payload = {
                     "type": "telemetry",
                     "telemetry": get_robot().get_status(),
                     "mission": mission_service.get_status(),
+                    "detections": detections,
                 }
                 await ws_manager.broadcast(status_payload)
     except asyncio.CancelledError:
@@ -203,7 +205,14 @@ async def lifespan(app: FastAPI):
         except asyncio.TimeoutError:
             logger.error("Camera did not start within 10 s; continuing without it")
 
+    from backend.camera.source import CameraServiceSource
+    if hasattr(app.state, "camera"):
+        detection_service.attach_source(CameraServiceSource(app.state.camera))
+
     yield
+
+    if detection_service._loop:
+        detection_service._loop.stop()
 
     await app.state.robot_relay.aclose()
 
@@ -703,6 +712,15 @@ async def trigger_simulated_detection(zone: Optional[str] = None):
     return alert
 
 
+@app.get("/api/ai/detections", tags=["AI Inspection"])
+async def get_live_detections(zone: str = "Robot camera"):
+    """Returns the latest real YOLO11n object detections from the camera stream."""
+    return {
+        "status": detection_service.status(),
+        "detections": [d.model_dump() for d in detection_service.detections(zone=zone)],
+    }
+
+
 # ============================================================================
 # 6. Camera Streaming & Video Feeds
 # ============================================================================
@@ -743,7 +761,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 if msg_type == "robot_command":
                     action = msg.get("action", "stop")
                     speed = float(msg.get("speed", 0.2))
-                    res = get_robot().move(action=action, speed=speed)
+                    res = await asyncio.to_thread(get_robot().move, action=action, speed=speed)
                     mission_service.log_event(
                         event_type="robot_command_ws",
                         description=f"WS Action: {action}, Speed: {speed}",
@@ -759,7 +777,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     )
 
                 elif msg_type == "emergency_stop":
-                    res = get_robot().emergency_stop()
+                    res = await asyncio.to_thread(get_robot().emergency_stop)
                     mission_service.log_event(
                         event_type="emergency_stop",
                         description="Emergency stop triggered via WebSocket.",

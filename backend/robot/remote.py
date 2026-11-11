@@ -78,7 +78,12 @@ _REJECTION_CODES = {
     protocol.HTTP_LOCKED,
 }
 
-_LEGACY_MOVES = {"forward", "backward", "left", "right"}
+_LEGACY_MOVES = {
+    "forward", "backward", "back",
+    "left", "right",
+    "turn_left", "turn_right",
+    "strafe_left", "strafe_right",
+}
 
 
 class RemoteRobotClient(RobotInterface):
@@ -401,12 +406,19 @@ class RemoteRobotClient(RobotInterface):
         value = max(0.0, min(1.0, value))
 
         axes = {
-            "forward": (value, 0.0),
-            "backward": (-value, 0.0),
-            "left": (0.0, value),
-            "right": (0.0, -value),
+            "forward": (value, 0.0, 0.0),
+            "backward": (-value, 0.0, 0.0),
+            "back": (-value, 0.0, 0.0),
+            "left": (0.0, 0.0, value),
+            "right": (0.0, 0.0, -value),
+            "turn_left": (0.0, 0.0, value),
+            "turn_right": (0.0, 0.0, -value),
+            "strafe_left": (0.0, -value, 0.0),
+            "strafe_right": (0.0, value, 0.0),
         }[action]
-        return self._legacy_result(self.move_analog(MotionCommand(forward=axes[0], turn=axes[1])))
+        return self._legacy_result(
+            self.move_analog(MotionCommand(forward=axes[0], strafe=axes[1], turn=axes[2]))
+        )
 
     def get_status(self) -> Dict[str, Any]:
         """Legacy status dict built from ``GET /telemetry``.
