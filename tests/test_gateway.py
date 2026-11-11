@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 
 import pytest
 
 from backend.gateway import CommandGateway
 from backend.robot.config import RobotConfig
-from backend.robot.interface import CommandStatus, MotionCommand, RobotMode
+from backend.robot.interface import MotionCommand, Orientation, RobotMode, Telemetry
 from backend.robot.remote import RemoteRobotClient
-from backend.robot.server import create_app
 from backend.robot.simulator import RobotSimulator
-from fastapi.testclient import TestClient
 
 
 @pytest.fixture
@@ -82,7 +81,7 @@ def test_stop_interrupts_bounded_move_within_one_tick(sim_gateway):
 
 
 def test_remote_unavailable_reports_offline_without_queue():
-    from httpx import MockTransport, Response, ConnectError
+    from httpx import MockTransport, ConnectError
     def offline(request):
         raise ConnectError("offline", request=request)
     config = RobotConfig(mode=RobotMode.REMOTE, api_key="key", remote_url="http://pi.test")
@@ -95,3 +94,100 @@ def test_remote_unavailable_reports_offline_without_queue():
         assert not remote.connected
     finally:
         remote.close()
+
+
+def test_run_turn_positive_is_right_for_yaw_and_calibrated_paths(sim_gateway):
+    sim, gateway = sim_gateway
+    seen = []
+    original_move = sim.move_analog
+    def record(command):
+        seen.append(command.turn)
+        return original_move(command)
+    sim.move_analog = record
+    yaw_values = iter([0, 0, 90])
+    sim.read_telemetry = lambda: Telemetry(orientation=Orientation(yaw=next(yaw_values)))
+    yaw_result = asyncio.run(gateway.run_turn(90, source="voice"))
+    assert yaw_result.status == "STOP_DISPATCHED"
+    assert seen and seen[0] < 0
+
+    seen.clear()
+    sim.read_telemetry = lambda: Telemetry(orientation=Orientation(yaw=None))
+    gateway.turn_deg_per_s = 1000
+    calibrated_result = asyncio.run(gateway.run_turn(90, source="voice"))
+    assert calibrated_result.status == "STOP_DISPATCHED"
+    assert seen and seen[0] < 0
+
+
+@pytest.mark.parametrize("degrees", [0, math.nan, math.inf, -math.inf])
+def test_run_turn_rejects_invalid_angles(degrees, sim_gateway):
+    sim, gateway = sim_gateway
+    result = asyncio.run(gateway.run_turn(degrees, source="voice"))
+    assert result.status == "INVALID"
+    assert not sim.moving
+
+
+def test_lower_priority_task_is_busy_and_same_source_replaces(sim_gateway):
+    _, gateway = sim_gateway
+    async def scenario():
+        async def idle():
+            await asyncio.sleep(2)
+        hand = asyncio.create_task(gateway.run_operation(idle, source="hand"))
+        await asyncio.sleep(0.02)
+        busy = await gateway.run_operation(lambda: None, source="llm")
+        replacement = asyncio.create_task(gateway.run_operation(lambda: None, source="hand"))
+        await asyncio.sleep(0.02)
+        return await hand, busy, await replacement
+    old, busy, replacement = asyncio.run(scenario())
+    assert old.status == "CANCELLED"
+    assert busy.status == "BUSY"
+    assert replacement.status == "ACCEPTED"
+
+
+def test_hand_hold_window_expires(monkeypatch, sim_gateway):
+    sim, _ = sim_gateway
+    monkeypatch.setenv("GATEWAY_HAND_HOLD_S", "0.02")
+    gateway = CommandGateway(sim, mission_check=lambda: True)
+    async def scenario():
+        await gateway.stop(source="hand")
+        blocked = await gateway.run_bounded("forward", 0.01, 0.2, source="voice")
+        await asyncio.sleep(0.03)
+        resumed = await gateway.run_bounded("forward", 0.01, 0.2, source="voice")
+        return blocked, resumed
+    blocked, resumed = asyncio.run(scenario())
+    assert blocked.status == "BUSY"
+    assert resumed.status == "STOP_DISPATCHED"
+
+
+def test_cancelling_bounded_move_sends_stop(sim_gateway):
+    sim, gateway = sim_gateway
+    stops = []
+    original_stop = sim.stop
+    def record_stop():
+        stops.append(True)
+        return original_stop()
+    sim.stop = record_stop
+    async def scenario():
+        running = asyncio.create_task(gateway.run_bounded("forward", 2, 0.3, source="llm"))
+        await asyncio.sleep(0.03)
+        await gateway.stop(source="hand")
+        return await running
+    result = asyncio.run(scenario())
+    assert result.status == "CANCELLED"
+    assert stops
+    assert not sim.moving
+
+
+def test_emergency_stop_latch_rejects_motion_until_reset(sim_gateway):
+    sim, gateway = sim_gateway
+    async def scenario():
+        latched = await gateway.emergency_stop(source="hand")
+        rejected = await gateway.run_bounded("forward", 0.1, 0.2, source="hand")
+        reset = await gateway.reset_emergency_stop(source="hand")
+        accepted = await gateway.run_bounded("forward", 0.01, 0.2, source="hand")
+        return latched, rejected, reset, accepted
+    latched, rejected, reset, accepted = asyncio.run(scenario())
+    assert latched.status == "ACCEPTED"
+    assert rejected.status == "ESTOP_ACTIVE"
+    assert reset.status == "ACCEPTED"
+    assert accepted.status == "STOP_DISPATCHED"
+    assert not sim.emergency_stopped and not sim.moving
