@@ -59,6 +59,47 @@
             background: rgba(255, 255, 255, 0.2);
             border-color: #00f0ff;
         }
+        #robot-auth {
+            pointer-events: auto;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 8px;
+            border: 1px solid rgba(0, 240, 255, 0.35);
+            border-radius: 6px;
+            background: rgba(15, 23, 42, 0.9);
+            font-size: 0.75rem;
+        }
+        #robot-api-key {
+            width: 190px;
+            padding: 5px 7px;
+            color: #fff;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 4px;
+        }
+        #connect-control {
+            padding: 5px 8px;
+            color: #fff;
+            background: rgba(0, 240, 255, 0.18);
+            border: 1px solid rgba(0, 240, 255, 0.45);
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        #command-status {
+            position: absolute;
+            top: 64px;
+            left: 20px;
+            z-index: 10;
+            max-width: min(560px, calc(100vw - 40px));
+            padding: 8px 12px;
+            color: #fff;
+            background: rgba(10, 16, 28, 0.92);
+            border: 1px solid rgba(0, 240, 255, 0.45);
+            border-radius: 6px;
+            font: 700 0.8rem monospace;
+            pointer-events: none;
+        }
         #keyboard-hint {
             position: absolute;
             bottom: 20px;
@@ -84,7 +125,13 @@
     <div id="desktop-ui">
         <div class="hud-badge">BARRY // 3D HOLOGRAPHIC COCKPIT</div>
         <a id="switch-flatscreen" href="/cockpit">← 2D Flatscreen Mode</a>
+        <div id="robot-auth">
+            <label for="robot-api-key">Robot key</label>
+            <input id="robot-api-key" type="password" autocomplete="off" spellcheck="false" aria-label="Robot API key">
+            <button id="connect-control" type="button">Connect</button>
+        </div>
     </div>
+    <div id="command-status" role="status" aria-live="polite">NOT CONNECTED · Enter the robot key</div>
     <div id="keyboard-hint">
         🎮 <b>Controls:</b> WASD / Arrows to Drive · Space for E-Stop · Click / Drag to Look
     </div>
@@ -102,12 +149,132 @@
             fps: 20,
             frameAgeMs: 45,
             intensity: "MEDIUM",
+            speed: 0.6,
             lastCommand: "stop",
+            commandStatus: "NOT CONNECTED",
+            commandMessage: "Enter the robot key",
             forward: 0.0,
             strafe: 0.0,
             turn: 0.0,
-            emergencyStopped: false
+            eStopActive: false
         };
+
+        const ROBOT_KEY_STORAGE_KEY = "barry.robotApiKey";
+        const robotApiKeyInput = document.getElementById("robot-api-key");
+        let controlSessionId = null;
+        let commandSequence = 0;
+        let sessionRequest = null;
+        try {
+            robotApiKeyInput.value = sessionStorage.getItem(ROBOT_KEY_STORAGE_KEY) || "";
+        } catch (e) {}
+
+        robotApiKeyInput.addEventListener("input", () => {
+            const key = robotApiKeyInput.value.trim();
+            try {
+                if (key) sessionStorage.setItem(ROBOT_KEY_STORAGE_KEY, key);
+                else sessionStorage.removeItem(ROBOT_KEY_STORAGE_KEY);
+            } catch (e) {}
+            controlSessionId = null;
+            commandSequence = 0;
+            updateCommandStatus(key ? "KEY_READY" : "KEY_REQUIRED", key ? "Key saved for this tab" : "Enter the robot key");
+        });
+
+        function updateCommandStatus(status, message = "") {
+            state.commandStatus = String(status || "UNKNOWN").toUpperCase();
+            state.commandMessage = String(message || "");
+            const statusElement = document.getElementById("command-status");
+            if (statusElement) statusElement.textContent = [state.commandStatus, state.commandMessage].filter(Boolean).join(" · ");
+            if (typeof drawLeftPanel === "function") drawLeftPanel();
+        }
+
+        function newCommandId() {
+            if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
+            return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        }
+
+        function responseResultStatus(response, payload) {
+            if (payload && payload.status) return String(payload.status).toUpperCase();
+            const detail = String(payload?.detail || payload?.message || "").toUpperCase();
+            const known = ["BUSY", "MISSION_REQUIRED", "ESTOP_ACTIVE", "OFFLINE", "INVALID", "FAILED"];
+            const namedStatus = known.find(code => detail.includes(code));
+            if (namedStatus) return namedStatus;
+            if (response.status === 423) return "ESTOP_ACTIVE";
+            if (response.status === 503) return "OFFLINE";
+            if (response.status === 401) return "UNAUTHORIZED";
+            if (response.status === 403) return "MISSION_REQUIRED";
+            return response.ok ? "ACCEPTED" : `HTTP_${response.status}`;
+        }
+
+        async function acquireControlSession() {
+            const apiKey = robotApiKeyInput.value.trim();
+            if (!apiKey) {
+                updateCommandStatus("KEY_REQUIRED", "Enter the robot key");
+                return false;
+            }
+            if (sessionRequest) return sessionRequest;
+            sessionRequest = (async () => {
+                try {
+                    const headers = { "X-Robot-Key": apiKey };
+                    if (controlSessionId) headers["X-Control-Session"] = controlSessionId;
+                    const response = await fetch("/api/v1/session", { method: "POST", headers });
+                    const payload = await response.json().catch(() => ({}));
+                    if (!response.ok || !payload.session_id) {
+                        updateCommandStatus(payload.status || `HTTP_${response.status}`, payload.message || payload.detail || "Could not acquire control session");
+                        return false;
+                    }
+                    controlSessionId = payload.session_id;
+                    commandSequence = 0;
+                    updateCommandStatus("SESSION_ACTIVE", "Gateway control session acquired");
+                    return true;
+                } catch (error) {
+                    updateCommandStatus("OFFLINE", error.message || "Backend unavailable");
+                    return false;
+                } finally {
+                    sessionRequest = null;
+                }
+            })();
+            return sessionRequest;
+        }
+
+        async function sendApiCommand(path, { body = null, sequenced = false, source = "hand", shouldSend = null } = {}) {
+            const apiKey = robotApiKeyInput.value.trim();
+            if (!apiKey) {
+                updateCommandStatus("KEY_REQUIRED", "Enter the robot key");
+                return null;
+            }
+            if (sequenced && !controlSessionId && !(await acquireControlSession())) return null;
+            if (shouldSend && !shouldSend()) return null;
+            if (path === "/api/v1/motion" && state.eStopActive) {
+                updateCommandStatus("ESTOP_ACTIVE", "Reset the emergency stop before moving");
+                return null;
+            }
+
+            const headers = { "X-Robot-Key": apiKey, "X-Command-Source": source, "X-Command-Id": newCommandId() };
+            if (body !== null) headers["Content-Type"] = "application/json";
+            if (sequenced) {
+                headers["X-Control-Session"] = controlSessionId;
+                headers["X-Command-Seq"] = String(++commandSequence);
+                headers["X-Command-Sent-At"] = String(Date.now());
+            }
+            try {
+                const response = await fetch(path, {
+                    method: "POST",
+                    headers,
+                    body: body === null ? undefined : JSON.stringify(body)
+                });
+                const payload = await response.json().catch(() => ({}));
+                const resultStatus = responseResultStatus(response, payload);
+                const message = payload.message || payload.detail || (response.ok ? "Command accepted by API" : response.statusText);
+                updateCommandStatus(resultStatus, message);
+                if (resultStatus === "ESTOP_ACTIVE") state.eStopActive = true;
+                return { response, payload };
+            } catch (error) {
+                updateCommandStatus("OFFLINE", error.message || "Backend unavailable; command was not queued");
+                return null;
+            }
+        }
+
+        document.getElementById("connect-control").addEventListener("click", acquireControlSession);
 
         // --- Three.js Setup ---
         const canvas = document.getElementById("webgl-canvas");
@@ -300,6 +467,13 @@
             drawCommandSlider(ctx, 32, 435, "Strafe", state.strafe);
             drawCommandSlider(ctx, 32, 505, "Turn", state.turn);
 
+            ctx.fillStyle = state.commandStatus === "ACCEPTED" || state.commandStatus === "SESSION_ACTIVE" ? "#00ff88" : "#fbbf24";
+            ctx.font = "bold 16px -apple-system, monospace";
+            ctx.fillText(`RESULT · ${state.commandStatus}`, 32, 565);
+            ctx.fillStyle = "#cbd5e1";
+            ctx.font = "14px -apple-system, monospace";
+            ctx.fillText(state.commandMessage, 32, 588, c.width - 64);
+
             // Footer info dot
             ctx.fillStyle = "#6366f1"; // Purple-blue indicator
             ctx.beginPath();
@@ -451,13 +625,13 @@
             const stopY = 28;
             const stopW = 230;
             const stopH = 84;
-            ctx.fillStyle = state.emergencyStopped ? "#991b1b" : "#dc2626"; // Vibrant red
+            ctx.fillStyle = state.eStopActive ? "#991b1b" : "#dc2626"; // Vibrant red
             roundRect(ctx, stopX, stopY, stopW, stopH, 14, true, false);
 
             ctx.fillStyle = "#ffffff";
             ctx.font = "bold 26px -apple-system, monospace";
             ctx.textAlign = "center";
-            ctx.fillText("STOP", stopX + stopW / 2, stopY + 42);
+            ctx.fillText(state.eStopActive ? "RESET E-STOP" : "STOP", stopX + stopW / 2, stopY + 42);
 
             ctx.font = "13px -apple-system, monospace";
             ctx.fillText("A button · or laser trigger", stopX + stopW / 2, stopY + 68);
@@ -669,7 +843,8 @@
             }
             // Stop button
             if (uvX >= 0.42 && uvX <= 0.79 && uvY >= 0.25 && uvY <= 0.85) {
-                await triggerEmergencyStop();
+                if (state.eStopActive) await resetEmergencyStop();
+                else await stopRobot();
             }
             // Exit VR button
             if (uvX >= 0.80 && uvX <= 0.98 && uvY >= 0.30 && uvY <= 0.75) {
@@ -700,18 +875,24 @@
             if (posturePreset) {
                 state.lastCommand = posturePreset;
                 drawRightPanel();
-                try {
-                    await fetch('/api/robot/command', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ action: posturePreset })
-                    });
-                } catch (e) {}
+                const postureHeights = {
+                    stand: "high", liedown: "low", balance: "medium",
+                    sit: "low", bow: "medium", wave: "medium"
+                };
+                await sendApiCommand("/api/v1/posture", {
+                    body: { height: postureHeights[posturePreset], roll: 0, pitch: 0, yaw: 0 },
+                    sequenced: true
+                });
             } else if (action) {
                 if (action === "ai_scan") {
                     try { await fetch('/api/v1/missions/scan', { method: 'POST' }); } catch(e) {}
                 } else if (action === "zero_imu") {
                     state.roll = 0; state.pitch = 0; drawCenterPanel();
+                } else if (action === "trot" || action === "crawl") {
+                    await sendApiCommand("/api/v1/movement-style", {
+                        body: { intensity: state.intensity.toLowerCase(), gait: action === "crawl" ? "walk" : "trot" },
+                        sequenced: true
+                    });
                 } else {
                     sendLocomotion(action);
                 }
@@ -780,6 +961,7 @@
         let camPitch = 0;
 
         window.addEventListener('mousedown', (e) => {
+            if (e.target.closest && e.target.closest('#robot-auth')) return;
             if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'A') {
                 isDragging = true;
                 prevMouseX = e.clientX;
@@ -819,67 +1001,106 @@
             } catch (e) {}
         }
 
-        // --- High-Performance Non-Blocking Robot Command Dispatcher ---
-        let teleopWs = null;
+        // --- Gateway-backed, coalescing robot command dispatcher ---
         let isDispatching = false;
-        let pendingCommand = null;
-        let lastSentAction = 'stop';
+        let pendingMotion = null;
+        let motionGeneration = 0;
 
-        async function sendLocomotion(action, speed = state.speed) {
-            if (action === 'stop' && lastSentAction === 'stop' && !pendingCommand) return;
-            pendingCommand = { action, speed };
-            if (isDispatching) return;
+        function sendLocomotion(action, speed = state.speed) {
+            if (action === "stop") return stopRobot();
+            const magnitude = Math.max(0, Math.min(1, Number(speed) || 0));
+            const axes = { forward: 0, strafe: 0, turn: 0 };
+            if (action === "forward") axes.forward = magnitude;
+            else if (action === "backward") axes.forward = -magnitude;
+            else if (action === "strafe_left") axes.strafe = magnitude;
+            else if (action === "strafe_right") axes.strafe = -magnitude;
+            else if (action === "turn_left") axes.turn = magnitude;
+            else if (action === "turn_right") axes.turn = -magnitude;
+            else {
+                updateCommandStatus("INVALID", `Unsupported motion: ${action}`);
+                return;
+            }
+            sendMotionAxes(axes.forward, axes.strafe, axes.turn);
+        }
 
+        function sendMotionAxes(forward, strafe, turn) {
+            const command = {
+                forward: Math.max(-1, Math.min(1, forward)),
+                strafe: Math.max(-1, Math.min(1, strafe)),
+                turn: Math.max(-1, Math.min(1, turn)),
+                generation: motionGeneration
+            };
+            state.forward = command.forward;
+            state.strafe = command.strafe;
+            state.turn = command.turn;
+            state.lastCommand = command.forward || command.strafe || command.turn ? "motion" : "stop";
+            drawLeftPanel();
+
+            const isStop = !command.forward && !command.strafe && !command.turn;
+            if (isStop) return stopRobot();
+            if (state.eStopActive) {
+                updateCommandStatus("ESTOP_ACTIVE", "Reset the emergency stop before moving");
+                return;
+            }
+            pendingMotion = command;
+            if (!isDispatching) void dispatchPendingMotion();
+        }
+
+        async function dispatchPendingMotion() {
             isDispatching = true;
             try {
-                while (pendingCommand) {
-                    const cmd = pendingCommand;
-                    pendingCommand = null;
-                    lastSentAction = cmd.action;
-
-                    if (teleopWs && teleopWs.readyState === WebSocket.OPEN) {
-                        teleopWs.send(JSON.stringify({
-                            type: 'robot_command',
-                            action: cmd.action,
-                            speed: cmd.speed
-                        }));
-                        await new Promise(r => setTimeout(r, 60));
-                    } else {
-                        await fetch('/api/robot/command', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ action: cmd.action, speed: cmd.speed })
-                        });
-                    }
+                while (pendingMotion) {
+                    const command = pendingMotion;
+                    pendingMotion = null;
+                    if (state.eStopActive) continue;
+                    const { generation, ...axes } = command;
+                    await sendApiCommand("/api/v1/motion", {
+                        body: axes,
+                        sequenced: true,
+                        shouldSend: () => generation === motionGeneration && !state.eStopActive
+                    });
                 }
-            } catch (e) {
-                console.error("Locomotion dispatch failed", e);
             } finally {
                 isDispatching = false;
+                if (pendingMotion) void dispatchPendingMotion();
             }
+        }
+
+        async function stopRobot() {
+            motionGeneration++;
+            pendingMotion = null;
+            state.forward = 0;
+            state.strafe = 0;
+            state.turn = 0;
+            state.lastCommand = "stop";
+            drawLeftPanel();
+            return sendApiCommand("/api/v1/stop");
         }
 
         async function triggerEmergencyStop() {
             playChime(300, 0.25);
-            state.eStopActive = !state.eStopActive;
+            motionGeneration++;
+            pendingMotion = null;
+            state.eStopActive = true;
             drawBottomPanel();
-            try {
-                if (state.eStopActive) {
-                    if (teleopWs && teleopWs.readyState === WebSocket.OPEN) {
-                        teleopWs.send(JSON.stringify({ type: 'emergency_stop' }));
-                    } else {
-                        await fetch('/api/robot/command', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ action: 'emergency_stop', speed: 0.0 })
-                        });
-                    }
-                } else {
-                    await fetch('/api/robot/reset-emergency', { method: 'POST' });
-                }
-            } catch (e) {
-                console.error("Emergency stop toggle failed", e);
+            const result = await sendApiCommand("/api/v1/emergency-stop", { source: "emergency" });
+            const resultStatus = String(result?.payload?.status || "").toUpperCase();
+            if (result && result.response.ok && ["ACCEPTED", "STOP_DISPATCHED", "ESTOP_ACTIVE"].includes(resultStatus)) {
+                updateCommandStatus(result.payload.status, result.payload.message || "Emergency stop dispatched");
+            } else {
+                state.eStopActive = false;
             }
+            drawBottomPanel();
+        }
+
+        async function resetEmergencyStop() {
+            const result = await sendApiCommand("/api/v1/emergency-stop/reset", { sequenced: true });
+            const resultStatus = String(result?.payload?.status || "").toUpperCase();
+            if (result && result.response.ok && ["ACCEPTED", "STOP_DISPATCHED"].includes(resultStatus)) {
+                state.eStopActive = false;
+                updateCommandStatus(result.payload.status || "ACCEPTED", result.payload.message || "Emergency stop reset dispatched");
+            }
+            drawBottomPanel();
         }
 
         // --- Keyboard Controls (WASD / Arrows / Space) ---
@@ -887,17 +1108,9 @@
         let keyTeleopInterval = null;
 
         function updateKeyMovement() {
-            let fwd = 0.0;
-            let strafe = 0.0;
-            let turn = 0.0;
-            let action = 'stop';
-
-            if (activeKeys.has('w') || activeKeys.has('arrowup')) { fwd += 1.0; action = 'forward'; }
-            if (activeKeys.has('s') || activeKeys.has('arrowdown')) { fwd -= 1.0; action = 'backward'; }
-            if (activeKeys.has('a')) { strafe -= 1.0; action = 'strafe_left'; }
-            if (activeKeys.has('d')) { strafe += 1.0; action = 'strafe_right'; }
-            if (activeKeys.has('arrowleft') || activeKeys.has('q')) { turn += 1.0; action = 'turn_left'; }
-            if (activeKeys.has('arrowright') || activeKeys.has('e')) { turn -= 1.0; action = 'turn_right'; }
+            const fwd = Number(activeKeys.has('w') || activeKeys.has('arrowup')) - Number(activeKeys.has('s') || activeKeys.has('arrowdown'));
+            const strafe = Number(activeKeys.has('a')) - Number(activeKeys.has('d'));
+            const turn = Number(activeKeys.has('arrowleft') || activeKeys.has('q')) - Number(activeKeys.has('arrowright') || activeKeys.has('e'));
 
             state.cmdFwd = fwd;
             state.cmdStrafe = strafe;
@@ -906,16 +1119,18 @@
 
             if (fwd !== 0 || strafe !== 0 || turn !== 0) {
                 playChime(750, 0.04);
-                sendLocomotion(action, state.speed);
+                sendMotionAxes(fwd * state.speed, strafe * state.speed, turn * state.speed);
             } else {
-                sendLocomotion('stop', 0.0);
+                sendMotionAxes(0, 0, 0);
             }
         }
 
         window.addEventListener('keydown', (e) => {
+            if (e.target.closest && e.target.closest('#robot-auth')) return;
             if (e.repeat) return;
             const key = e.key.toLowerCase();
             if (key === ' ') {
+                e.preventDefault();
                 triggerEmergencyStop();
                 return;
             }
@@ -929,6 +1144,7 @@
         });
 
         window.addEventListener('keyup', (e) => {
+            if (e.target.closest && e.target.closest('#robot-auth')) return;
             const key = e.key.toLowerCase();
             if (activeKeys.has(key)) {
                 activeKeys.delete(key);
@@ -946,7 +1162,6 @@
             const ws = new WebSocket(`${proto}//${location.host}/ws`);
             ws.onopen = () => {
                 state.connected = true;
-                teleopWs = ws;
                 drawLeftPanel();
                 drawCenterPanel();
             };
