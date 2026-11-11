@@ -7,6 +7,19 @@ os.environ["ROBOT_MODE"] = "simulation"
 os.environ["LLM_PROVIDER"] = "mock"
 os.environ["FALLBACK_LLM_PROVIDER"] = "mock"
 os.environ["CAMERA_DEVICE"] = "synthetic"
+os.environ["QUEST_API_KEY"] = "test-quest-key"
+
+# The shared API suite exercises authenticated Quest-facing controls. Use a
+# test-only default header; dedicated auth tests override it explicitly.
+import fastapi.testclient
+_OriginalTestClient = fastapi.testclient.TestClient
+class _QuestAuthenticatedTestClient(_OriginalTestClient):
+    def __init__(self, app, *args, headers=None, **kwargs):
+        merged = {"X-Robot-Key": "test-quest-key"}
+        if headers:
+            merged.update(headers)
+        super().__init__(app, *args, headers=merged, **kwargs)
+fastapi.testclient.TestClient = _QuestAuthenticatedTestClient
 
 import pytest
 from backend.ai.providers.mock_provider import MockProvider

@@ -184,13 +184,13 @@ async def test_stop_and_estop_cancel_whole_llm_task(simulator, interrupt):
 
 
 @pytest.mark.asyncio
-async def test_remote_mode_adapter_returns_clear_relay_conflict(simulator):
+async def test_remote_mode_adapter_uses_gateway_without_relay_conflict(simulator):
     app, _, _, runner = setup_app(simulator, remote=True)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         await client.post("/api/v1/llm/plan", json={"goal": "forward 1 second"}, headers=AUTH)
         await runner.wait()
-    assert runner.task.steps[0].result["status"] == "CONFLICT_RELAY_ACTIVE"
-    assert not simulator.moving
+    assert runner.task.steps[0].result["status"] in {"ACCEPTED", "STOP_DISPATCHED"}
+    assert runner.task.steps[0].result["status"] != "CONFLICT_RELAY_ACTIVE"
 
 
 @pytest.mark.asyncio
@@ -292,3 +292,39 @@ async def test_unkeyed_priority_stop_routes_cancel_running_llm(monkeypatch, simu
     await main.cancel_llm_for_legacy_hand_controls(request, endpoint)
     await runner.wait()
     assert runner.task.state == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_mission_start_and_stop_require_quest_key(monkeypatch):
+    import backend.main as main
+    monkeypatch.setenv("QUEST_API_KEY", "test-quest-key")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+        for path, payload in [("/api/mission/start", {"operator_id": "missing", "zone": "test"}),
+                              ("/api/mission/stop", {"reason": "test"})]:
+            response = await client.post(path, json=payload, headers={"X-Robot-Key": "wrong"})
+            assert response.status_code == 401
+        response = await client.post("/api/mission/start", json={"operator_id": "missing", "zone": "test"},
+                                     headers={"X-Robot-Key": "test-quest-key"})
+        assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_mission_stop_cancels_llm_task_and_stops_robot(monkeypatch, simulator):
+    import backend.main as main
+    monkeypatch.setenv("QUEST_API_KEY", "test-quest-key")
+    gateway = CommandGateway(simulator, mission_check=lambda: True)
+    main.app.state.gateway = gateway
+    simulator.move_analog(MotionCommand(forward=0.4))
+    started = asyncio.Event()
+    async def operation():
+        started.set()
+        await asyncio.sleep(5)
+    task = asyncio.create_task(gateway.run_operation(operation, source="llm"))
+    await started.wait()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+        response = await client.post("/api/mission/stop", json={"reason": "test"},
+                                     headers={"X-Robot-Key": "test-quest-key"})
+    result = await task
+    assert response.status_code == 200
+    assert result.status == "CANCELLED"
+    assert not simulator.moving

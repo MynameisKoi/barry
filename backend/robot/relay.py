@@ -17,7 +17,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
 from backend.robot import protocol
-from backend.robot.config import RobotConfig
+from backend.robot.config import RobotConfig, priority_stop_timeout_s
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,8 @@ class RobotApiRelay:
         self.config = config or RobotConfig.from_env()
         self._motion_timeout_s = min(self.config.remote_timeout_s, 2.0)
         default_timeout = httpx.Timeout(self.config.remote_timeout_s)
-        priority_timeout = httpx.Timeout(self._motion_timeout_s)
+        self._priority_timeout_s = priority_stop_timeout_s()
+        priority_timeout = httpx.Timeout(self._priority_timeout_s)
         common_headers = (
             {protocol.AUTH_HEADER: self.config.api_key}
             if self.config.api_key
@@ -80,8 +81,9 @@ class RobotApiRelay:
         body = await request.body()
         client = self._stop_client if priority_stop else self._client
         timeout_s = (
-            self._motion_timeout_s
-            if path in (protocol.PATH_MOTION, protocol.PATH_MOTION_DISCRETE) or priority_stop
+            self._priority_timeout_s if priority_stop
+            else self._motion_timeout_s
+            if path in (protocol.PATH_MOTION, protocol.PATH_MOTION_DISCRETE)
             else self.config.remote_timeout_s
         )
         started = time.perf_counter()

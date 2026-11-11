@@ -36,6 +36,7 @@ from __future__ import annotations
 import logging
 import math
 import threading
+from contextlib import contextmanager
 import time
 from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple
@@ -47,6 +48,7 @@ from backend.robot.config import (
     HEIGHT_PRESETS_Z,
     PACE_FOR_INTENSITY,
     RobotConfig,
+    priority_stop_timeout_s,
     check_attitude,
     check_combination,
 )
@@ -135,6 +137,18 @@ class RemoteRobotClient(RobotInterface):
         self._state = ControlState()  # best-effort mirror of the Pi's tracked state
         self._last_telemetry: Optional[Telemetry] = None
         self._closed = False
+        self._command_context = threading.local()
+
+    @contextmanager
+    def command_context(self, source: str, command_id: str):
+        """Attach gateway identity to every Pi request made in this thread."""
+        previous = (getattr(self._command_context, "source", None),
+                    getattr(self._command_context, "command_id", None))
+        self._command_context.source, self._command_context.command_id = source, command_id
+        try:
+            yield
+        finally:
+            self._command_context.source, self._command_context.command_id = previous
 
     # ------------------------------------------------------------------
     # Identity
@@ -462,6 +476,7 @@ class RemoteRobotClient(RobotInterface):
         *,
         json: Any = None,
         headers: Optional[Dict[str, str]] = None,
+        timeout: Optional[float] = None,
     ) -> Tuple[Optional[httpx.Response], Optional[str]]:
         """One request. Returns ``(response, None)`` or ``(None, error_text)``.
 
@@ -469,8 +484,16 @@ class RemoteRobotClient(RobotInterface):
         """
         if self._closed and method != "DELETE":
             return None, "client closed"
+        request_headers = dict(headers or {})
+        source = getattr(self._command_context, "source", None)
+        command_id = getattr(self._command_context, "command_id", None)
+        if source:
+            request_headers[protocol.SOURCE_HEADER] = protocol.sanitize_command_source(source)
+        if command_id:
+            request_headers[protocol.COMMAND_ID_HEADER] = protocol.sanitize_command_id(command_id)
         try:
-            resp = self._http.request(method, path, json=json, headers=headers)
+            resp = self._http.request(method, path, json=json, headers=request_headers or None,
+                                      timeout=timeout if timeout is not None else self.config.remote_timeout_s)
         except httpx.HTTPError as exc:
             self._link_ok = False
             return None, f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
@@ -480,7 +503,7 @@ class RemoteRobotClient(RobotInterface):
 
     def _send_priority(self, name: str, path: str) -> CommandResult:
         """stop / emergency-stop: key only, no lock, no session, no seq."""
-        resp, error = self._call("POST", path)
+        resp, error = self._call("POST", path, timeout=priority_stop_timeout_s())
         if resp is None:
             return CommandResult(CommandStatus.FAILED, name, f"Link error: {error}")
         return self._to_result(name, resp)
