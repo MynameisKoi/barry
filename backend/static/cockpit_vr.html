@@ -1223,27 +1223,17 @@
 
             const now = performance.now();
             if (now - lastJoystickSendTime >= 120) {
-                if (Math.abs(fwd) > 0.2) {
-                    sendLocomotion(fwd > 0 ? 'forward' : 'backward', Math.abs(fwd) * state.speed);
+                const moving = Math.abs(fwd) > 0.2 || Math.abs(strafe) > 0.2 || Math.abs(turn) > 0.2;
+                if (moving) {
+                    // Preserve both stick axes and allow simultaneous translation and turning.
+                    sendMotionAxes(fwd * state.speed, -strafe * state.speed, -turn * state.speed);
                     isJoystickMoving = true;
-                    lastJoystickSendTime = now;
-                    drawLeftPanel();
-                } else if (Math.abs(strafe) > 0.2) {
-                    sendLocomotion(strafe > 0 ? 'strafe_right' : 'strafe_left', Math.abs(strafe) * state.speed);
-                    isJoystickMoving = true;
-                    lastJoystickSendTime = now;
-                    drawLeftPanel();
-                } else if (Math.abs(turn) > 0.2) {
-                    sendLocomotion(turn > 0 ? 'turn_right' : 'turn_left', Math.abs(turn) * state.speed);
-                    isJoystickMoving = true;
-                    lastJoystickSendTime = now;
-                    drawLeftPanel();
                 } else if (isJoystickMoving) {
-                    sendLocomotion('stop', 0.0);
+                    sendMotionAxes(0, 0, 0);
                     isJoystickMoving = false;
-                    lastJoystickSendTime = now;
-                    drawLeftPanel();
                 }
+                lastJoystickSendTime = now;
+                drawLeftPanel();
             }
         }
 
