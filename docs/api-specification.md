@@ -21,9 +21,11 @@ The laptop backend is `backend.main:app`. The Pi API is `backend.robot.server:ap
 
 | Route group | Header | Secret | Missing or wrong key | Key not configured |
 |---|---|---|---|---|
-| Quest relay, voice, LLM (`/api/v1/session`, `/api/v1/motion`, `/api/v1/motion/discrete`, `/api/v1/stop`, `/api/v1/emergency-stop`, `/api/v1/emergency-stop/reset`, `/api/v1/posture`, `/api/v1/reset`, `/api/v1/movement-style`, `/api/v1/actions*`, `/api/v1/telemetry`, `/api/v1/status`, `/api/v1/voice/*`, `/api/v1/llm/*`) | `X-Robot-Key` | `QUEST_API_KEY` on the laptop | 401 | 503 (fails closed) |
+| Quest relay, voice, LLM (`/api/v1/session`, `/api/v1/motion`, `/api/v1/motion/discrete`, `/api/v1/emergency-stop/reset`, `/api/v1/posture`, `/api/v1/reset`, `/api/v1/movement-style`, `/api/v1/actions*`, `/api/v1/telemetry`, `/api/v1/status`, `/api/v1/voice/*`, `/api/v1/llm/*`) | `X-Robot-Key` | `QUEST_API_KEY` on the laptop | 401 | 503 (fails closed) |
 | Camera (`/api/v1/camera/*`) | `X-Camera-Key` header, or `?token=` query parameter | `CAMERA_API_KEY` on the laptop | 401 | 503 (fails closed) |
 | Pi Robot API (all routes except `/healthz`) | `X-Robot-Key` | `ROBOT_API_KEY`, shared by laptop and Pi | 401 | 401 on every authenticated route; in `dogzilla` mode the app fails on its first request with `ROBOT_API_KEY is required` (see `backend/robot/server.py`) |
+
+**No Quest key required:** `POST /api/v1/stop` and `POST /api/v1/emergency-stop` are always allowed, even with a missing or wrong key, or with no `QUEST_API_KEY` set on the laptop. They can only make the robot safer. This is an explicit two-path allowlist (`backend/robot/relay_router.py`, `relay_auth`). Every other route stays keyed.
 
 The laptop sends the Pi key to the Pi itself; the Quest's key is never forwarded (`backend/robot/relay.py`, `_request_headers`).
 
@@ -44,8 +46,8 @@ The laptop relays these routes to the Pi unchanged, so the Quest uses the same r
 | DELETE | `/api/v1/session` | `X-Control-Session` | | Release the lease and stop |
 | POST | `/api/v1/motion` | `X-Control-Session`, `X-Command-Seq`, `X-Command-Sent-At` | same | Analog joystick move; body in section 2.2 |
 | POST | `/api/v1/motion/discrete` | `X-Control-Session`, `X-Command-Seq`, `X-Command-Sent-At` | same | One directional move; body in section 2.2 |
-| POST | `/api/v1/stop` | none | none | Priority stop; no session or sequence. Uses the priority lane. |
-| POST | `/api/v1/emergency-stop` | none | none | Latches the emergency stop. Uses the priority lane, like `/stop`. Audited on every request. |
+| POST | `/api/v1/stop` | **No Quest key required** (always allowed, can only make the robot safer) | none | Priority stop; no session or sequence. Uses the priority lane. |
+| POST | `/api/v1/emergency-stop` | **No Quest key required** (always allowed, can only make the robot safer) | none | Latches the emergency stop. Uses the priority lane, like `/stop`. Audited on every request. |
 | POST | `/api/v1/emergency-stop/reset` | `X-Control-Session`, `X-Command-Seq`, `X-Command-Sent-At` | same | Clears the latch. Audited. |
 | POST | `/api/v1/posture` | `X-Control-Session`, `X-Command-Seq`, `X-Command-Sent-At` | same | Height and attitude; body in section 2.2 |
 | POST | `/api/v1/reset` | `X-Control-Session`, `X-Command-Seq`, `X-Command-Sent-At` | same | Full robot reset. Audited. |
@@ -162,23 +164,49 @@ Errors: 400 empty clip; 413 clip too large; 502 transcription failed; 503 transc
 
 ## 5. LLM control prototype (dry run) [`backend/ai/control/router.py`]
 
-Auth: `X-Robot-Key` (`QUEST_API_KEY`). The planner is Anthropic `claude-sonnet-5-5` by default (`ANTHROPIC_CONTROL_MODEL` overrides it, `ANTHROPIC_API_KEY` is required). `LLM_PLANNER=mock` selects the offline planner (`backend/ai/control/planner.py`). Plans start **immediately with no confirm step**. The executor runs against a dry-run gateway until the command gateway (#57) is merged.
+Auth: `X-Robot-Key` (`QUEST_API_KEY`). The brain is Anthropic `claude-sonnet-5-5` by default (`ANTHROPIC_CONTROL_MODEL` overrides it; `ANTHROPIC_API_KEY` is required). `LLM_PLANNER=mock` selects the offline brain. See `backend/ai/control/router.py`, `brain.py` and `executor.py`.
+
+The brain is a loop. The model calls robot tools one step at a time and sees each result before it picks the next. There is **no confirm step**: the loop starts as soon as you post a goal. The executor runs against a dry-run gateway until the command gateway (#57) is merged.
 
 ### `POST /api/v1/llm/plan`
 
+Starts the brain loop and **returns at once**. Poll `GET /api/v1/llm/task` for the result.
+
 - Request: `{"goal": str}` (1–500 characters).
-- Response (200): `{"status": ..., "text": ..., "plan": [tool names], "task": {...}}`. `status` is `started` when a plan runs, or the planner's non-plan status (for example an answer with no plan), in which case `plan` is `[]`.
-- Errors: 422 plan rejected by validation; 502 planner failed; 503 LLM control not configured.
-
-### `POST /api/v1/llm/task/cancel`
-
-- Response: `{"cancelled": bool, "task": {...}}`.
+- Response (200): `{"status": "started", "task": {...}}`, with the task in state `running`.
+- Errors: 503 LLM control not configured (`ANTHROPIC_API_KEY` unset). The planner is not called, so no 422 or 502 is returned. Failures during the run appear as task state (below).
 
 ### `GET /api/v1/llm/task`
 
-- Response: the current task, or `{"state": "idle"}`.
+Returns the current task, or `{"state": "idle"}` if none has run. Poll this until `state` is no longer `running`.
 
-Task objects come from `Task.to_dict()` in `backend/ai/control/executor.py`: `id`, `goal`, `state`, `error`, `current_step`, `steps`.
+Task fields (`Task.to_dict()` in `backend/ai/control/executor.py`):
+
+| Field | Meaning |
+|---|---|
+| `id`, `goal` | Task ID and the goal text |
+| `state` | `running`, `done`, `cancelled`, `failed`, `limit` or `refused` |
+| `answer` | The model's final text, when the task is `done` |
+| `turns` | Model turns used so far |
+| `steps` | Each tool call: `tool`, `args`, `state` (`running`, `done`, `rejected`, `failed`, `skipped`), `result`, `error` |
+| `message` | Why the task ended: the limit hit, an error, or a refusal. `null` on success. |
+
+**Limits.** A task stops and calls `stop()` on the robot when it hits one of these caps. It then ends in state `limit`, with the reason in `message`:
+
+| Env var | Default | Cap |
+|---|---|---|
+| `LLM_MAX_STEPS` | `12` | Tool calls in one task |
+| `LLM_MAX_TURNS` | `8` | Model turns in one task |
+| `LLM_TIMEOUT_S` | `60` | Wall-clock seconds for the task |
+
+**Failure states.** These show up in `state`, not as HTTP errors:
+- `failed`: the model output was cut off, or another error occurred. `message` says which.
+- `refused`: the model declined the request. `message` is "The assistant declined this request."
+- `cancelled`: `POST /api/v1/llm/task/cancel` was called. Any running step is marked `skipped`.
+
+### `POST /api/v1/llm/task/cancel`
+
+- Response: `{"cancelled": bool, "task": {...}}`. `cancelled` is `false` if no task is running.
 
 ---
 
