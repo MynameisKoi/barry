@@ -9,6 +9,7 @@ namespace Barry.Teleop
     {
         IEnumerator SendMotion(MotionRequest request, Action<ApiResponse<CommandResult>> completed);
         IEnumerator Stop(Action<ApiResponse<CommandResult>> completed);
+        IEnumerator EmergencyStop(Action<ApiResponse<CommandResult>> completed);
     }
 
     public sealed class BarryApiCommandTransport : IRobotCommandTransport
@@ -24,6 +25,9 @@ namespace Barry.Teleop
             client.SendMotion(request, completed);
 
         public IEnumerator Stop(Action<ApiResponse<CommandResult>> completed) => client.Stop(completed);
+
+        public IEnumerator EmergencyStop(Action<ApiResponse<CommandResult>> completed) =>
+            client.EmergencyStop(completed);
     }
 
     public sealed class RobotControlService
@@ -35,6 +39,7 @@ namespace Barry.Teleop
         private float sendRateHz;
         private bool motionInFlight;
         private bool stopInFlight;
+        private bool emergencyStopInFlight;
         private bool hasSentMotion;
         private long nextRequestId;
         private long activeRequestId;
@@ -54,6 +59,8 @@ namespace Barry.Teleop
         public event Action<MotionCommand> MotionSent;
         public event Action<StopReason> StopRequested;
         public event Action<StopReason, bool> StopCompleted;
+        public event Action EmergencyStopRequested;
+        public event Action<bool> EmergencyStopCompleted;
 
         public RobotControlService(
             IRobotCommandTransport transport,
@@ -107,6 +114,30 @@ namespace Barry.Teleop
                 stopInFlight = false;
                 bool delivered = response.Success && response.Value != null && response.Value.Accepted;
                 StopCompleted?.Invoke(effectiveReason, delivered);
+            }));
+        }
+
+        /// <summary>
+        /// Highest-priority stop. Enters STOPPED("Emergency stop") whatever the state, cancels any pending
+        /// motion, and sends /emergency-stop at once. It is never gated by a motion or STOP request in
+        /// flight (only by another e-stop in flight), so a pending motion cannot delay it.
+        /// </summary>
+        public void RequestEmergencyStop()
+        {
+            StateMachine.Stop(StopReason.EmergencyStop);
+            activeRequestId = ++nextRequestId;   // a pending motion reply is now stale
+            motionInFlight = false;
+            ConsecutiveMotionFailures = 0;
+            latestCommand = MotionCommand.Zero;
+            hasSentMotion = false;
+            EmergencyStopRequested?.Invoke();
+            if (emergencyStopInFlight) return;
+            emergencyStopInFlight = true;
+            startCoroutine(transport.EmergencyStop(response =>
+            {
+                emergencyStopInFlight = false;
+                bool delivered = response.Success && response.Value != null && response.Value.Accepted;
+                EmergencyStopCompleted?.Invoke(delivered);
             }));
         }
 

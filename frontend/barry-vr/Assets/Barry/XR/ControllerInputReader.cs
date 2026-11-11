@@ -14,20 +14,23 @@ namespace Barry.XR
 
     public readonly struct ControllerButtonDecision
     {
+        public readonly bool RequestEmergencyStop;
         public readonly bool RequestStop;
         public readonly bool ToggleActions;
         public readonly bool IntensityChanged;
         public readonly bool RequestMovementStyle;
         public readonly MovementIntensity Intensity;
-        public bool EmitControllerSample => !RequestStop;
+        public bool EmitControllerSample => !RequestStop && !RequestEmergencyStop;
 
         public ControllerButtonDecision(
             bool requestStop,
             bool toggleActions,
             bool intensityChanged,
             bool requestMovementStyle,
-            MovementIntensity intensity)
+            MovementIntensity intensity,
+            bool requestEmergencyStop = false)
         {
+            RequestEmergencyStop = requestEmergencyStop;
             RequestStop = requestStop;
             ToggleActions = toggleActions;
             IntensityChanged = intensityChanged;
@@ -51,8 +54,13 @@ namespace Barry.XR
             bool stopPressed,
             bool toggleActionsPressed,
             bool cycleIntensityPressed,
-            TeleopState teleopState)
+            TeleopState teleopState,
+            bool emergencyStopFired = false)
         {
+            // The dedicated e-stop (both grips + A held) outranks everything, including STOP.
+            if (emergencyStopFired)
+                return new ControllerButtonDecision(false, false, false, false, Intensity, true);
+
             // STOP wins the frame and suppresses every lower-priority button action.
             if (stopPressed)
                 return new ControllerButtonDecision(true, false, false, false, Intensity);
@@ -97,14 +105,19 @@ namespace Barry.XR
         [SerializeField] private InputActionReference stopButton;
         [SerializeField] private InputActionReference toggleActions;
         [SerializeField] private InputActionReference cycleIntensity;
+        // Dedicated e-stop = both grips + the stop button (A) held ~0.3 s. Optional so older scenes still load.
+        [SerializeField] private InputActionReference gripLeft;
+        [SerializeField] private InputActionReference gripRight;
 
         private readonly ControllerInputDecisions decisions = new ControllerInputDecisions();
+        private readonly EmergencyStopGesture emergencyGesture = new EmergencyStopGesture();
 
         public Func<TeleopState> TeleopStateProvider { get; set; }
         public MovementIntensity Intensity => decisions.Intensity;
 
         public event Action<Vector2, Vector2> ControllerInputSampled;
         public event Action OperatorStopRequested;
+        public event Action EmergencyStopRequested;
         public event Action ToggleActionsRequested;
         public event Action<MovementIntensity> IntensityChanged;
         public event Action<MovementIntensity> MovementStyleRequested;
@@ -127,11 +140,20 @@ namespace Barry.XR
         private void Update()
         {
             TeleopState teleopState = TeleopStateProvider?.Invoke() ?? TeleopState.Disarmed;
+            bool emergency = emergencyGesture.Update(
+                IsHeld(gripLeft), IsHeld(gripRight), IsHeld(stopButton), Time.unscaledDeltaTime);
             ControllerButtonDecision decision = decisions.Evaluate(
                 WasPressed(stopButton),
                 WasPressed(toggleActions),
                 WasPressed(cycleIntensity),
-                teleopState);
+                teleopState,
+                emergency);
+
+            if (decision.RequestEmergencyStop)
+            {
+                EmergencyStopRequested?.Invoke();
+                return;
+            }
 
             if (!decision.EmitControllerSample)
             {
@@ -155,10 +177,15 @@ namespace Barry.XR
             SetEnabled(stopButton, enabled);
             SetEnabled(toggleActions, enabled);
             SetEnabled(cycleIntensity, enabled);
+            SetEnabled(gripLeft, enabled);
+            SetEnabled(gripRight, enabled);
         }
 
         private static Vector2 ReadVector2(InputActionReference reference) =>
             reference?.action?.ReadValue<Vector2>() ?? Vector2.zero;
+
+        private static bool IsHeld(InputActionReference reference) =>
+            reference?.action?.IsPressed() ?? false;
 
         private static bool WasPressed(InputActionReference reference) =>
             reference?.action?.WasPressedThisFrame() ?? false;

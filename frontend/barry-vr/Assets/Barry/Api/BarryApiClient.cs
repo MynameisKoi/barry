@@ -54,6 +54,24 @@ namespace Barry.Api
         public IEnumerator Stop(Action<ApiResponse<CommandResult>> completed) =>
             Send("POST", ApiPrefix + "/stop", null, false, completed);
 
+        /// <summary>
+        /// Latching emergency stop. Like Stop it needs no session or sequence on the Pi, and each call is its
+        /// own UnityWebRequest coroutine, so it never waits behind an in-flight motion request.
+        /// </summary>
+        public IEnumerator EmergencyStop(Action<ApiResponse<CommandResult>> completed) =>
+            Send("POST", ApiPrefix + "/emergency-stop", null, false, completed);
+
+        /// <summary>Clears the e-stop latch. Sequenced (needs the control session). Call only after the operator confirmed.</summary>
+        public IEnumerator ResetEmergency(Action<ApiResponse<CommandResult>> completed) =>
+            Send("POST", ApiPrefix + "/emergency-stop/reset", null, true, completed);
+
+        public IEnumerator SetPosture(PostureRequest body, Action<ApiResponse<CommandResult>> completed) =>
+            Send("POST", ApiPrefix + "/posture", body, true, completed);
+
+        /// <summary>Full robot reset (SDK reset()). Sequenced.</summary>
+        public IEnumerator Reset(Action<ApiResponse<CommandResult>> completed) =>
+            Send("POST", ApiPrefix + "/reset", null, true, completed);
+
         public IEnumerator SetMovementStyle(MovementStyleRequest body, Action<ApiResponse<CommandResult>> completed) =>
             Send("POST", ApiPrefix + "/movement-style", body, true, completed);
 
