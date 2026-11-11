@@ -32,14 +32,49 @@ namespace Barry.App
 
         void OnEnable()
         {
-            moveAction = new InputAction("Move", InputActionType.Value, "<XRController>{LeftHand}/primary2DAxis");
-            turnAction = new InputAction("Turn", InputActionType.Value, "<XRController>{RightHand}/primary2DAxis");
-            stopAction = new InputAction("Stop", InputActionType.Button, "<XRController>{RightHand}/primaryButton");
-            toggleActionsAction = new InputAction("Actions", InputActionType.Button, "<XRController>{RightHand}/secondaryButton");
-            intensityAction = new InputAction("Intensity", InputActionType.Button, "<XRController>{LeftHand}/primaryButton");
+            moveAction = new InputAction("Move", InputActionType.Value);
+            moveAction.AddBinding("<XRController>{LeftHand}/primary2DAxis");
+            moveAction.AddBinding("<XRController>{LeftHand}/thumbstick");
+            moveAction.AddBinding("<Gamepad>/leftStick");
+            moveAction.AddCompositeBinding("2DVector")
+                .With("Up", "<Keyboard>/w")
+                .With("Down", "<Keyboard>/s")
+                .With("Left", "<Keyboard>/a")
+                .With("Right", "<Keyboard>/d");
+
+            turnAction = new InputAction("Turn", InputActionType.Value);
+            turnAction.AddBinding("<XRController>{RightHand}/primary2DAxis");
+            turnAction.AddBinding("<XRController>{RightHand}/thumbstick");
+            turnAction.AddBinding("<Gamepad>/rightStick");
+            turnAction.AddCompositeBinding("2DVector")
+                .With("Up", "<Keyboard>/upArrow")
+                .With("Down", "<Keyboard>/downArrow")
+                .With("Left", "<Keyboard>/leftArrow")
+                .With("Right", "<Keyboard>/rightArrow");
+
+            stopAction = new InputAction("Stop", InputActionType.Button);
+            stopAction.AddBinding("<XRController>{RightHand}/primaryButton");
+            stopAction.AddBinding("<Gamepad>/buttonEast");
+            stopAction.AddBinding("<Keyboard>/space");
+
+            toggleActionsAction = new InputAction("Actions", InputActionType.Button);
+            toggleActionsAction.AddBinding("<XRController>{RightHand}/secondaryButton");
+            toggleActionsAction.AddBinding("<Gamepad>/buttonNorth");
+            toggleActionsAction.AddBinding("<Keyboard>/tab");
+
+            intensityAction = new InputAction("Intensity", InputActionType.Button);
+            intensityAction.AddBinding("<XRController>{LeftHand}/primaryButton");
+            intensityAction.AddBinding("<Gamepad>/buttonWest");
+            intensityAction.AddBinding("<Keyboard>/leftShift");
+
             // Dedicated e-stop = both grips + A (stopAction) held ~0.3 s. Provisional (HANDOFF §6): verify on the headset.
-            gripLeftAction = new InputAction("GripLeft", InputActionType.Button, "<XRController>{LeftHand}/gripPressed");
-            gripRightAction = new InputAction("GripRight", InputActionType.Button, "<XRController>{RightHand}/gripPressed");
+            gripLeftAction = new InputAction("GripLeft", InputActionType.Button);
+            gripLeftAction.AddBinding("<XRController>{LeftHand}/gripPressed");
+            gripLeftAction.AddBinding("<XRController>{LeftHand}/gripButton");
+
+            gripRightAction = new InputAction("GripRight", InputActionType.Button);
+            gripRightAction.AddBinding("<XRController>{RightHand}/gripPressed");
+            gripRightAction.AddBinding("<XRController>{RightHand}/gripButton");
             stopAction.performed += _ => app.RequestOperatorStop();
             toggleActionsAction.performed += _ => ToggleActions();
             intensityAction.performed += _ => CycleIntensity();

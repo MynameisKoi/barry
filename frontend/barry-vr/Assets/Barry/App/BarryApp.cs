@@ -208,7 +208,20 @@ namespace Barry.App
 
         public void SetControllerInput(Vector2 leftStick, Vector2 rightStick)
         {
-            RobotControl.SetCommand(InputMapping.Map(leftStick, rightStick));
+            var cmd = InputMapping.Map(leftStick, rightStick);
+            if (cmd.IsCentered && !EmergencyLatch.IsLatched)
+            {
+                if (RobotControl.StateMachine.State == TeleopState.Stopped)
+                {
+                    RobotControl.StateMachine.AcknowledgeStop(sticksCentered: true);
+                    RobotControl.StateMachine.TryArm(sticksCentered: true, hasControl: true, linkAvailable: true, cameraAvailable: true);
+                }
+                else if (RobotControl.StateMachine.State == TeleopState.Disarmed)
+                {
+                    RobotControl.StateMachine.TryArm(sticksCentered: true, hasControl: true, linkAvailable: true, cameraAvailable: true);
+                }
+            }
+            RobotControl.SetCommand(cmd);
         }
 
         public bool TryArm(bool sticksCentered, bool linkAvailable, bool cameraAvailable)
