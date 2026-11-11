@@ -59,33 +59,6 @@
             background: rgba(255, 255, 255, 0.2);
             border-color: #00f0ff;
         }
-        #robot-auth {
-            pointer-events: auto;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 6px 8px;
-            border: 1px solid rgba(0, 240, 255, 0.35);
-            border-radius: 6px;
-            background: rgba(15, 23, 42, 0.9);
-            font-size: 0.75rem;
-        }
-        #robot-api-key {
-            width: 190px;
-            padding: 5px 7px;
-            color: #fff;
-            background: rgba(255, 255, 255, 0.08);
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            border-radius: 4px;
-        }
-        #connect-control {
-            padding: 5px 8px;
-            color: #fff;
-            background: rgba(0, 240, 255, 0.18);
-            border: 1px solid rgba(0, 240, 255, 0.45);
-            border-radius: 4px;
-            cursor: pointer;
-        }
         #command-status {
             position: absolute;
             top: 64px;
@@ -120,65 +93,39 @@
     <script src="/static/js/VRButton.js"></script>
 </head>
 <body>
-    <img id="vr-cam-feed" src="/api/camera/stream" crossOrigin="anonymous" style="display:none;" />
     <canvas id="webgl-canvas"></canvas>
     <div id="desktop-ui">
-        <div class="hud-badge">BARRY // 3D HOLOGRAPHIC COCKPIT</div>
+        <div class="hud-badge">BARRY // VR LOCAL PREVIEW · NO API</div>
         <a id="switch-flatscreen" href="/cockpit">← 2D Flatscreen Mode</a>
-        <div id="robot-auth">
-            <label for="robot-api-key">Robot key</label>
-            <input id="robot-api-key" type="password" autocomplete="off" spellcheck="false" aria-label="Robot API key">
-            <button id="connect-control" type="button">Connect</button>
-        </div>
     </div>
-    <div id="command-status" role="status" aria-live="polite">NOT CONNECTED · Enter the robot key</div>
+    <div id="command-status" role="status" aria-live="polite">LOCAL PREVIEW · Commands stay in this browser</div>
     <div id="keyboard-hint">
-        🎮 <b>Controls:</b> VR laser + trigger on virtual joystick · WASD / Arrows on desktop · Space for E-Stop
+        🎮 <b>LOCAL PREVIEW:</b> VR laser + trigger on virtual joystick · WASD / Arrows on desktop · Space for E-Stop · No robot commands sent
     </div>
 
     <script>
         // --- State Management ---
         const state = {
             robotConnected: false,
-            robotMode: "remote",
+            robotMode: "preview",
             battery: 0,
-            roll: 0.0,
-            pitch: 0.0,
+            roll: null,
+            pitch: null,
             yaw: 0.0,
-            rttMs: 12,
+            rttMs: null,
             fps: 20,
             frameAgeMs: 45,
             intensity: "MEDIUM",
             speed: 0.6,
             lastCommand: "stop",
-            commandStatus: "NOT CONNECTED",
-            commandMessage: "Enter the robot key",
+            commandStatus: "LOCAL PREVIEW",
+            commandMessage: "Commands stay in this browser; no robot API is called",
             forward: 0.0,
             strafe: 0.0,
             turn: 0.0,
             eStopActive: false
         };
         const virtualJoystickAxes = { forward: 0, turn: 0 };
-
-        const ROBOT_KEY_STORAGE_KEY = "barry.robotApiKey";
-        const robotApiKeyInput = document.getElementById("robot-api-key");
-        let controlSessionId = null;
-        let commandSequence = 0;
-        let sessionRequest = null;
-        try {
-            robotApiKeyInput.value = sessionStorage.getItem(ROBOT_KEY_STORAGE_KEY) || "";
-        } catch (e) {}
-
-        robotApiKeyInput.addEventListener("input", () => {
-            const key = robotApiKeyInput.value.trim();
-            try {
-                if (key) sessionStorage.setItem(ROBOT_KEY_STORAGE_KEY, key);
-                else sessionStorage.removeItem(ROBOT_KEY_STORAGE_KEY);
-            } catch (e) {}
-            controlSessionId = null;
-            commandSequence = 0;
-            updateCommandStatus(key ? "KEY_READY" : "KEY_REQUIRED", key ? "Key saved for this tab" : "Enter the robot key");
-        });
 
         function updateCommandStatus(status, message = "") {
             state.commandStatus = String(status || "UNKNOWN").toUpperCase();
@@ -188,94 +135,9 @@
             if (typeof drawLeftPanel === "function") drawLeftPanel();
         }
 
-        function newCommandId() {
-            if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
-            return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        function recordPreviewCommand(label, message = "Preview only · no robot command sent") {
+            updateCommandStatus("LOCAL PREVIEW", `${label} · ${message}`);
         }
-
-        function responseResultStatus(response, payload) {
-            if (payload && payload.status) return String(payload.status).toUpperCase();
-            const detail = String(payload?.detail || payload?.message || "").toUpperCase();
-            const known = ["BUSY", "MISSION_REQUIRED", "ESTOP_ACTIVE", "OFFLINE", "INVALID", "FAILED"];
-            const namedStatus = known.find(code => detail.includes(code));
-            if (namedStatus) return namedStatus;
-            if (response.status === 423) return "ESTOP_ACTIVE";
-            if (response.status === 503) return "OFFLINE";
-            if (response.status === 401) return "UNAUTHORIZED";
-            if (response.status === 403) return "MISSION_REQUIRED";
-            return response.ok ? "ACCEPTED" : `HTTP_${response.status}`;
-        }
-
-        async function acquireControlSession() {
-            const apiKey = robotApiKeyInput.value.trim();
-            if (!apiKey) {
-                updateCommandStatus("KEY_REQUIRED", "Enter the robot key");
-                return false;
-            }
-            if (sessionRequest) return sessionRequest;
-            sessionRequest = (async () => {
-                try {
-                    const headers = { "X-Robot-Key": apiKey };
-                    if (controlSessionId) headers["X-Control-Session"] = controlSessionId;
-                    const response = await fetch("/api/v1/session", { method: "POST", headers });
-                    const payload = await response.json().catch(() => ({}));
-                    if (!response.ok || !payload.session_id) {
-                        updateCommandStatus(payload.status || `HTTP_${response.status}`, payload.message || payload.detail || "Could not acquire control session");
-                        return false;
-                    }
-                    controlSessionId = payload.session_id;
-                    commandSequence = 0;
-                    updateCommandStatus("SESSION_ACTIVE", "Gateway control session acquired");
-                    return true;
-                } catch (error) {
-                    updateCommandStatus("OFFLINE", error.message || "Backend unavailable");
-                    return false;
-                } finally {
-                    sessionRequest = null;
-                }
-            })();
-            return sessionRequest;
-        }
-
-        async function sendApiCommand(path, { body = null, sequenced = false, source = "hand", shouldSend = null } = {}) {
-            const apiKey = robotApiKeyInput.value.trim();
-            if (!apiKey) {
-                updateCommandStatus("KEY_REQUIRED", "Enter the robot key");
-                return null;
-            }
-            if (sequenced && !controlSessionId && !(await acquireControlSession())) return null;
-            if (shouldSend && !shouldSend()) return null;
-            if (path === "/api/v1/motion" && state.eStopActive) {
-                updateCommandStatus("ESTOP_ACTIVE", "Reset the emergency stop before moving");
-                return null;
-            }
-
-            const headers = { "X-Robot-Key": apiKey, "X-Command-Source": source, "X-Command-Id": newCommandId() };
-            if (body !== null) headers["Content-Type"] = "application/json";
-            if (sequenced) {
-                headers["X-Control-Session"] = controlSessionId;
-                headers["X-Command-Seq"] = String(++commandSequence);
-                headers["X-Command-Sent-At"] = String(Date.now());
-            }
-            try {
-                const response = await fetch(path, {
-                    method: "POST",
-                    headers,
-                    body: body === null ? undefined : JSON.stringify(body)
-                });
-                const payload = await response.json().catch(() => ({}));
-                const resultStatus = responseResultStatus(response, payload);
-                const message = payload.message || payload.detail || (response.ok ? "Command accepted by API" : response.statusText);
-                updateCommandStatus(resultStatus, message);
-                if (resultStatus === "ESTOP_ACTIVE") state.eStopActive = true;
-                return { response, payload };
-            } catch (error) {
-                updateCommandStatus("OFFLINE", error.message || "Backend unavailable; command was not queued");
-                return null;
-            }
-        }
-
-        document.getElementById("connect-control").addEventListener("click", acquireControlSession);
 
         // --- Three.js Setup ---
         const canvas = document.getElementById("webgl-canvas");
@@ -433,7 +295,7 @@
             ctx.fillStyle = "#ffffff";
             ctx.font = "bold 20px -apple-system, monospace";
             ctx.fillText(state.robotConnected ? "READY" : "--", 32, 188);
-            ctx.fillText(`${state.rttMs} ms`, 280, 188);
+            ctx.fillText(state.rttMs === null ? "-- ms" : `${state.rttMs} ms`, 280, 188);
             // Battery
             ctx.fillStyle = "#94a3b8";
             ctx.font = "18px -apple-system, monospace";
@@ -512,7 +374,7 @@
             ctx.fillText(`STRAFE   ${state.strafe.toFixed(2)}`, 320, 462);
             ctx.fillText(`TURN     ${state.turn.toFixed(2)}`, 320, 494);
 
-            ctx.fillStyle = state.commandStatus === "ACCEPTED" || state.commandStatus === "SESSION_ACTIVE" ? "#00ff88" : "#fbbf24";
+            ctx.fillStyle = state.commandStatus === "LOCAL PREVIEW" ? "#00f0ff" : "#fbbf24";
             ctx.font = "bold 16px -apple-system, monospace";
             ctx.fillText(`RESULT · ${state.commandStatus}`, 320, 542);
             ctx.fillStyle = "#cbd5e1";
@@ -571,23 +433,18 @@
             ctx.lineWidth = 1.5;
             roundRect(ctx, vidX, vidY, vidW, vidH, 8, true, true);
 
-            // Live Camera Feed Rendering
-            let hasLiveFrame = false;
-            const vrCamImg = document.getElementById('vr-cam-feed');
-            if (vrCamImg && (vrCamImg.naturalWidth > 0 || vrCamImg.complete)) {
-                try {
-                    ctx.drawImage(vrCamImg, vidX + 2, vidY + 2, vidW - 4, vidH - 4);
-                    hasLiveFrame = true;
-                } catch (e) {}
-            }
+            // Local preview has no camera or telemetry connection.
+            const hasLiveFrame = false;
 
-            // Video Top HUD Overlay: fps, frame age, roll, pitch
+            // Video Top HUD Overlay: local render rate and preview attitude
             ctx.fillStyle = "#ffffff";
             ctx.font = "bold 14px monospace";
-            ctx.fillText(`·-· ${state.fps} fps`, vidX + 16, vidY + 28);
-            ctx.fillText(`DOGZILLA CAM`, vidX + 130, vidY + 28);
+            ctx.fillText(`RENDER ${state.fps} FPS`, vidX + 16, vidY + 28);
+            ctx.fillText(`LOCAL PREVIEW`, vidX + 170, vidY + 28);
 
-            const attitudeText = `ROLL ${state.roll.toFixed(1)}° · PITCH ${state.pitch.toFixed(1)}°`;
+            const roll = state.roll === null ? "--" : state.roll.toFixed(1);
+            const pitch = state.pitch === null ? "--" : state.pitch.toFixed(1);
+            const attitudeText = `ROLL ${roll}° · PITCH ${pitch}°`;
             ctx.fillText(attitudeText, vidX + vidW - 240, vidY + 28);
 
             // Center Crosshair Reticle
@@ -608,10 +465,10 @@
                 ctx.fillStyle = "#94a3b8";
                 ctx.font = "bold 15px monospace";
                 ctx.textAlign = "center";
-                ctx.fillText("[ DOGZILLA LIVE OPTICS ]", cx, cy + 54);
+                ctx.fillText("[ CAMERA DISABLED IN PREVIEW ]", cx, cy + 54);
 
                 ctx.font = "13px -apple-system, monospace";
-                ctx.fillText("Relaying 640x480 MJPEG · Port 6500", cx, cy + 78);
+                ctx.fillText("No camera or robot API connection", cx, cy + 78);
                 ctx.textAlign = "left";
             }
 
@@ -990,20 +847,23 @@
                     stand: "high", liedown: "low", balance: "medium",
                     sit: "low", bow: "medium", wave: "medium"
                 };
-                await sendApiCommand("/api/v1/posture", {
-                    body: { height: postureHeights[posturePreset], roll: 0, pitch: 0, yaw: 0 },
-                    sequenced: true
-                });
+                recordPreviewCommand(`POSTURE · ${posturePreset.toUpperCase()}`, `height ${postureHeights[posturePreset]}`);
             } else if (action) {
                 if (action === "ai_scan") {
-                    try { await fetch('/api/v1/missions/scan', { method: 'POST' }); } catch(e) {}
+                    state.lastCommand = "ai_scan";
+                    drawRightPanel();
+                    recordPreviewCommand("VISION SCAN");
                 } else if (action === "zero_imu") {
-                    state.roll = 0; state.pitch = 0; drawCenterPanel();
+                    state.roll = 0;
+                    state.pitch = 0;
+                    state.lastCommand = "zero_imu";
+                    drawCenterPanel();
+                    drawRightPanel();
+                    recordPreviewCommand("ZERO IMU PREVIEW");
                 } else if (action === "trot" || action === "crawl") {
-                    await sendApiCommand("/api/v1/movement-style", {
-                        body: { intensity: state.intensity.toLowerCase(), gait: action === "crawl" ? "walk" : "trot" },
-                        sequenced: true
-                    });
+                    state.lastCommand = action;
+                    drawRightPanel();
+                    recordPreviewCommand(`GAIT · ${action.toUpperCase()}`);
                 } else {
                     sendLocomotion(action);
                 }
@@ -1089,7 +949,6 @@
         let camPitch = 0;
 
         window.addEventListener('mousedown', (e) => {
-            if (e.target.closest && e.target.closest('#robot-auth')) return;
             if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'A') {
                 mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
                 mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
@@ -1198,13 +1057,16 @@
                 while (pendingMotion) {
                     const command = pendingMotion;
                     pendingMotion = null;
-                    if (state.eStopActive) continue;
-                    const { generation, ...axes } = command;
-                    await sendApiCommand("/api/v1/motion", {
-                        body: axes,
-                        sequenced: true,
-                        shouldSend: () => generation === motionGeneration && !state.eStopActive
-                    });
+                    if (state.eStopActive || command.generation !== motionGeneration) continue;
+                    const axes = {
+                        forward: command.forward,
+                        strafe: command.strafe,
+                        turn: command.turn
+                    };
+                    recordPreviewCommand(
+                        "DRIVE PREVIEW",
+                        `forward ${axes.forward.toFixed(2)} · strafe ${axes.strafe.toFixed(2)} · turn ${axes.turn.toFixed(2)}`
+                    );
                 }
             } finally {
                 isDispatching = false;
@@ -1220,7 +1082,7 @@
             state.turn = 0;
             state.lastCommand = "stop";
             drawLeftPanel();
-            return sendApiCommand("/api/v1/stop");
+            return recordPreviewCommand("STOP PREVIEW");
         }
 
         async function triggerEmergencyStop() {
@@ -1234,24 +1096,13 @@
             virtualJoystickHasSentMotion = false;
             drawLeftPanel();
             drawBottomPanel();
-            const result = await sendApiCommand("/api/v1/emergency-stop", { source: "emergency" });
-            const resultStatus = String(result?.payload?.status || "").toUpperCase();
-            if (result && result.response.ok && ["ACCEPTED", "STOP_DISPATCHED", "ESTOP_ACTIVE"].includes(resultStatus)) {
-                updateCommandStatus(result.payload.status, result.payload.message || "Emergency stop dispatched");
-            } else {
-                state.eStopActive = false;
-            }
-            drawBottomPanel();
+            return recordPreviewCommand("E-STOP PREVIEW", "Latched locally · no robot command sent");
         }
 
         async function resetEmergencyStop() {
-            const result = await sendApiCommand("/api/v1/emergency-stop/reset", { sequenced: true });
-            const resultStatus = String(result?.payload?.status || "").toUpperCase();
-            if (result && result.response.ok && ["ACCEPTED", "STOP_DISPATCHED"].includes(resultStatus)) {
-                state.eStopActive = false;
-                updateCommandStatus(result.payload.status || "ACCEPTED", result.payload.message || "Emergency stop reset dispatched");
-            }
+            state.eStopActive = false;
             drawBottomPanel();
+            return recordPreviewCommand("E-STOP RESET PREVIEW");
         }
 
         // --- Keyboard Controls (WASD / Arrows / Space) ---
@@ -1277,7 +1128,6 @@
         }
 
         window.addEventListener('keydown', (e) => {
-            if (e.target.closest && e.target.closest('#robot-auth')) return;
             if (e.repeat) return;
             const key = e.key.toLowerCase();
             if (key === ' ') {
@@ -1295,7 +1145,6 @@
         });
 
         window.addEventListener('keyup', (e) => {
-            if (e.target.closest && e.target.closest('#robot-auth')) return;
             const key = e.key.toLowerCase();
             if (activeKeys.has(key)) {
                 activeKeys.delete(key);
@@ -1306,38 +1155,6 @@
                 }
             }
         });
-
-        // --- WebSocket Telemetry Loop ---
-        function initWebSocket() {
-            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const ws = new WebSocket(`${proto}//${location.host}/ws`);
-            ws.onopen = () => {
-                state.connected = true;
-                drawLeftPanel();
-                drawCenterPanel();
-            };
-            ws.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    if (data.type === 'telemetry' && data.telemetry) {
-                        const t = data.telemetry;
-                        if (t.battery_pct !== undefined) state.battery = t.battery_pct;
-                        if (t.roll !== undefined) state.roll = t.roll;
-                        if (t.pitch !== undefined) state.pitch = t.pitch;
-                        if (t.emergency_stopped !== undefined) state.eStopActive = t.emergency_stopped;
-                        drawLeftPanel();
-                        drawCenterPanel();
-                        drawBottomPanel();
-                    }
-                } catch (e) {}
-            };
-            ws.onclose = () => {
-                state.connected = false;
-                drawLeftPanel();
-                setTimeout(initWebSocket, 2000);
-            };
-        }
-        initWebSocket();
 
         // --- Main Render Loop ---
         const clock = new THREE.Clock();
