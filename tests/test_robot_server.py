@@ -79,6 +79,7 @@ class RecordingRobot(RobotInterface):
     def emergency_stop(self) -> Dict[str, Any]:
         self.calls.append("emergency_stop")
         self.state.emergency_stopped = True
+        self.state.moving = False
         return {"success": True}
 
     def reset_emergency_stop(self) -> Dict[str, Any]:
@@ -122,6 +123,18 @@ def test_auth_session_conflict_renewal_and_stale_sequence():
         assert client.post("/api/v1/motion", headers=headers, json=body).status_code == 409
 
 
+def test_command_source_is_logged_defaults_to_hand_and_rejects_unknown(caplog):
+    _, app = setup()
+    with TestClient(app) as client:
+        _, headers = session(client)
+        body = {"forward": 0, "strafe": 0, "turn": 0}
+        response = client.post("/api/v1/motion", headers=headers, json=body)
+        assert response.status_code == 200
+        assert "source=hand" in caplog.text
+        bad = {**headers, "X-Command-Seq": "2", "X-Command-Source": "bogus"}
+        assert client.post("/api/v1/motion", headers=bad, json=body).status_code == 400
+
+
 def test_stop_and_emergency_stop_need_no_session():
     robot, app = setup()
     with TestClient(app) as client:
@@ -133,6 +146,21 @@ def test_stop_and_emergency_stop_need_no_session():
             "message": "", "intensity": "medium",
         }
         assert robot.calls[-2:] == ["stop", "emergency_stop"]
+
+
+def test_priority_stops_ignore_invalid_command_source():
+    robot, app = setup()
+    robot.state.moving = True
+    with TestClient(app) as client:
+        stop = client.post("/api/v1/stop", headers={**auth(), "X-Command-Source": "garbage"})
+        assert stop.status_code == 200
+        assert robot.state.moving is False
+
+        robot.state.moving = True
+        emergency = client.post("/api/v1/emergency-stop", headers={**auth(), "X-Command-Source": "garbage"})
+        assert emergency.status_code == 200
+        assert robot.state.moving is False
+        assert robot.state.emergency_stopped is True
 
 
 def test_stop_invalidates_motion_waiting_for_dispatch_lock():

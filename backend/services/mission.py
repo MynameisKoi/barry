@@ -329,7 +329,9 @@ class MissionService:
             }
 
     def log_event(
-        self, event_type: str, description: str, mission_id: Optional[str] = None
+        self, event_type: str, description: str, mission_id: Optional[str] = None,
+        source: Optional[str] = None, command_id: Optional[str] = None,
+        result_code: Optional[int] = None, latency_ms: Optional[float] = None,
     ) -> int:
         """Appends an event to the audit trail."""
         timestamp = datetime.now(timezone.utc).isoformat()
@@ -339,10 +341,12 @@ class MissionService:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                INSERT INTO events (mission_id, event_type, description, timestamp)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO events (mission_id, event_type, description, timestamp,
+                    source, command_id, result_code, latency_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (target_mission, event_type, description, timestamp),
+                (target_mission, event_type, description, timestamp, source,
+                 command_id, result_code, latency_ms),
             )
             return cursor.lastrowid
 
@@ -355,7 +359,8 @@ class MissionService:
             if mission_id:
                 cursor.execute(
                     """
-                    SELECT event_id, mission_id, event_type, description, timestamp
+                    SELECT event_id, mission_id, event_type, description, timestamp,
+                        source, command_id, result_code, latency_ms
                     FROM events
                     WHERE mission_id = ?
                     ORDER BY event_id DESC LIMIT ?
@@ -365,7 +370,8 @@ class MissionService:
             else:
                 cursor.execute(
                     """
-                    SELECT event_id, mission_id, event_type, description, timestamp
+                    SELECT event_id, mission_id, event_type, description, timestamp,
+                        source, command_id, result_code, latency_ms
                     FROM events
                     ORDER BY event_id DESC LIMIT ?
                     """,

@@ -39,6 +39,8 @@ Watchdog
 
 from __future__ import annotations
 
+import unicodedata
+
 API_PREFIX = "/api/v1"
 
 # --- headers ------------------------------------------------------------
@@ -46,6 +48,22 @@ AUTH_HEADER = "X-Robot-Key"
 SESSION_HEADER = "X-Control-Session"
 SEQ_HEADER = "X-Command-Seq"
 SENT_AT_HEADER = "X-Command-Sent-At"
+SOURCE_HEADER = "X-Command-Source"
+COMMAND_ID_HEADER = "X-Command-Id"
+COMMAND_SOURCES = frozenset({"hand", "voice", "llm", "emergency"})
+
+
+def sanitize_command_source(source: str | None, *, missing: str = "hand") -> str:
+    if source is None:
+        return missing
+    return source if source in COMMAND_SOURCES else "unknown"
+
+
+def sanitize_command_id(command_id: str | None) -> str | None:
+    if command_id is None:
+        return None
+    clean = "".join(char for char in command_id if unicodedata.category(char) != "Cc").strip()
+    return clean[:64] or None
 
 # --- paths --------------------------------------------------------------
 PATH_HEALTH = "/healthz"

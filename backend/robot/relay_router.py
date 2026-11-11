@@ -104,9 +104,15 @@ def create_robot_relay_router(
                 except Exception:
                     pass
 
-    def audit(description: str) -> None:
+    def audit(description: str, request: Request, response: Response, started: float) -> None:
         try:
-            log_event(event_type="robot_command", description=description)
+            log_event(
+                event_type="robot_command", description=description,
+                source=protocol.sanitize_command_source(request.headers.get(protocol.SOURCE_HEADER)),
+                command_id=protocol.sanitize_command_id(request.headers.get(protocol.COMMAND_ID_HEADER)),
+                result_code=response.status_code,
+                latency_ms=(time.perf_counter() - started) * 1000,
+            )
         except Exception:
             # Audit persistence must never delay or replace the Pi response.
             logger.exception("Could not write robot relay audit event")
@@ -116,15 +122,14 @@ def create_robot_relay_router(
         path: str,
         audit_action: str | None = None,
     ) -> Response:
+        started = time.perf_counter()
         response = await get_relay().forward(
             request,
             path,
             priority_stop=path in PRIORITY_PATHS,
         )
         if audit_action is not None and audit_action != "motion":
-            audit(
-                f"Relayed {audit_action} to Pi Robot API; HTTP {response.status_code}."
-            )
+            audit(f"Relayed {audit_action} to Pi Robot API; HTTP {response.status_code}.", request, response, started)
         return response
 
     @router.post("/session")
@@ -140,18 +145,19 @@ def create_robot_relay_router(
         return response
 
     async def relay_motion(request: Request, path: str, moving: bool | None) -> Response:
-        """Relay a motion command; audit only start/stop transitions and non-2xx replies."""
+        """Relay motion and audit transitions and failures only."""
         nonlocal motion_active, repeat_task, last_motion_time
+        started = time.perf_counter()
         response = await forward(request, path)
         if not 200 <= response.status_code < 300:
-            audit(f"Relayed motion to Pi Robot API; HTTP {response.status_code}.")
+            audit(f"Relayed motion to Pi Robot API; HTTP {response.status_code}.", request, response, started)
         elif moving is not None:
             if moving and not motion_active:
                 motion_active = True
-                audit(f"Relayed motion started to Pi Robot API; HTTP {response.status_code}.")
+                audit(f"Relayed motion started to Pi Robot API; HTTP {response.status_code}.", request, response, started)
             elif not moving and motion_active:
                 motion_active = False
-                audit(f"Relayed motion stopped to Pi Robot API; HTTP {response.status_code}.")
+                audit(f"Relayed motion stopped to Pi Robot API; HTTP {response.status_code}.", request, response, started)
 
         if moving and 200 <= response.status_code < 300:
             last_motion_time = time.monotonic()

@@ -9,6 +9,7 @@ it can never wait behind a slow motion request or an exhausted motion pool.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Iterable, Optional
 
 import httpx
@@ -24,6 +25,8 @@ _FORWARDED_COMMAND_HEADERS: Iterable[str] = (
     protocol.SESSION_HEADER,
     protocol.SEQ_HEADER,
     protocol.SENT_AT_HEADER,
+    protocol.SOURCE_HEADER,
+    protocol.COMMAND_ID_HEADER,
 )
 _FORWARDED_RESPONSE_HEADERS: Iterable[str] = (
     "content-type",
@@ -78,9 +81,10 @@ class RobotApiRelay:
         client = self._stop_client if priority_stop else self._client
         timeout_s = (
             self._motion_timeout_s
-            if path == protocol.PATH_MOTION or priority_stop
+            if path in (protocol.PATH_MOTION, protocol.PATH_MOTION_DISCRETE) or priority_stop
             else self.config.remote_timeout_s
         )
+        started = time.perf_counter()
         try:
             upstream = await client.request(
                 request.method,
@@ -91,6 +95,10 @@ class RobotApiRelay:
             )
         except httpx.RequestError as exc:
             logger.warning("Pi Robot API unavailable for %s %s: %s", request.method, path, exc)
+            logger.info("Robot command source=%s command_id=%s path=%s status=%s latency_ms=%.1f",
+                        protocol.sanitize_command_source(request.headers.get(protocol.SOURCE_HEADER)),
+                        protocol.sanitize_command_id(request.headers.get(protocol.COMMAND_ID_HEADER)), path, 503,
+                        (time.perf_counter() - started) * 1000)
             return JSONResponse(
                 status_code=503,
                 content={"detail": "Pi Robot API unavailable."},
@@ -101,6 +109,10 @@ class RobotApiRelay:
             for name in _FORWARDED_RESPONSE_HEADERS
             if name in upstream.headers
         }
+        logger.info("Robot command source=%s command_id=%s path=%s status=%s latency_ms=%.1f",
+                    protocol.sanitize_command_source(request.headers.get(protocol.SOURCE_HEADER)),
+                    protocol.sanitize_command_id(request.headers.get(protocol.COMMAND_ID_HEADER)), path, upstream.status_code,
+                    (time.perf_counter() - started) * 1000)
         return Response(
             content=upstream.content,
             status_code=upstream.status_code,
