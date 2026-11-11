@@ -55,10 +55,22 @@ def create_robot_relay_router(
     auth: QuestRelayAuth | None = None,
 ) -> APIRouter:
     """Build transparent Robot API v1 routes without broadcasts."""
+    quest_auth = auth or QuestRelayAuth.from_env()
+
+    def relay_auth(request: Request) -> None:
+        # Stop and e-stop are never gated by auth (architecture principle 5, Tom 2026-11-10):
+        # a headset with a missing or wrong key, or a laptop with no QUEST_API_KEY, can still
+        # halt the robot. They can only make it safer. The laptop still sends its own
+        # ROBOT_API_KEY to the Pi. Every other route stays keyed, including future ones,
+        # because this is an explicit allowlist of two paths.
+        if request.method == "POST" and request.url.path in PRIORITY_PATHS:
+            return
+        quest_auth(request)
+
     router = APIRouter(
         prefix=protocol.API_PREFIX,
         tags=["Robot Relay"],
-        dependencies=[Depends(auth or QuestRelayAuth.from_env())],
+        dependencies=[Depends(relay_auth)],
     )
     motion_active = False
 
