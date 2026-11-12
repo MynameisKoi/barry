@@ -56,6 +56,7 @@ const SEND_HZ = 10;                     // RobotControlService default
 const FAILURES_BEFORE_STOP = 3;         // RobotControlService
 const ESTOP_HOLD_S = 0.3;               // EmergencyStopGesture: both grips + A held
 const CONFIRM_WINDOW_S = 3;             // EmergencyLatch / end-mission confirm
+const DETECTION_POLL_MS = 333, DETECTION_MAX_AGE_S = 2;
 const ACCEPTED_DISCLAIMER = "Accepted by API · not proof of movement";
 const LEVELS = ["LOW", "MEDIUM", "HIGH"];
 const ZONES = ["Zone-A", "Zone-B", "Zone-C", "Zone-D"];
@@ -108,6 +109,7 @@ const state = {
   connected: false, controlActive: false, rttMs: null, intensity: "MEDIUM", gait: "trot",
   battery: null, roll: null, pitch: null,
   cameraFps: null, cameraLive: false, cameraUrl: null,
+  detectionStatus: "unavailable", detections: [], detectionsReceivedAt: 0, detectionsSignature: "",
   sent: { forward: 0, strafe: 0, turn: 0 },          // last command handed to the API (COMMAND SENT bars)
   result: null,                                      // { status, message } of the last refusal, null = disclaimer
   estopLatched: false, latchPhase: "idle", latchUntil: 0, latchError: "",
@@ -532,6 +534,48 @@ async function pickCameraSource() {
 }
 cameraImg.onerror = () => { state.cameraLive = false; markDirty("cameraOverlay"); setTimeout(() => { state.cameraUrl = null; pickCameraSource(); }, 3000); };
 
+function parseDetection(item) {
+  if (!item || typeof item !== "object") return null;
+  const label = typeof item.label === "string" ? item.label.trim() : "";
+  const confidence = item.confidence, age = item.age_s;
+  const rawBox = Array.isArray(item.box) ? item.box : item.bounding_box;
+  if (!label || typeof confidence !== "number" || !Number.isFinite(confidence) || confidence < 0 || confidence > 1 ||
+      typeof age !== "number" ||
+      !Number.isFinite(age) || age < 0 || age > DETECTION_MAX_AGE_S ||
+      !Array.isArray(rawBox) || rawBox.length !== 4) return null;
+  if (!rawBox.every((v) => typeof v === "number" && Number.isFinite(v))) return null;
+  const box = rawBox;
+  // The API uses normalized [ymin, xmin, ymax, xmax] coordinates.
+  const [top, left, bottom, right] = box.map((v) => Math.max(0, Math.min(1, v)));
+  if (bottom <= top || right <= left) return null;
+  return { label, confidence, age_s: age, box: [top, left, bottom, right] };
+}
+async function pollDetections() {
+  let payload = null;
+  try {
+    const r = await fetch("/api/ai/detections", { cache: "no-store" });
+    if (r.ok) payload = await r.json();
+  } catch (e) {}
+  const available = payload?.status === "available";
+  const detections = available && Array.isArray(payload.detections)
+    ? payload.detections.map(parseDetection).filter(Boolean) : [];
+  const status = available ? "available" : "unavailable";
+  const signature = JSON.stringify([status, detections.map((d) => [d.label, d.confidence, ...d.box])]);
+  state.detectionStatus = status;
+  state.detections = detections;
+  state.detectionsReceivedAt = performance.now();
+  if (signature !== state.detectionsSignature) {
+    state.detectionsSignature = signature;
+    markDirty("cameraOverlay");
+  }
+  setTimeout(pollDetections, DETECTION_POLL_MS);
+}
+function visibleDetections(now = performance.now()) {
+  if (state.detectionStatus !== "available" || !state.cameraLive) return [];
+  const elapsed = Math.max(0, now - state.detectionsReceivedAt) / 1000;
+  return state.detections.filter((d) => d.age_s + elapsed <= DETECTION_MAX_AGE_S);
+}
+
 // ------------------------------------------------------------------ canvas drawing helpers (mockup px)
 function rr(ctx, x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, Math.max(0, Math.min(r, w / 2, h / 2))); }
 function fillRR(ctx, x, y, w, h, r, fill, stroke = null, lw = 1, dash = null) {
@@ -700,10 +744,36 @@ new Panel("cameraOverlay", {
   wPx: 880, hPx: 495, S: S_FAR, dist: 2.0, order: 3, interactive: false,
   draw(ctx, p) {
     const cs = p.fs(13);
+    const detections = visibleDetections();
+    const detectionOn = state.detectionStatus === "available" && state.cameraLive;
+    const sourceW = cameraImg.naturalWidth, sourceH = cameraImg.naturalHeight;
+    if (detectionOn && sourceW > 0 && sourceH > 0) {
+      const rect = containedVideoRect(sourceW, sourceH);
+      ctx.save();
+      ctx.beginPath(); ctx.rect(rect.x, rect.y, rect.w, rect.h); ctx.clip();
+      for (const detection of detections) {
+        const [top, left, bottom, right] = detection.box;
+        const x = rect.x + left * rect.w, y = rect.y + top * rect.h;
+        const w = (right - left) * rect.w, h = (bottom - top) * rect.h;
+        ctx.save(); ctx.strokeStyle = T.accent; ctx.lineWidth = 2; ctx.shadowColor = "rgba(255,255,255,0.9)"; ctx.shadowBlur = 4;
+        ctx.strokeRect(x, y, w, h); ctx.restore();
+        const label = `${detection.label} ${Math.round(detection.confidence * 100)}%`;
+        const labelSize = p.fs(13), labelHeight = labelSize + 8;
+        const labelWidth = Math.min(rect.w, measure(ctx, label, labelSize, { weight: 600, font: "mono" }) + 12);
+        const labelX = Math.max(rect.x, Math.min(x, rect.x + rect.w - labelWidth));
+        const labelY = Math.max(rect.y, y - labelHeight - 2);
+        fillRR(ctx, labelX, labelY, labelWidth, labelHeight, 4, T.chipWhite, T.accent, 1);
+        txt(ctx, label, labelX + 6, labelY, labelWidth - 12, labelHeight, { size: labelSize, weight: 600, font: "mono", fit: true });
+      }
+      ctx.restore();
+    }
     let x = 24;
     x += chip(ctx, x, 24, { h: 26, padX: 10, gap: 6, r: 6, size: cs, text: state.cameraLive ? "LIVE" : "NO VIDEO", tone: state.cameraLive ? "ok" : "warn", overlay: true }) + 8;
     x += overlayChip(ctx, x, 24, state.cameraFps != null ? `${state.cameraFps.toFixed(0)} fps` : "-- fps", cs) + 8;
-    overlayChip(ctx, x, 24, "frame age -- ms", cs);
+    x += overlayChip(ctx, x, 24, "frame age -- ms", cs) + 8;
+    chip(ctx, x, 24, { h: 26, padX: 10, gap: 6, r: 6, size: cs,
+      text: detectionOn ? `DETECT · ${detections.length}` : "DETECT OFF",
+      tone: detectionOn ? "ok" : "neutral", overlay: true });
     const rp = `ROLL ${state.roll != null ? state.roll.toFixed(0) : "--"}° · PITCH ${state.pitch != null ? state.pitch.toFixed(0) : "--"}°`;
     overlayChip(ctx, 880 - 24, 24, rp, cs, true);
   },
@@ -1025,11 +1095,18 @@ function resetLayout() {
 }
 loadLayout();
 
-// Live video: its own plane over the camera screen's inner area (inset 10 mockup px), aspect "contain".
+// Live video and detections share this letterboxed rectangle inside the camera screen's 10 px inset.
 const videoCanvas = document.createElement("canvas"); videoCanvas.width = 640; videoCanvas.height = 360;
 const videoCtx = videoCanvas.getContext("2d");
 const videoTex = new THREE.CanvasTexture(videoCanvas); videoTex.colorSpace = THREE.SRGBColorSpace;
-const innerW = 860 * S_FAR / 1000, innerH = 475 * S_FAR / 1000;
+const VIDEO_INSET = 10, VIDEO_INNER_W = 860, VIDEO_INNER_H = 475;
+function containedVideoRect(w, h) {
+  if (!(w > 0 && h > 0)) return { x: VIDEO_INSET, y: VIDEO_INSET, w: 0, h: 0 };
+  const aspect = w / h;
+  let vw = VIDEO_INNER_W, vh = VIDEO_INNER_W / aspect;
+  if (vh > VIDEO_INNER_H) { vh = VIDEO_INNER_H; vw = VIDEO_INNER_H * aspect; }
+  return { x: VIDEO_INSET + (VIDEO_INNER_W - vw) / 2, y: VIDEO_INSET + (VIDEO_INNER_H - vh) / 2, w: vw, h: vh };
+}
 const videoMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: videoTex, toneMapped: false }));
 videoMesh.renderOrder = 2; videoMesh.visible = false;
 P.camera.group.add(videoMesh); videoMesh.position.z = 0.002;
@@ -1046,9 +1123,9 @@ function updateVideo(now) {
     videoW = w; videoH = h;
     videoCanvas.width = Math.min(1280, w); videoCanvas.height = Math.round(videoCanvas.width * h / w);
     videoTex.dispose();                                         // texture size changed
-    const aspect = w / h; let vw = innerW, vh = innerW / aspect;
-    if (vh > innerH) { vh = innerH; vw = innerH * aspect; }
-    videoMesh.scale.set(vw, vh, 1);
+    const rect = containedVideoRect(w, h);
+    videoMesh.scale.set(rect.w * S_FAR / 1000, rect.h * S_FAR / 1000, 1);
+    markDirty("cameraOverlay");
   }
   try { videoCtx.drawImage(cameraImg, 0, 0, videoCanvas.width, videoCanvas.height); videoTex.needsUpdate = true; } catch (e) { /* frame not decodable yet */ }
 }
@@ -1341,6 +1418,7 @@ acquireControlSession();
 pollStatus(); setInterval(pollStatus, 1000);
 pollTelemetry(); setInterval(pollTelemetry, 2000);
 pickCameraSource(); setInterval(pickCameraSource, 5000);
+pollDetections();
 loadOperators(); refreshMission(); setInterval(refreshMission, 3000);
 loadActions();
 connectSocket();
