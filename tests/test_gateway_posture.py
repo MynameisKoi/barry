@@ -52,3 +52,40 @@ def test_remote_posture_wire(height, pitch):
     assert seen == [('/api/v1/posture', {'height': height, 'roll': 0, 'pitch': pitch, 'yaw': 0})]
     assert robot.get_control_state().posture.pitch == pitch
     robot.close()
+
+
+@pytest.mark.parametrize('source', ['hand', 'voice', 'llm'])
+def test_measured_imu_does_not_block_commanded_neutral_posture(source):
+    from tests.test_robot_remote import FakePi
+    from backend.robot import protocol
+
+    class MeasuredPi(FakePi):
+        def __call__(self, request):
+            response = super().__call__(request)
+            if request.url.path == protocol.PATH_TELEMETRY:
+                payload = response.json()
+                payload['control_state']['posture'] = {
+                    'height': 'medium', 'pitch': -1.16, 'roll': .35, 'yaw': -26.87}
+                return httpx.Response(200, json=payload)
+            return response
+
+    async def run():
+        robot = RemoteRobotClient(RobotConfig(mode=RobotMode.REMOTE),
+                                  transport=httpx.MockTransport(MeasuredPi()))
+        try:
+            gateway = CommandGateway(robot)
+            gateway.posture_settle_s = .001
+            await gateway.status(source=source)
+            assert robot.get_control_state().posture.pitch == -1.16
+            assert (await gateway.motion(MotionCommand(forward=.3), source=source)).status == 'ACCEPTED'
+            assert (await gateway.set_posture({'height': 'medium', 'pitch': -8}, source=source)).status == 'ACCEPTED'
+            await gateway.status(source=source)
+            assert (await gateway.motion(MotionCommand(forward=.3), source=source)).status == 'INVALID'
+            assert (await gateway.level_posture(source=source)).status == 'ACCEPTED'
+            await gateway.status(source=source)
+            assert (await gateway.motion(MotionCommand(forward=.3), source=source)).status == 'ACCEPTED'
+            assert (await gateway.set_posture({'height': 'medium', 'yaw': 5}, source=source)).status == 'ACCEPTED'
+            assert (await gateway.motion(MotionCommand(forward=.3), source=source)).status == 'ACCEPTED'
+        finally:
+            robot.close()
+    asyncio.run(run())

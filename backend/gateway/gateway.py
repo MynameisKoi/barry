@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from backend.robot.factory import create_robot
-from backend.robot.interface import Direction, MotionCommand, RobotInterface
+from backend.robot.interface import Direction, MotionCommand, Posture, RobotInterface
 from backend.services.mission import mission_service
 
 SOURCES = {"hand", "voice", "llm", "emergency"}
@@ -46,6 +46,7 @@ class CommandGateway:
         self._active_task: asyncio.Task[Any] | None = None
         self._active_source: str | None = None
         self._arbitration_lock = asyncio.Lock()
+        self._commanded_posture = Posture()
         self.posture_settle_s = _env_float("POSTURE_SETTLE_S", 0.5)
         self.hand_hold_s = _env_float("GATEWAY_HAND_HOLD_S", 2.0)
         self._last_hand_at = 0.0
@@ -398,8 +399,8 @@ class CommandGateway:
         return await self._run_owned(run(), source, cid)
 
     def _posture_motion_block(self, source: str, cid: str) -> GatewayResult | None:
-        posture = self.robot.get_control_state().posture
-        if posture.pitch or posture.roll or posture.yaw or posture.height.value != "medium":
+        posture = self._commanded_posture
+        if posture.pitch or posture.roll or posture.height.value != "medium":
             return GatewayResult("INVALID", "Level posture to medium height before motion (level_posture).", cid, source)
         return None
 
@@ -414,7 +415,7 @@ class CommandGateway:
         whether positive or negative pitch points the mounted camera down. Tom must
         verify the physical sign. Simulator posture applies immediately; the default
         POSTURE_SETTLE_S=0.5 is a conservative, uncalibrated hardware estimate.
-        Motion requires zero attitude and medium height; use level_posture first.
+        Motion requires commanded zero pitch/roll and medium height (yaw ignored); use level_posture first.
         """
         cid = self._id(source)
         blocked = await self._prepare(source, cid)
@@ -440,6 +441,7 @@ class CommandGateway:
             result = await self._robot_call("set_posture", target, source=source, cid=cid)
             outcome = self._result(result, source, cid)
             if result.ok:
+                self._commanded_posture = target
                 await asyncio.sleep(self.posture_settle_s)
             return outcome
         return await self._run_owned(apply(), source, cid)
