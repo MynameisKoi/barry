@@ -60,6 +60,10 @@ class CommandGateway:
         # backend.gateway.detections.LiveDetections (or None = no detector wired).
         self.live_detections = live_detections
 
+    def _mission_required(self, source: str) -> bool:
+        """Only voice and LLM control require an active mission; hand control operates directly."""
+        return source in {"voice", "llm"} and not self.mission_check()
+
     async def motion(self, command: MotionCommand, *, source: str) -> GatewayResult:
         cid = self._id(source)
         if source in {"hand", "voice"}:
@@ -69,7 +73,7 @@ class CommandGateway:
             return blocked
         if self._emergency_stopped:
             return GatewayResult("ESTOP_ACTIVE", "Emergency stop is latched.", cid, source)
-        if not self.mission_check():
+        if self._mission_required(source):
             return GatewayResult("MISSION_REQUIRED", "An active mission is required for motion.", cid, source)
         try:
             clamped = MotionCommand(
@@ -128,7 +132,7 @@ class CommandGateway:
             return blocked
         if self._emergency_stopped:
             return GatewayResult("ESTOP_ACTIVE", "Emergency stop is latched.", cid, source)
-        if not self.mission_check():
+        if self._mission_required(source):
             return GatewayResult("MISSION_REQUIRED", "An active mission is required for motion.", cid, source)
         try:
             direction = Direction(direction)
@@ -217,7 +221,7 @@ class CommandGateway:
             return blocked
         if self._emergency_stopped:
             return GatewayResult("ESTOP_ACTIVE", "Emergency stop is latched.", cid, source)
-        if not self.mission_check():
+        if self._mission_required(source):
             return GatewayResult("MISSION_REQUIRED", "An active mission is required for robot actions.", cid, source)
         async def run() -> GatewayResult:
             try:
@@ -288,7 +292,7 @@ class CommandGateway:
             return blocked
         if self._emergency_stopped:
             return GatewayResult("ESTOP_ACTIVE", "Emergency stop is latched.", cid, source)
-        if not self.mission_check():
+        if self._mission_required(source):
             return GatewayResult("MISSION_REQUIRED", "An active mission is required for motion.", cid, source)
         direction = Direction.TURN_RIGHT if degrees > 0 else Direction.TURN_LEFT
         speed = min(speed, self.max_speed)
@@ -337,6 +341,8 @@ class CommandGateway:
         self._validate_source(source)
         if source in {"voice", "llm"} and time.monotonic() - self._last_hand_at < self.hand_hold_s:
             return GatewayResult("BUSY", "Hand control has priority during its hold window.", cid, source)
+        if not self.online and getattr(self.robot, "connected", False):
+            self.online = True
         if not self.online or not getattr(self.robot, "connected", True):
             return self._offline(source, cid)
         return None
@@ -359,7 +365,7 @@ class CommandGateway:
             return blocked
         if self._emergency_stopped:
             return GatewayResult("ESTOP_ACTIVE", "Emergency stop is latched.", cid, source)
-        if not self.mission_check():
+        if self._mission_required(source):
             return GatewayResult("MISSION_REQUIRED", "An active mission is required for motion.", cid, source)
         try:
             direction = Direction(direction)

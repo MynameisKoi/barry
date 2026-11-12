@@ -130,7 +130,7 @@ def test_quest_session_delete_stops_motion_and_invalidates_the_session(monkeypat
     assert paths.count(protocol.PATH_STOP) >= 1
 
 
-def test_motion_requires_mission_then_succeeds_after_start():
+def test_hand_motion_succeeds_without_mission_while_voice_and_llm_require_mission():
     active = False
     def pi(request):
         return httpx.Response(201 if request.url.path == protocol.PATH_SESSION else 200,
@@ -140,10 +140,20 @@ def test_motion_requires_mission_then_succeeds_after_start():
     gateway = CommandGateway(robot, mission_check=lambda: active)
     app = FastAPI(); app.include_router(create_robot_relay_router(lambda: gateway, lambda **kw: None, QuestRelayAuth(KEY)))
     client = TestClient(app); headers = quest_headers(client)
-    assert client.post(protocol.PATH_MOTION, json={"forward": .2}, headers=headers).status_code == 403
-    active = True
-    headers[protocol.SEQ_HEADER] = "1"
+    # Hand motion via /api/v1/motion succeeds even when active == False
     assert client.post(protocol.PATH_MOTION, json={"forward": .2}, headers=headers).status_code == 200
+    # Voice and LLM are blocked with MISSION_REQUIRED while active == False
+    gateway._last_hand_at = 0.0
+    voice_blocked = asyncio.run(gateway.motion(MotionCommand(forward=0.2), source="voice"))
+    llm_blocked = asyncio.run(gateway.motion(MotionCommand(forward=0.2), source="llm"))
+    assert voice_blocked.status == "MISSION_REQUIRED"
+    assert llm_blocked.status == "MISSION_REQUIRED"
+    # Once mission starts, Voice and LLM succeed
+    active = True
+    voice_ok = asyncio.run(gateway.motion(MotionCommand(forward=0.2), source="voice"))
+    llm_ok = asyncio.run(gateway.motion(MotionCommand(forward=0.2), source="llm"))
+    assert voice_ok.status == "ACCEPTED"
+    assert llm_ok.status == "ACCEPTED"
 
 
 @pytest.mark.parametrize("path", [protocol.PATH_STOP, protocol.PATH_EMERGENCY_STOP])

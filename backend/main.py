@@ -37,7 +37,7 @@ from backend.ai.schemas import (
 from backend.api.auth import router as auth_router
 from backend.api.missions import router as missions_router
 from backend.auth.authorization import auth_service
-from backend.auth.flipper_listener import FlipperListener
+from backend.auth.flipper_listener import FlipperListener, find_flipper_port
 from backend.camera.auth import CameraAuth
 from backend.camera.config import CameraConfig, CameraConfigError
 from backend.camera.factory import build_camera_service
@@ -145,20 +145,102 @@ async def telemetry_broadcaster():
 main_event_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
-def on_flipper_tag_scanned(raw_uid: str):
-    """Callback invoked when Flipper Zero detects an NFC tag over USB serial."""
+def execute_flipper_credential_scan(
+    raw_uid: str,
+    *,
+    mission_action: Optional[str] = None,
+    zone: str = "Sector-A",
+    source: str = "api_scan",
+) -> Dict[str, Any]:
+    """Verifies a Flipper Zero / NFC / RFID credential and optionally progresses mission lifecycle."""
     authorized, operator_data, message = auth_service.verify_tag_uid(raw_uid)
-    logger.info("Flipper USB scan: %s -> %s", raw_uid, message)
+    mission_status = mission_service.get_status()
+    mission_action_taken = "none"
+    mission_changed = False
+
+    if authorized and operator_data:
+        action = (mission_action or "none").strip().lower()
+        op_id = operator_data["operator_id"]
+        op_name = operator_data["name"]
+        if action in {"auto", "toggle"}:
+            if not mission_status.get("active"):
+                mission_status = mission_service.start_mission(operator_id=op_id, zone=zone)
+                mission_action_taken = "started"
+                mission_changed = True
+                message = f"{message} | Mission {mission_status['mission_id']} received & started in {zone}."
+            else:
+                mission_status = mission_service.stop_mission(
+                    reason=f"Mission finished via Flipper Zero badge scan by {op_name} ({op_id})"
+                )
+                mission_action_taken = "stopped"
+                mission_changed = True
+                message = f"{message} | Active mission {mission_status.get('mission_id')} finished."
+        elif action == "start":
+            if not mission_status.get("active"):
+                mission_status = mission_service.start_mission(operator_id=op_id, zone=zone)
+                mission_action_taken = "started"
+                mission_changed = True
+                message = f"{message} | Mission {mission_status['mission_id']} received & started in {zone}."
+            else:
+                mission_action_taken = "already_active"
+        elif action == "stop":
+            if mission_status.get("active"):
+                mission_status = mission_service.stop_mission(
+                    reason=f"Mission finished via Flipper Zero badge scan by {op_name} ({op_id})"
+                )
+                mission_action_taken = "stopped"
+                mission_changed = True
+                message = f"{message} | Active mission {mission_status.get('mission_id')} finished."
+            else:
+                mission_action_taken = "already_inactive"
+
+    return {
+        "authorized": authorized,
+        "operator": operator_data,
+        "message": message,
+        "mission_action_taken": mission_action_taken,
+        "mission": mission_status,
+        "_mission_changed": mission_changed,
+        "source": source,
+        "tag_uid": raw_uid,
+    }
+
+
+def on_flipper_tag_scanned(raw_uid: str):
+    """Callback invoked when Flipper Zero detects an NFC/RFID tag over USB serial."""
+    result = execute_flipper_credential_scan(
+        raw_uid,
+        mission_action="auto",
+        zone="Sector-A",
+        source="flipper_zero_usb",
+    )
+    logger.info(
+        "Flipper USB scan: %s -> %s (mission_action=%s)",
+        raw_uid,
+        result["message"],
+        result["mission_action_taken"],
+    )
     if main_event_loop and main_event_loop.is_running():
+        if result["mission_action_taken"] == "stopped":
+            gateway = getattr(app.state, "gateway", None)
+            if gateway is not None:
+                asyncio.run_coroutine_threadsafe(gateway.stop(source="hand"), main_event_loop)
         payload = {
             "type": "auth_event",
             "source": "flipper_zero_usb",
-            "authorized": authorized,
-            "operator": operator_data,
-            "message": message,
+            "authorized": result["authorized"],
+            "operator": result["operator"],
+            "message": result["message"],
             "tag_uid": raw_uid,
+            "mission_action_taken": result["mission_action_taken"],
+            "mission": result["mission"],
         }
         asyncio.run_coroutine_threadsafe(ws_manager.broadcast(payload), main_event_loop)
+        if result["_mission_changed"]:
+            asyncio.run_coroutine_threadsafe(
+                ws_manager.broadcast({"type": "mission_update", "mission": result["mission"]}),
+                main_event_loop,
+            )
 
 
 @asynccontextmanager
@@ -183,6 +265,7 @@ async def lifespan(app: FastAPI):
     db.init_db()
     telemetry_task = asyncio.create_task(telemetry_broadcaster())
     flipper = FlipperListener(on_tag_detected=on_flipper_tag_scanned)
+    app.state.flipper = flipper
     flipper.start()
 
     # Camera Feed API (v1): one shared capture service for all viewers.
@@ -267,6 +350,8 @@ async def cancel_llm_for_legacy_hand_controls(request, call_next):
         gateway = getattr(app.state, "gateway", None)
         if gateway is not None:
             gateway.notify_preempt("hand")
+            if path == "/api/robot/reset-emergency":
+                gateway._emergency_stopped = False
     elif request.method == "POST" and path in {"/api/v1/stop", "/api/v1/emergency-stop"}:
         gateway = getattr(app.state, "gateway", None)
         if gateway is not None:
@@ -395,33 +480,67 @@ async def stream_camera():
 
 @app.post("/api/auth/scan", response_model=AuthScanResponse, tags=["Authentication"])
 async def scan_nfc_credential(payload: AuthScanRequest):
-    """Verifies a test NFC credential scanned via Flipper Zero or entered manually."""
-    authorized, operator_data, message = auth_service.verify_tag_uid(payload.tag_uid)
+    """Verifies an NFC/RFID credential scanned via Flipper Zero or API, with optional mission progression."""
+    result = execute_flipper_credential_scan(
+        payload.tag_uid,
+        mission_action=payload.mission_action,
+        zone=payload.zone,
+        source="api_scan",
+    )
+
+    if result["mission_action_taken"] == "stopped":
+        gateway = getattr(app.state, "gateway", None)
+        if gateway is not None:
+            await gateway.stop(source="hand")
 
     response_data = {
-        "authorized": authorized,
-        "operator": operator_data,
-        "message": message,
+        "authorized": result["authorized"],
+        "operator": result["operator"],
+        "message": result["message"],
+        "mission_action_taken": result["mission_action_taken"],
+        "mission": result["mission"],
     }
 
     # Notify VR command center via WebSocket
     await ws_manager.broadcast(
         {
             "type": "auth_event",
-            "authorized": authorized,
-            "operator": operator_data,
-            "message": message,
+            "source": "api_scan",
+            "authorized": result["authorized"],
+            "operator": result["operator"],
+            "message": result["message"],
             "tag_uid": payload.tag_uid,
+            "mission_action_taken": result["mission_action_taken"],
+            "mission": result["mission"],
         }
     )
+    if result["_mission_changed"]:
+        await ws_manager.broadcast({"type": "mission_update", "mission": result["mission"]})
 
-    if not authorized:
+    if not result["authorized"]:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=response_data,
         )
 
     return response_data
+
+
+@app.get("/api/auth/flipper/status", tags=["Authentication"])
+async def get_flipper_status():
+    """Returns Flipper Zero USB serial hardware detection status, listener state, and active mission check."""
+    flipper: Optional[FlipperListener] = getattr(app.state, "flipper", None)
+    detected_port = find_flipper_port()
+    serial_open = bool(flipper and flipper.ser and getattr(flipper.ser, "is_open", False))
+    return {
+        "usb_port_detected": detected_port,
+        "serial_connected": serial_open,
+        "listener_running": bool(flipper and flipper.running),
+        "scan_mode": flipper.scan_mode if flipper else "rfid",
+        "last_scanned_uid": flipper.last_scanned_uid if flipper else None,
+        "last_scan_time": flipper.last_scan_time if flipper else 0.0,
+        "mission": mission_service.get_status(),
+    }
 
 
 @app.get("/api/operators", response_model=List[OperatorResponse], tags=["Authentication"])

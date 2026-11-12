@@ -240,6 +240,7 @@ async def test_unauthenticated_quest_relay_does_not_preempt_llm(monkeypatch):
 
     notifications = []
     monkeypatch.setenv("QUEST_API_KEY", KEY)
+    monkeypatch.delenv("QUEST_API_KEY_ALLOW_ANONYMOUS", raising=False)
     monkeypatch.setattr(main.app.state, "gateway", type("G", (), {
         "notify_preempt": lambda self, source: notifications.append(source)
     })(), raising=False)
@@ -298,6 +299,7 @@ async def test_unkeyed_priority_stop_routes_cancel_running_llm(monkeypatch, simu
 async def test_mission_start_and_stop_require_quest_key(monkeypatch):
     import backend.main as main
     monkeypatch.setenv("QUEST_API_KEY", "test-quest-key")
+    monkeypatch.delenv("QUEST_API_KEY_ALLOW_ANONYMOUS", raising=False)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
         for path, payload in [("/api/mission/start", {"operator_id": "missing", "zone": "test"}),
                               ("/api/mission/stop", {"reason": "test"})]:

@@ -720,6 +720,14 @@
                     document.getElementById('badge-uid').innerText = `UID: ${msg.tag_uid}`;
                     activeOperatorId = msg.operator.operator_id;
                     logEvent(`NFC/RFID Verified: ${msg.operator.name} [${msg.tag_uid}]`, 'auth_success');
+                    if (msg.mission) {
+                        updateMissionDisplay(msg.mission);
+                    }
+                    if (msg.mission_action_taken === 'started' && msg.mission) {
+                        logEvent(`Flipper Badge Started Mission: ${msg.mission.mission_id} (${msg.mission.zone})`, 'mission');
+                    } else if (msg.mission_action_taken === 'stopped' && msg.mission) {
+                        logEvent(`Flipper Badge Finished Mission: ${msg.mission.mission_id}`, 'mission');
+                    }
                 } else {
                     playAlertTone();
                     logEvent(`Unauthorized Tag Scan: ${msg.tag_uid}`, 'emergency_stop');
