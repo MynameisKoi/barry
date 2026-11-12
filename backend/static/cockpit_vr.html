@@ -1,2040 +1,1196 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>BARRY // 3D Holographic VR Cockpit</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            background-color: #050814;
-            color: #d9e6f2;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
-            overflow: hidden;
-            width: 100vw;
-            height: 100vh;
-        }
-        #webgl-canvas {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: 1;
-        }
-        #desktop-ui {
-            position: absolute;
-            top: 16px;
-            left: 20px;
-            z-index: 10;
-            display: flex;
-            align-items: center;
-            gap: 14px;
-            pointer-events: none;
-        }
-        .hud-badge {
-            background: rgba(15, 23, 42, 0.75);
-            border: 1px solid rgba(0, 240, 255, 0.4);
-            color: #00f0ff;
-            padding: 6px 14px;
-            border-radius: 6px;
-            font-size: 0.85rem;
-            letter-spacing: 1.5px;
-            text-transform: uppercase;
-            backdrop-filter: blur(8px);
-        }
-        #switch-flatscreen {
-            pointer-events: auto;
-            background: rgba(255, 255, 255, 0.1);
-            border: 1px solid rgba(255, 255, 255, 0.25);
-            color: #fff;
-            padding: 6px 14px;
-            border-radius: 6px;
-            font-size: 0.8rem;
-            cursor: pointer;
-            text-decoration: none;
-            transition: all 0.2s ease;
-        }
-        #switch-flatscreen:hover {
-            background: rgba(255, 255, 255, 0.2);
-            border-color: #00f0ff;
-        }
-        #command-status {
-            position: absolute;
-            top: 64px;
-            left: 20px;
-            z-index: 10;
-            max-width: min(560px, calc(100vw - 40px));
-            padding: 8px 12px;
-            color: #fff;
-            background: rgba(10, 16, 28, 0.92);
-            border: 1px solid rgba(0, 240, 255, 0.45);
-            border-radius: 6px;
-            font: 700 0.8rem monospace;
-            pointer-events: none;
-        }
-        #mission-controls {
-            position: absolute;
-            top: 106px;
-            right: 20px;
-            z-index: 10;
-            width: min(360px, calc(100vw - 40px));
-            padding: 12px;
-            color: #d9e6f2;
-            background: rgba(10, 16, 28, 0.94);
-            border: 1px solid rgba(0, 240, 255, 0.45);
-            border-radius: 8px;
-            font: 13px monospace;
-        }
-        #mission-controls .mission-topline { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
-        #mission-chip { color: #fbbf24; font-weight: 700; }
-        #mission-controls .mission-fields { display: grid; grid-template-columns: 1fr 110px; gap: 8px; margin-bottom: 10px; }
-        #mission-controls label { display: grid; gap: 4px; color: #94a3b8; }
-        #mission-controls select, #mission-controls input, #mission-controls button {
-            min-width: 0; padding: 7px 8px; color: #fff; background: #111c2d;
-            border: 1px solid rgba(148, 163, 184, 0.45); border-radius: 5px; font: inherit;
-        }
-        #mission-controls .mission-actions { display: flex; gap: 8px; }
-        #mission-controls button { flex: 1; cursor: pointer; font-weight: 700; }
-        #mission-start-btn { border-color: #00c987 !important; }
-        #mission-end-btn { border-color: #ff6b6b !important; }
-        #mission-feedback { min-height: 1.2em; margin-top: 7px; color: #94a3b8; }
-        #keyboard-hint {
-            position: absolute;
-            bottom: 20px;
-            left: 50%;
-            transform: translateX(-50%);
-            z-index: 10;
-            color: rgba(255, 255, 255, 0.6);
-            font-size: 0.8rem;
-            background: rgba(10, 16, 26, 0.8);
-            padding: 6px 16px;
-            border-radius: 20px;
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            pointer-events: none;
-        }
-    </style>
-    <!-- Three.js + WebXR VRButton (Self-Hosted for Offline/Hotspot Reliability) -->
-    <script src="/static/js/three.min.js"></script>
-    <script src="/static/js/VRButton.js"></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BARRY // VR Cockpit</title>
+<!--
+  WebXR port of the Unity Barry dashboard (frontend/barry-vr/Assets/Barry/App/Editor/DashboardSceneBuilder.cs).
+  Coordinates: Unity is left-handed with +Z forward, three.js is right-handed with -Z forward, so a Unity
+  position (x, y, z) becomes (x, y, -z), a Unity yaw a becomes rotation.y = -a and a Unity pitch p becomes
+  rotation.x = -p. Panel content is drawn in the Unity builder's mockup px; S = mm per mockup px.
+  Origin = operator head at session start, eye height 1.6 m (HANDOFF §4), via an offset "local" reference space.
+-->
+<style>
+  @font-face { font-family: "Inter"; src: url("/static/vendor/fonts/Inter.ttf") format("truetype"); font-weight: 100 900; }
+  @font-face { font-family: "JetBrains Mono"; src: url("/static/vendor/fonts/JetBrainsMono.ttf") format("truetype"); font-weight: 100 900; }
+  @font-face { font-family: "Orbitron"; src: url("/static/vendor/fonts/Orbitron.ttf") format("truetype"); font-weight: 400 900; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0A0F2C; font-family: Inter, system-ui, sans-serif; }
+  canvas#xr { display: block; width: 100%; height: 100%; touch-action: none; }
+  #hud { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); display: flex; gap: 10px; align-items: center;
+         flex-wrap: wrap; justify-content: center; max-width: 96vw; z-index: 10; }
+  #hud button, #hud label { font: 600 14px Inter, system-ui, sans-serif; border-radius: 10px; padding: 10px 16px; }
+  #enter-vr { background: #5B3FD9; color: #fff; border: 0; cursor: pointer; letter-spacing: 0.06em; }
+  #enter-vr:disabled { background: #F3F1EC; color: #5E5D59; cursor: default; }
+  #hud label { background: rgba(255,255,255,0.94); color: #1F1E1B; border: 1px solid #DAD5CB; cursor: pointer; }
+  #vr-reason { color: #FEF3E2; font: 500 13px Inter, system-ui, sans-serif; max-width: 560px; text-align: center; }
+  #sim-banner { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); display: none; z-index: 10;
+                background: #FEF3E2; color: #8A4B06; border: 1px solid #D98A12; border-radius: 8px;
+                font: 700 13px "JetBrains Mono", monospace; letter-spacing: 0.12em; padding: 6px 12px; }
+  #camera-source { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; left: 0; top: 0; }
+</style>
+<script type="importmap">{ "imports": { "three": "/static/vendor/three/three.module.js" } }</script>
 </head>
 <body>
-    <img id="vr-cam-feed" src="/api/camera/stream" crossOrigin="anonymous" style="display:none;" />
-    <canvas id="webgl-canvas"></canvas>
-    <div id="desktop-ui">
-        <div class="hud-badge">BARRY // 3D HOLOGRAPHIC COCKPIT</div>
-        <a id="switch-flatscreen" href="/cockpit">← 2D Flatscreen Mode</a>
-        <button id="recenter-view-btn" type="button" style="pointer-events:auto; padding:5px 12px; color:#00f0ff; background:rgba(0,240,255,0.12); border:1px solid rgba(0,240,255,0.4); border-radius:6px; font-size:0.75rem; cursor:pointer;">⟲ Recenter View</button>
-    </div>
-    <div id="command-status" role="status" aria-live="polite">READY · Connected to BARRY</div>
-    <section id="mission-controls" aria-label="Mission controls">
-        <div class="mission-topline"><strong>MISSION</strong><span id="mission-chip">Checking status…</span></div>
-        <div class="mission-fields">
-            <label>Operator<select id="mission-operator" disabled><option>Loading operators…</option></select></label>
-            <label>Zone<input id="mission-zone" value="Zone-A" maxlength="40"></label>
-        </div>
-        <div class="mission-actions">
-            <button id="mission-start-btn" type="button">Start mission</button>
-            <button id="mission-end-btn" type="button" disabled>End mission</button>
-        </div>
-        <div id="mission-feedback" role="status" aria-live="polite"></div>
-    </section>
-    <div id="keyboard-hint">
-        🎮 <b>Controls:</b> VR Controller Thumbsticks · VR Laser Virtual Joystick · WASD / Arrows · Space for E-Stop · Press 'R' to Recenter
-    </div>
+<canvas id="xr"></canvas>
+<div id="sim-banner">SIMULATED INPUT · KEYBOARD ARMED</div>
+<div id="hud">
+  <button id="enter-vr" disabled>CHECKING VR…</button>
+  <label><input type="checkbox" id="arm-keys"> Arm keyboard driving</label>
+  <span id="vr-reason"></span>
+</div>
+<img id="camera-source" alt="">
+<script type="module">
+import * as THREE from "three";
 
-    <script>
-        // --- State Management ---
-        const state = {
-            robotConnected: true,
-            robotMode: "remote",
-            battery: 99,
-            roll: 0.0,
-            pitch: 0.0,
-            yaw: 0.0,
-            rttMs: 12,
-            fps: 20,
-            frameAgeMs: 45,
-            intensity: "MEDIUM",
-            speed: 0.6,
-            lastCommand: "stop",
-            commandStatus: "READY",
-            commandMessage: "Connected to BARRY",
-            commandResultColor: "#fbbf24",
-            mission: null,
-            missionStatusKnown: false,
-            operators: [],
-            operatorIndex: 0,
-            zone: "Zone-A",
-            endMissionConfirmUntil: 0,
-            motionMissionBlocked: false,
-            forward: 0.0,
-            strafe: 0.0,
-            turn: 0.0,
-            eStopActive: false
-        };
-        const virtualJoystickAxes = { forward: 0, turn: 0 };
+// ------------------------------------------------------------------ constants (Unity DashboardSceneBuilder / HANDOFF)
+const EYE = 1.6;
+const SIDE_PANEL_YAW = 36;              // degrees; Unity comment: 30° in the handoff overlaps the camera screen
+const DEAD_ZONE = 0.12;                 // InputMapping default
+const SEND_HZ = 10;                     // RobotControlService default
+const FAILURES_BEFORE_STOP = 3;         // RobotControlService
+const ESTOP_HOLD_S = 0.3;               // EmergencyStopGesture: both grips + A held
+const CONFIRM_WINDOW_S = 3;             // EmergencyLatch / end-mission confirm
+const ACCEPTED_DISCLAIMER = "Accepted by API · not proof of movement";
+const LEVELS = ["LOW", "MEDIUM", "HIGH"];
+const ZONES = ["Zone-A", "Zone-B", "Zone-C", "Zone-D"];
+const LLM_PRESETS = [
+  ["Look around and tell me what you see", "Look and tell me what you see"],
+  ["Walk forward 2 seconds", "Walk forward 2 seconds"],
+  ["Turn right 90°", "Turn right 90 degrees"],
+  ["Check status", "Check the status"],
+  ["What can you do?", "What can you do?"],
+];
 
-        let controlSessionId = null;
-        let commandSequence = 0;
-        let sessionRequest = null;
+// Galactic theme tokens (Assets/Barry/Theme/Tokens/Galactic.asset)
+const T = {
+  envSky: "#0A0F2C", nebulaA: [0x7C / 255, 0x5C / 255, 0xFF / 255, 0.45], nebulaB: [0x2E / 255, 0xC5 / 255, 0xE6 / 255, 0.22],
+  planetLight: "#B9A6FF", planetMid: "#5B3FD9", planetDark: "#1E1660", planetRing: "#C9BEFF",
+  floor: "#0D1338", floorGrid: "#5EE1FF", platformFill: "#151B4A", platformRim: "#7C5CFF", platformRingDashed: "#5EE1FF",
+  panelBg: "rgba(255,255,255,0.94)", panelBorder: "#C9BEFF", panelGlow: "rgba(124,92,255,0.35)", cameraGlow: "rgba(124,92,255,0.55)",
+  textPrimary: "#1F1E1B", textSecondary: "#5E5D59", brand: "#2A1F7A", accent: "#5B3FD9", accentSoft: "#ECE8FD",
+  rayCore: "#8FEFFF", rayGlow: "#5EE1FF", okText: "#137A3E", okBg: "#E6F4EC", warnText: "#8A4B06", warnBg: "#FEF3E2",
+  warnBorder: "#D98A12", dangerSolid: "#C42B2B", dangerText: "#A3201F", dangerSoft: "#FDECEC", neutralFill: "#F3F1EC",
+  neutralBorder: "#DAD5CB", videoBg: "#1B1F2E",
+  grey3D: "#3D3D3A", grey6B: "#6B6A65", track: "#EFECE6", divider: "#E6E2DA", rowFill: "#F7F5F0", runBorder: "#CFCAC0",
+  exitBorder: "#9C978D", reticle: "#4A4F66", camTitle: "#B9BDCF", camSub: "#9EA3B8", chipWhite: "rgba(255,255,255,0.92)",
+  leader: "#B9AEEA",
+};
+const TONES = {
+  neutral: { fg: T.textPrimary, bg: T.neutralFill }, ok: { fg: T.okText, bg: T.okBg }, accent: { fg: T.accent, bg: T.accentSoft },
+  warn: { fg: T.warnText, bg: T.warnBg }, danger: { fg: T.dangerText, bg: T.dangerSoft },
+};
+const FONT = { body: '"Inter", system-ui, sans-serif', mono: '"JetBrains Mono", ui-monospace, monospace', brand: '"Orbitron", "Inter", sans-serif' };
+const DEG = Math.PI / 180;
 
-        function updateCommandStatus(status, message = "") {
-            state.commandStatus = String(status || "UNKNOWN").toUpperCase();
-            state.commandMessage = String(message || "");
-            state.commandResultColor = commandStatusColor(state.commandStatus);
-            const statusElement = document.getElementById("command-status");
-            if (statusElement) {
-                statusElement.textContent = [state.commandStatus, state.commandMessage].filter(Boolean).join(" · ");
-                statusElement.style.borderColor = state.commandResultColor;
-                statusElement.style.color = state.commandResultColor;
-            }
-            if (typeof drawLeftPanel === "function") drawLeftPanel();
+// ------------------------------------------------------------------ remote client log (so Quest errors are visible)
+const clientLog = [];
+function reportClient(level, message) {
+  const line = `[${level}] ${String(message).slice(0, 1500)}`;
+  clientLog.push(line);
+  if (clientLog.length > 50) clientLog.shift();
+  if (level === "error") console.error(line); else console.log(line);
+  fetch("/api/debug/client-log", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ level, message: String(message).slice(0, 1500), ua: navigator.userAgent.slice(0, 160) }),
+  }).catch(() => {});
+}
+window.addEventListener("error", (e) => reportClient("error", `${e.message} @ ${e.filename}:${e.lineno}`));
+window.addEventListener("unhandledrejection", (e) => reportClient("error", `unhandled rejection: ${e.reason?.stack || e.reason}`));
+
+// ------------------------------------------------------------------ app state
+const state = {
+  connected: false, controlActive: false, rttMs: null, intensity: "MEDIUM", gait: "trot",
+  battery: null, roll: null, pitch: null,
+  cameraFps: null, cameraLive: false, cameraUrl: null,
+  sent: { forward: 0, strafe: 0, turn: 0 },          // last command handed to the API (COMMAND SENT bars)
+  result: null,                                      // { status, message } of the last refusal, null = disclaimer
+  estopLatched: false, latchPhase: "idle", latchUntil: 0, latchError: "",
+  mission: null, missionKnown: false, operators: null, operatorsError: "", operatorIndex: 0, zoneIndex: 0,
+  missionStarting: false, missionError: "", endArmedUntil: 0, endBusy: false, endError: "", missionHint: false,
+  actions: [], actionsError: "", actionsOpen: false, runningAction: null,
+  brainOpen: false, llmTask: { state: "idle" }, llmStarting: false, llmCancelling: false, llmReplaced: false, llmError: "",
+  teleop: "DISARMED", needCentre: true, failures: 0,
+};
+const hasControl = () => Boolean(controlSessionId);
+
+// ------------------------------------------------------------------ HTTP (control session + sequenced commands)
+let controlSessionId = null;
+let commandSequence = 0;
+let sessionRequest = null;
+
+async function acquireControlSession() {
+  if (sessionRequest) return sessionRequest;
+  sessionRequest = (async () => {
+    try {
+      const r = await fetch("/api/v1/session", { method: "POST" });
+      const p = await r.json().catch(() => ({}));
+      if (r.ok && p.session_id) { controlSessionId = p.session_id; commandSequence = 0; }
+    } catch (e) { /* status poll reports OFFLINE */ }
+    finally { sessionRequest = null; markDirty("header", "status", "actions"); }
+  })();
+  return sessionRequest;
+}
+
+function commandStatus(payload, response) {
+  const detail = String(payload?.detail || payload?.message || "");
+  const refusal = detail.match(/^(MISSION_REQUIRED|BUSY|ESTOP_ACTIVE|OFFLINE|INVALID)\s*:/i);
+  if (refusal) return refusal[1].toUpperCase();
+  if (payload?.status && String(payload.status).toUpperCase() !== "REJECTED") return String(payload.status).toUpperCase();
+  return response.ok ? "ACCEPTED" : `HTTP_${response.status}`;
+}
+
+const isStaleSession = (r, p) => r.status === 409 && /control session|sequence/i.test(String(p?.detail || ""));
+
+/** POST a command. Sequenced commands carry the control-session headers; a stale session is re-acquired and the
+ *  command retried ONCE, and only if `stillWanted()` says it is still current (never a blind retry). */
+async function api(path, { body = null, sequenced = false, source = "hand", stillWanted = null, retried = false } = {}) {
+  if (sequenced && !controlSessionId) await acquireControlSession();
+  if (stillWanted && !stillWanted()) return null;
+  const headers = { "X-Command-Source": source, "X-Command-Id": crypto.randomUUID ? crypto.randomUUID() : String(Math.random()) };
+  if (body !== null) headers["Content-Type"] = "application/json";
+  if (sequenced && controlSessionId) {
+    headers["X-Control-Session"] = controlSessionId;
+    headers["X-Command-Seq"] = String(++commandSequence);
+    headers["X-Command-Sent-At"] = String(Date.now());
+  }
+  const started = performance.now();
+  try {
+    const response = await fetch(path, { method: "POST", headers, body: body === null ? undefined : JSON.stringify(body) });
+    const payload = await response.json().catch(() => ({}));
+    if (sequenced && !retried && isStaleSession(response, payload)) {
+      controlSessionId = null;
+      await acquireControlSession();
+      if (controlSessionId && (!stillWanted || stillWanted())) return api(path, { body, sequenced, source, stillWanted, retried: true });
+    }
+    const status = commandStatus(payload, response);
+    const message = String(payload.detail || payload.message || "").replace(/^[A-Z_]+\s*:\s*/, "");
+    if (status === "ESTOP_ACTIVE") latchEstop();
+    const ok = response.ok && !/^HTTP_|^(MISSION_REQUIRED|BUSY|ESTOP_ACTIVE|OFFLINE|INVALID)$/.test(status);
+    return { ok, status, message, payload, ms: performance.now() - started };
+  } catch (error) {
+    return { ok: false, status: "OFFLINE", message: error.message || "Backend unreachable", payload: {}, ms: performance.now() - started, network: true };
+  }
+}
+
+function showResult(res) {
+  if (!res) return;
+  state.result = res.ok ? null : { status: res.status, message: res.message };
+  markDirty("status");
+}
+
+// ------------------------------------------------------------------ teleop: motion, stop, e-stop (HANDOFF §6/§7)
+let pendingMotion = null, dispatching = false, motionGeneration = 0;
+
+function sendMotion(axes) {
+  if (state.estopLatched) return;
+  pendingMotion = { ...axes, generation: motionGeneration };
+  if (!dispatching) dispatchMotion();
+}
+
+async function dispatchMotion() {
+  dispatching = true;
+  try {
+    while (pendingMotion) {                                  // one request in flight, latest wins
+      const cmd = pendingMotion; pendingMotion = null;
+      if (state.estopLatched || cmd.generation !== motionGeneration) continue;
+      const { generation, ...axes } = cmd;
+      const res = await api("/api/v1/motion", { body: axes, sequenced: true, stillWanted: () => generation === motionGeneration && !state.estopLatched });
+      if (!res) continue;
+      if (res.ok) { state.failures = 0; if (generation === motionGeneration) state.sent = axes; }
+      else if (res.network || /^HTTP_5/.test(res.status) || res.status === "OFFLINE") {
+        if (++state.failures >= FAILURES_BEFORE_STOP) { state.failures = 0; stopRobot("Unreliable link · 3 failed motion commands"); }
+      }
+      showResult(res);
+    }
+  } finally {
+    dispatching = false;
+    if (pendingMotion) dispatchMotion();
+  }
+}
+
+/** STOP: supersedes queued motion, needs sticks centred before the next drive (no auto-resume). */
+function stopRobot(reason = "") {
+  motionGeneration++;
+  pendingMotion = null;
+  state.sent = { forward: 0, strafe: 0, turn: 0 };
+  state.teleop = "STOPPED";
+  state.needCentre = true;
+  markDirty("status", "actions");
+  api("/api/v1/stop").then((res) => {
+    if (res && res.ok && reason) state.result = { status: "STOPPED", message: reason };
+    else showResult(res);
+    markDirty("status");
+  });
+}
+
+function latchEstop() {
+  if (!state.estopLatched) { state.estopLatched = true; state.latchPhase = "idle"; state.latchError = ""; }
+  motionGeneration++; pendingMotion = null; state.needCentre = true; state.teleop = "STOPPED";
+  state.sent = { forward: 0, strafe: 0, turn: 0 };
+  markDirty("header", "status", "banner", "actions");
+}
+
+function triggerEmergencyStop() {
+  latchEstop();
+  api("/api/v1/emergency-stop", { source: "emergency" }).then(showResult);
+}
+
+async function pressResetEstop() {
+  if (!state.estopLatched || state.latchPhase === "resetting") return;
+  const now = performance.now();
+  if (state.latchPhase !== "confirming" || now > state.latchUntil) {   // first press arms, second confirms
+    state.latchPhase = "confirming"; state.latchUntil = now + CONFIRM_WINDOW_S * 1000;
+    markDirty("banner");
+    return;
+  }
+  state.latchPhase = "resetting"; markDirty("banner");
+  const res = await api("/api/v1/emergency-stop/reset", { sequenced: true });
+  if (res && res.ok) { state.estopLatched = false; state.latchPhase = "idle"; state.latchError = ""; state.needCentre = true; state.result = null; }
+  else { state.latchPhase = "idle"; state.latchError = res ? `${res.status}: ${res.message}`.trim() : "Reset failed."; }
+  markDirty("header", "banner", "status");
+}
+
+async function setIntensity(level) {
+  const res = await api("/api/v1/movement-style", { body: { intensity: level.toLowerCase(), gait: state.gait }, sequenced: true });
+  if (res && res.ok) state.intensity = level;
+  showResult(res);
+  markDirty("strip");
+}
+const cycleIntensity = () => setIntensity(LEVELS[(LEVELS.indexOf(state.intensity) + 1) % LEVELS.length]);
+
+// Axis pipeline: radial dead zone + rescale, clamp, 2 dp (InputMapping). Positive strafe/turn = left.
+function radial(x, y) {
+  const m = Math.hypot(x, y);
+  if (!(m > DEAD_ZONE)) return [0, 0];
+  const s = Math.min(1, (m - DEAD_ZONE) / (1 - DEAD_ZONE)) / m;
+  return [x * s, y * s];
+}
+const r2 = (v) => Math.round(Math.max(-1, Math.min(1, v)) * 100) / 100 || 0;
+
+let lastSample = 0;
+function teleopTick(now, axes, source) {
+  if (now - lastSample < 1000 / SEND_HZ) return;
+  lastSample = now;
+  const centred = !axes.forward && !axes.strafe && !axes.turn;
+  if (state.estopLatched) return;
+  if (state.needCentre) {                       // after any stop: sticks must be centred first
+    if (centred) { state.needCentre = false; state.teleop = "ARMED"; markDirty("status", "actions"); }
+    return;
+  }
+  if (!centred) {
+    if (state.teleop !== "DRIVING") { state.teleop = "DRIVING"; markDirty("actions"); }
+    sendMotion(axes);                           // keep-alive every sample while deflected
+  } else if (state.teleop === "DRIVING") {
+    state.teleop = "ARMED";                     // release = explicit stop
+    motionGeneration++; pendingMotion = null;
+    state.sent = { forward: 0, strafe: 0, turn: 0 };
+    api("/api/v1/stop", { source }).then(showResult);
+    markDirty("status", "actions");
+  }
+}
+
+// ------------------------------------------------------------------ missions, actions, brain
+async function loadOperators() {
+  try {
+    const r = await fetch("/api/operators");
+    const p = await r.json().catch(() => null);
+    if (!r.ok || !Array.isArray(p)) throw new Error(p?.detail || `HTTP ${r.status}`);
+    const prev = state.operators?.[state.operatorIndex]?.operator_id;
+    state.operators = p; state.operatorsError = "";
+    const keep = p.findIndex((o) => o.operator_id === prev);
+    state.operatorIndex = keep >= 0 ? keep : 0;
+  } catch (e) { state.operatorsError = `Operators unavailable: ${e.message}`; }
+  markDirty("mission");
+}
+function applyMission(m) {
+  state.mission = m && typeof m === "object" ? m : { active: false };
+  state.missionKnown = true;
+  if (state.mission.active) state.missionHint = false;
+  markDirty("header", "mission", "strip");
+}
+async function refreshMission() {
+  try { const r = await fetch("/api/mission/status"); if (r.ok) applyMission(await r.json()); } catch (e) {}
+}
+async function startMission() {
+  const op = state.operators?.[state.operatorIndex];
+  if (!op || state.missionStarting) return;
+  state.missionStarting = true; state.missionError = ""; markDirty("mission");
+  try {
+    const r = await fetch("/api/mission/start", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operator_id: op.operator_id, zone: ZONES[state.zoneIndex] }) });
+    const p = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(p.detail || `HTTP ${r.status}`);
+    applyMission(p);
+  } catch (e) { state.missionError = `Mission start failed: ${e.message}`; }
+  state.missionStarting = false; markDirty("mission");
+}
+async function pressEndMission() {
+  if (!state.mission?.active || state.endBusy) return;
+  const now = performance.now();
+  if (now > state.endArmedUntil) { state.endArmedUntil = now + CONFIRM_WINDOW_S * 1000; markDirty("strip"); return; }
+  state.endArmedUntil = 0; state.endBusy = true; state.endError = ""; markDirty("strip");
+  try {
+    const r = await fetch("/api/mission/stop", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: "Operator ended mission" }) });
+    const p = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(p.detail || `HTTP ${r.status}`);
+    applyMission(p);
+  } catch (e) { state.endError = e.message; }
+  state.endBusy = false; markDirty("strip");
+}
+
+async function loadActions() {
+  try {
+    const r = await fetch("/api/v1/actions");
+    const p = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(p.detail || `HTTP ${r.status}`);
+    const seen = new Set();
+    state.actions = (p.actions || []).filter((a) => a && a.id > 0 && a.name && !seen.has(a.id) && seen.add(a.id));
+    state.actionsError = "";
+  } catch (e) { state.actions = []; state.actionsError = `Actions unavailable: ${e.message}`; }
+  markDirty("actions");
+}
+const actionsEnabled = () => hasControl() && !state.estopLatched && state.teleop !== "DRIVING" && !state.runningAction;
+async function runAction(id) {
+  if (!actionsEnabled()) return;
+  state.runningAction = id; markDirty("actions");
+  showResult(await api(`/api/v1/actions/${id}`, { sequenced: true }));
+  state.runningAction = null; markDirty("actions");
+}
+function toggleActions() { state.actionsOpen = !state.actionsOpen; if (state.actionsOpen) loadActions(); markDirty("actions"); }
+
+let llmPoll = null;
+async function startGoal(goal) {
+  if (state.llmStarting) return;
+  state.llmReplaced = state.llmTask.state === "running";
+  state.llmStarting = true; state.llmError = ""; markDirty("brain");
+  try {
+    const r = await fetch("/api/v1/llm/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ goal }) });
+    const p = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(p.detail || `HTTP ${r.status}`);
+    state.llmTask = p.task || { state: "running", goal, steps: [] };
+  } catch (e) { state.llmError = e.message; }
+  state.llmStarting = false; markDirty("brain"); pollLlm();
+}
+async function cancelGoal() {
+  if (state.llmTask.state !== "running" || state.llmCancelling) return;
+  state.llmCancelling = true; markDirty("brain");
+  try { const r = await fetch("/api/v1/llm/task/cancel", { method: "POST" }); const p = await r.json().catch(() => ({})); if (p.task) state.llmTask = p.task; } catch (e) {}
+  state.llmCancelling = false; markDirty("brain");
+}
+function pollLlm() {
+  if (llmPoll) return;
+  llmPoll = setInterval(async () => {
+    try { const r = await fetch("/api/v1/llm/task"); if (r.ok) state.llmTask = await r.json(); } catch (e) {}
+    markDirty("brain");
+    if (state.llmTask.state !== "running") { clearInterval(llmPoll); llmPoll = null; }
+  }, 1000);
+}
+
+// ------------------------------------------------------------------ status / telemetry / camera
+async function pollStatus() {
+  const t0 = performance.now();
+  try {
+    const r = await fetch("/api/v1/status", { cache: "no-store" });
+    const p = await r.json();
+    state.rttMs = performance.now() - t0;
+    state.connected = Boolean(p.connected); state.controlActive = Boolean(p.control_session_active);
+    if (p.intensity) state.intensity = String(p.intensity).toUpperCase();
+    if (p.gait) state.gait = String(p.gait).toLowerCase();
+  } catch (e) { state.connected = false; state.rttMs = null; }
+  markDirty("header", "status", "strip");
+}
+async function pollTelemetry() {
+  try {
+    const r = await fetch("/api/v1/telemetry", { cache: "no-store" });
+    if (r.ok) applyTelemetry(await r.json());
+  } catch (e) {}
+}
+function applyTelemetry(t) {
+  if (!t || typeof t !== "object") return;
+  const bat = t.battery_pct ?? t.battery;
+  if (bat != null && Number.isFinite(Number(bat))) state.battery = Number(bat);
+  const roll = t.roll ?? t.orientation?.roll, pitch = t.pitch ?? t.orientation?.pitch;
+  if (roll != null && Number.isFinite(Number(roll))) state.roll = Number(roll);
+  if (pitch != null && Number.isFinite(Number(pitch))) state.pitch = Number(pitch);
+  const est = t.emergency_stopped ?? t.control_state?.emergency_stopped;
+  if (est === true) latchEstop();
+  markDirty("status", "cameraOverlay");
+}
+function connectSocket() {
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  ws.onmessage = (ev) => {
+    try {
+      const d = JSON.parse(ev.data);
+      if (d.type === "telemetry" && d.telemetry) applyTelemetry(d.telemetry);
+      if (d.type === "mission_update" && d.mission) applyMission(d.mission);
+      if (d.type === "auth_event") {
+        if (d.authorized && d.operator && state.operators) {
+          const i = state.operators.findIndex((o) => o.operator_id === d.operator.operator_id);
+          if (i >= 0) state.operatorIndex = i; else loadOperators();
         }
-
-        function commandStatusColor(status) {
-            if (status === "ACCEPTED") return "#00ff88";
-            if (status === "MISSION_REQUIRED" || status === "BUSY") return "#fbbf24";
-            if (status === "ESTOP_ACTIVE" || status === "OFFLINE" || status.startsWith("HTTP_")) return "#ff5c70";
-            if (status === "INVALID") return "#fb923c";
-            return "#00f0ff";
-        }
-
-        function commandResultStatus(payload, response) {
-            const detail = String(payload?.detail || payload?.message || "");
-            const refusal = detail.match(/^(MISSION_REQUIRED|BUSY|ESTOP_ACTIVE|OFFLINE|INVALID)\s*:/i);
-            if (refusal) return refusal[1].toUpperCase();
-            if (payload?.status && String(payload.status).toUpperCase() !== "REJECTED") return String(payload.status).toUpperCase();
-            return response.ok ? "ACCEPTED" : `HTTP_${response.status}`;
-        }
-
-        function newCommandId() {
-            if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
-            return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        }
-
-        async function acquireControlSession() {
-            if (sessionRequest) return sessionRequest;
-            sessionRequest = (async () => {
-                try {
-                    const headers = {};
-                    if (controlSessionId) headers["X-Control-Session"] = controlSessionId;
-                    const response = await fetch("/api/v1/session", { method: "POST", headers });
-                    const payload = await response.json().catch(() => ({}));
-                    if (!response.ok || !payload.session_id) {
-                        return true;
-                    }
-                    controlSessionId = payload.session_id;
-                    commandSequence = 0;
-                    updateCommandStatus("SESSION_ACTIVE", "Control link active");
-                    return true;
-                } catch (error) {
-                    return true;
-                } finally {
-                    sessionRequest = null;
-                }
-            })();
-            return sessionRequest;
-        }
-
-        // Acquire a control session on startup. There is deliberately NO periodic re-acquire:
-        // POST /api/v1/session always issues a NEW session and drops the previous one (single
-        // operator, last caller wins), so a timer would steal control from other clients. The
-        // session stays alive while commands flow (each one extends it by 10 s); after an idle
-        // gap the first sequenced command gets a stale-session 409 and is re-acquired + retried
-        // once in sendApiCommand below.
-        acquireControlSession();
-
-        function isStaleSessionRefusal(response, payload) {
-            return response.status === 409 && /control session|sequence/i.test(String(payload?.detail || ""));
-        }
-
-        async function sendApiCommand(path, { body = null, sequenced = false, source = "hand", shouldSend = null, retried = false } = {}) {
-            if (sequenced && !controlSessionId) {
-                await acquireControlSession();
-            }
-            if (shouldSend && !shouldSend()) return null;
-            if (path === "/api/v1/motion" && state.eStopActive) {
-                updateCommandStatus("ESTOP_ACTIVE", "Reset the emergency stop before moving");
-                return null;
-            }
-
-            const headers = { "X-Command-Source": source, "X-Command-Id": newCommandId() };
-            if (body !== null) headers["Content-Type"] = "application/json";
-            if (sequenced && controlSessionId) {
-                headers["X-Control-Session"] = controlSessionId;
-                headers["X-Command-Seq"] = String(++commandSequence);
-                headers["X-Command-Sent-At"] = String(Date.now());
-            }
-            try {
-                const response = await fetch(path, {
-                    method: "POST",
-                    headers,
-                    body: body === null ? undefined : JSON.stringify(body)
-                });
-                const payload = await response.json().catch(() => ({}));
-                if (sequenced && !retried && isStaleSessionRefusal(response, payload)) {
-                    // Session expired after an idle gap (or another client took it): get a fresh
-                    // one and retry this command ONCE, but only if it is still current (the stick
-                    // is still deflected / not superseded by a stop). Never retry blindly.
-                    controlSessionId = null;
-                    await acquireControlSession();
-                    if (controlSessionId && (!shouldSend || shouldSend())) {
-                        return sendApiCommand(path, { body, sequenced, source, shouldSend, retried: true });
-                    }
-                }
-                const resultStatus = commandResultStatus(payload, response);
-                const detailMessage = String(payload.detail || payload.message || "").replace(/^(MISSION_REQUIRED|BUSY|ESTOP_ACTIVE|OFFLINE|INVALID)\s*:\s*/i, "");
-                const message = resultStatus === "MISSION_REQUIRED"
-                    ? `Start a mission to drive${detailMessage ? `. ${detailMessage}` : "."}`
-                    : (detailMessage || (response.ok ? "Command accepted" : response.statusText));
-                updateCommandStatus(resultStatus, message);
-                if (resultStatus === "MISSION_REQUIRED") {
-                    state.motionMissionBlocked = true;
-                    motionGeneration++;
-                    pendingMotion = null;
-                    virtualJoystickOwner = null;
-                    virtualJoystickAxes.forward = 0;
-                    virtualJoystickAxes.turn = 0;
-                    virtualJoystickHasSentMotion = false;
-                    state.forward = state.strafe = state.turn = 0;
-                    drawLeftPanel();
-                }
-                if (resultStatus === "ESTOP_ACTIVE") state.eStopActive = true;
-                return { response, payload };
-            } catch (error) {
-                updateCommandStatus("OFFLINE", error.message || "Backend unreachable");
-                return null;
-            }
-        }
-
-        // --- Three.js Setup ---
-        const canvas = document.getElementById("webgl-canvas");
-        const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x050814);
-        scene.fog = new THREE.FogExp2(0x050814, 0.015);
-
-        const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 1000);
-        camera.position.set(0, 1.6, 0); // Eye level matching Barry.exe Eye = 1.6f
-
-        const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-        renderer.xr.enabled = true;
-        renderer.xr.setReferenceSpaceType('local-floor');
-
-        // Add WebXR button to enter immersive VR on Quest 3S
-        const vrButton = VRButton.createButton(renderer);
-        vrButton.style.zIndex = "100";
-        vrButton.style.bottom = "20px";
-        vrButton.style.right = "20px";
-        document.body.appendChild(vrButton);
-
-        // Ambient & Directional Lights
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
-        scene.add(ambientLight);
-        const dirLight = new THREE.DirectionalLight(0xa5b4fc, 0.6);
-        dirLight.position.set(5, 10, 7);
-        scene.add(dirLight);
-        // --- Environment: Starfield ---
-        const starsCount = 2500;
-        const starGeo = new THREE.BufferGeometry();
-        const starCoords = new Float32Array(starsCount * 3);
-        for (let i = 0; i < starsCount * 3; i += 3) {
-            starCoords[i] = (Math.random() - 0.5) * 400;
-            starCoords[i + 1] = Math.random() * 200; // Sky dome
-            starCoords[i + 2] = (Math.random() - 0.5) * 400;
-        }
-        starGeo.setAttribute("position", new THREE.BufferAttribute(starCoords, 3));
-        const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.8, transparent: true, opacity: 0.85 });
-        const starField = new THREE.Points(starGeo, starMat);
-        scene.add(starField);
-
-        // --- Environment: Stylized Purple Saturn Planet with Rings ---
-        const planetGroup = new THREE.Group();
-        planetGroup.position.set(22, 14, -45); // Upper right sky as in teammate screenshot
-        const planetGeo = new THREE.SphereGeometry(6, 32, 32);
-        const planetMat = new THREE.MeshLambertMaterial({
-            color: 0x6d28d9, // Vibrant purple
-            emissive: 0x3b0764,
-            emissiveIntensity: 0.4
-        });
-        const planetMesh = new THREE.Mesh(planetGeo, planetMat);
-        planetGroup.add(planetMesh);
-
-        // Saturn Rings
-        const ringGeo = new THREE.RingGeometry(7.8, 12.5, 64);
-        const ringMat = new THREE.MeshBasicMaterial({
-            color: 0xc4b5fd,
-            side: THREE.DoubleSide,
-            transparent: true,
-            opacity: 0.75
-        });
-        const ringMesh = new THREE.Mesh(ringGeo, ringMat);
-        ringMesh.rotation.x = Math.PI / 2.5;
-        ringMesh.rotation.y = Math.PI / 6;
-        planetGroup.add(ringMesh);
-        scene.add(planetGroup);
-
-        // --- Environment: Retro Cyan Perspective Grid Floor ---
-        const gridHelper = new THREE.GridHelper(160, 80, 0x00f0ff, 0x1e3a5f);
-        gridHelper.position.y = 0;
-        scene.add(gridHelper);
-
-        // Subtle dark plane under grid to block stars beneath floor
-        const floorGeo = new THREE.PlaneGeometry(200, 200);
-        const floorMat = new THREE.MeshBasicMaterial({ color: 0x050814 });
-        const floorMesh = new THREE.Mesh(floorGeo, floorMat);
-        floorMesh.rotation.x = -Math.PI / 2;
-        floorMesh.position.y = -0.02;
-        scene.add(floorMesh);
-        // Holographic Cockpit Canopy Ribs (Framing the pilot space)
-        const ribMat = new THREE.LineBasicMaterial({ color: 0x00f0ff, transparent: true, opacity: 0.28 });
-        [-1, 1].forEach(side => {
-            const curve = new THREE.EllipseCurve(side * 1.5, 1.6, 1.4, 1.6, 0, Math.PI, false, 0);
-            const pts = curve.getPoints(40);
-            const ribGeo = new THREE.BufferGeometry().setFromPoints(pts.map(p => new THREE.Vector3(p.x, p.y, -2.05)));
-            scene.add(new THREE.Line(ribGeo, ribMat));
-        });
-
-        // --- Interactive Holographic Panels ---
-        function createHoloPanel(w, h, canvasWidth, canvasHeight, pos, rotY = 0, rotX = 0) {
-            const offscreenCanvas = document.createElement("canvas");
-            offscreenCanvas.width = canvasWidth;
-            offscreenCanvas.height = canvasHeight;
-            const ctx = offscreenCanvas.getContext("2d");
-
-            const texture = new THREE.CanvasTexture(offscreenCanvas);
-            texture.minFilter = THREE.LinearFilter;
-            texture.magFilter = THREE.LinearFilter;
-
-            const geo = new THREE.PlaneGeometry(w, h);
-            const mat = new THREE.MeshBasicMaterial({
-                map: texture,
-                transparent: true,
-                side: THREE.DoubleSide
-            });
-            const mesh = new THREE.Mesh(geo, mat);
-            mesh.position.copy(pos);
-            mesh.rotation.y = rotY;
-            if (rotX !== 0) mesh.rotation.x = rotX;
-            scene.add(mesh);
-
-            return { canvas: offscreenCanvas, ctx, texture, mesh };
-        }
-
-        // Barry.exe Spatial Layout & Ergonomics Constants (Unity DashboardSceneBuilder.cs)
-        const EYE_LEVEL = 1.60;                      // Pilot eye height (1.6m)
-        const SIDE_PANEL_YAW = 36 * Math.PI / 180;   // 36° curved arc (0.6283 rad)
-        const SIDE_PANEL_DIST = 1.30;                // 1.30m viewing distance
-        const leftArcX = -Math.sin(SIDE_PANEL_YAW) * SIDE_PANEL_DIST; // -0.764m
-        const leftArcZ = -Math.cos(SIDE_PANEL_YAW) * SIDE_PANEL_DIST; // -1.052m
-        const rightArcX = Math.sin(SIDE_PANEL_YAW) * SIDE_PANEL_DIST; // +0.764m
-        const rightArcZ = -Math.cos(SIDE_PANEL_YAW) * SIDE_PANEL_DIST; // -1.052m
-
-        // Desk / Control Strip: 25° below eye level, 0.9m distance, tilted 15° up towards pilot
-        const deskAngle = 25 * Math.PI / 180;
-        const deskY = EYE_LEVEL - 0.90 * Math.sin(deskAngle); // 1.22m
-        const deskZ = -0.90 * Math.cos(deskAngle);           // -0.816m
-        const deskTiltX = -15 * Math.PI / 180;              // -0.2618 rad
-
-        // 1. LEFT PANEL: STATUS, TELEMETRY & COMMAND SENT (Placed on -36° arc at 1.3m)
-        const leftPanel = createHoloPanel(
-            0.92, 1.09, 540, 640,
-            new THREE.Vector3(leftArcX, EYE_LEVEL, leftArcZ),
-            SIDE_PANEL_YAW, 0 // Angled +36° inward facing pilot
-        );
-
-        // MISSION PANEL: Start Mission Card floating in front (pos = 0, Eye - 0.22, 1.35)
-        const missionPanel = createHoloPanel(
-            1.05, 0.55, 600, 314,
-            new THREE.Vector3(0, EYE_LEVEL - 0.22, -1.35),
-            0, 0
-        );
-
-        // FLOATING 3D HEADER STRIP (pos = 0, Eye + 0.588, 2.0; directly above camera screen)
-        const headerPanel = createHoloPanel(
-            1.80, 0.15, 1000, 82,
-            new THREE.Vector3(0, EYE_LEVEL + 0.588, -2.0),
-            0, 0
-        );
-
-        // LATCHED EMERGENCY BANNER (pos = 0, Eye + 0.12, 1.6; shown only when E-STOP active)
-        const emergencyBanner = createHoloPanel(
-            1.20, 0.45, 720, 270,
-            new THREE.Vector3(0, EYE_LEVEL + 0.12, -1.60),
-            0, 0
-        );
-        emergencyBanner.mesh.visible = false;
-
-        function drawLeftPanel() {
-            const { ctx, canvas: c, texture } = leftPanel;
-            ctx.clearRect(0, 0, c.width, c.height);
-
-            // Translucent rounded panel with glowing border
-            ctx.fillStyle = "rgba(10, 16, 28, 0.88)";
-            ctx.strokeStyle = "rgba(220, 230, 255, 0.9)";
-            ctx.lineWidth = 3;
-            roundRect(ctx, 4, 4, c.width - 8, c.height - 8, 16, true, true);
-
-            // STATUS Header
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 24px -apple-system, monospace";
-            ctx.fillText("STATUS", 32, 48);
-
-            // Status Metrics Grid
-            ctx.fillStyle = "#94a3b8";
-            ctx.font = "18px -apple-system, monospace";
-            ctx.fillText("Robot", 32, 90);
-            ctx.fillText("Control", 280, 90);
-
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 20px -apple-system, monospace";
-            ctx.fillText(state.robotConnected ? "ONLINE" : "--", 32, 118);
-            ctx.fillText(state.robotMode.toUpperCase(), 280, 118);
-
-            ctx.fillStyle = "#94a3b8";
-            ctx.font = "18px -apple-system, monospace";
-            ctx.fillText("Camera", 32, 160);
-            ctx.fillText("Backend RTT", 280, 160);
-
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 20px -apple-system, monospace";
-            ctx.fillText(state.robotConnected ? "READY" : "--", 32, 188);
-            ctx.fillText(state.rttMs === null ? "-- ms" : `${state.rttMs} ms`, 280, 188);
-            // Battery
-            ctx.fillStyle = "#94a3b8";
-            ctx.font = "18px -apple-system, monospace";
-            ctx.fillText("Battery", 32, 230);
-            ctx.fillStyle = state.battery > 20 ? "#00ff88" : "#ff2a4b";
-            ctx.font = "bold 20px -apple-system, monospace";
-            ctx.fillText(state.battery > 0 ? `${Math.round(state.battery)} %` : "-- %", 460, 230);
-
-            // Battery bar
-            ctx.fillStyle = "rgba(255, 255, 255, 0.15)";
-            roundRect(ctx, 32, 246, c.width - 64, 10, 5, true, false);
-            if (state.battery > 0) {
-                ctx.fillStyle = state.battery > 20 ? "#00ff88" : "#ff2a4b";
-                roundRect(ctx, 32, 246, Math.max(10, ((c.width - 64) * state.battery) / 100), 10, 5, true, false);
-            }
-
-            // Divider Line
-            ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(32, 290);
-            ctx.lineTo(c.width - 32, 290);
-            ctx.stroke();
-
-            // Virtual VR joystick. The controller laser moves the knob while its
-            // trigger is held; a neutral stick sends an explicit stop.
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 20px -apple-system, monospace";
-            ctx.fillText("VR JOYSTICK", 32, 335);
-            ctx.fillStyle = "#94a3b8";
-            ctx.font = "14px -apple-system, monospace";
-            ctx.fillText("AIM LASER · HOLD TRIGGER · RELEASE TO STOP", 32, 360);
-
-            const stickX = 170;
-            const stickY = 480;
-            const stickRadius = 92;
-            ctx.fillStyle = "rgba(0, 240, 255, 0.08)";
-            ctx.strokeStyle = "rgba(0, 240, 255, 0.75)";
-            ctx.lineWidth = 3;
-            ctx.beginPath();
-            ctx.arc(stickX, stickY, stickRadius, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.stroke();
-
-            ctx.strokeStyle = "rgba(255, 255, 255, 0.25)";
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            ctx.moveTo(stickX - stickRadius, stickY);
-            ctx.lineTo(stickX + stickRadius, stickY);
-            ctx.moveTo(stickX, stickY - stickRadius);
-            ctx.lineTo(stickX, stickY + stickRadius);
-            ctx.stroke();
-
-            const knobX = stickX - virtualJoystickAxes.turn * stickRadius;
-            const knobY = stickY - virtualJoystickAxes.forward * stickRadius;
-            ctx.fillStyle = "rgba(0, 240, 255, 0.75)";
-            ctx.strokeStyle = "#ffffff";
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.arc(knobX, knobY, 30, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.stroke();
-
-            ctx.fillStyle = "#cbd5e1";
-            ctx.font = "bold 13px -apple-system, monospace";
-            ctx.textAlign = "center";
-            ctx.fillText("FORWARD", stickX, stickY - stickRadius - 12);
-            ctx.fillText("BACK", stickX, stickY + stickRadius + 21);
-            ctx.fillText("TURN LEFT", stickX - stickRadius - 35, stickY + 5);
-            ctx.fillText("TURN RIGHT", stickX + stickRadius + 38, stickY + 5);
-            ctx.textAlign = "left";
-
-            ctx.fillStyle = "#94a3b8";
-            ctx.font = "14px -apple-system, monospace";
-            ctx.fillText(`FORWARD  ${state.forward.toFixed(2)}`, 320, 430);
-            ctx.fillText(`STRAFE   ${state.strafe.toFixed(2)}`, 320, 462);
-            ctx.fillText(`TURN     ${state.turn.toFixed(2)}`, 320, 494);
-
-            ctx.fillStyle = state.commandResultColor;
-            ctx.font = "bold 16px -apple-system, monospace";
-            ctx.fillText(`RESULT · ${state.commandStatus}`, 320, 542);
-            ctx.fillStyle = "#cbd5e1";
-            ctx.font = "14px -apple-system, monospace";
-            drawWrappedText(ctx, state.commandMessage, 320, 566, 190, 17, 3);
-
-            // Footer info dot
-            ctx.fillStyle = "#6366f1"; // Purple-blue indicator
-            ctx.beginPath();
-            ctx.arc(42, 620, 6, 0, Math.PI * 2);
-            ctx.fill();
-
-            ctx.fillStyle = "#94a3b8";
-            ctx.font = "15px -apple-system, monospace";
-            ctx.fillText("Accepted by API · not proof of movement", 58, 625);
-
-            texture.needsUpdate = true;
-        }
-
-        function drawMissionPanel() {
-            const { ctx, canvas: c, texture } = missionPanel;
-            ctx.clearRect(0, 0, c.width, c.height);
-
-            const activeMission = Boolean(state.mission?.active);
-            if (activeMission) {
-                missionPanel.mesh.visible = false;
-                return;
-            }
-            missionPanel.mesh.visible = true;
-
-            ctx.fillStyle = "rgba(10, 16, 28, 0.95)";
-            ctx.strokeStyle = "rgba(0, 240, 255, 0.95)";
-            ctx.lineWidth = 3;
-            roundRect(ctx, 4, 4, c.width - 8, c.height - 8, 16, true, true);
-
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 24px monospace";
-            ctx.fillText("MISSION CONTROL", 24, 40);
-
-            ctx.fillStyle = "#fbbf24";
-            ctx.font = "bold 14px monospace";
-            ctx.fillText("START A MISSION TO DRIVE", 24, 68);
-
-            const operator = state.operators[state.operatorIndex];
-            ctx.fillStyle = "#94a3b8";
-            ctx.font = "bold 13px monospace";
-            ctx.fillText("OPERATOR", 24, 98);
-            drawMissionButton(ctx, 24, 108, 50, 42, "‹", state.operators.length > 0, "#00f0ff");
-            drawMissionButton(ctx, 80, 108, 440, 42, operator ? `${operator.name} (${operator.role})` : "Loading operators…", false);
-            drawMissionButton(ctx, 526, 108, 50, 42, "›", state.operators.length > 0, "#00f0ff");
-
-            ctx.fillStyle = "#94a3b8";
-            ctx.fillText("ZONE", 24, 172);
-            drawMissionButton(ctx, 24, 182, 50, 42, "‹", true, "#00f0ff");
-            drawMissionButton(ctx, 80, 182, 440, 42, state.zone, false);
-            drawMissionButton(ctx, 526, 182, 50, 42, "›", true, "#00f0ff");
-
-            // START MISSION button
-            drawMissionButton(ctx, 175, 242, 250, 52, "START MISSION", state.operators.length > 0, "#00c987");
-
-            if (state.missionFeedback) {
-                ctx.fillStyle = "#f87171";
-                ctx.font = "12px monospace";
-                ctx.fillText(state.missionFeedback.slice(0, 60), 24, 304);
-            }
-
-            texture.needsUpdate = true;
-        }
-
-        function drawMissionButton(ctx, x, y, w, h, label, enabled, color = "#64748b") {
-            ctx.fillStyle = enabled ? `${color}33` : "rgba(255,255,255,0.04)";
-            ctx.strokeStyle = enabled ? color : "rgba(148,163,184,0.28)";
-            ctx.lineWidth = 1.5;
-            roundRect(ctx, x, y, w, h, 7, true, true);
-            ctx.fillStyle = enabled ? "#ffffff" : "#94a3b8";
-            ctx.font = "bold 14px monospace";
-            ctx.textAlign = "center";
-            ctx.fillText(label, x + w / 2, y + h / 2 + 5, w - 12);
-            ctx.textAlign = "left";
-        }
-
-        function drawWrappedText(ctx, text, x, y, maxWidth, lineHeight, maxLines) {
-            const words = String(text || "").split(/\s+/);
-            let line = "";
-            let lineNumber = 0;
-            for (const word of words) {
-                const candidate = line ? `${line} ${word}` : word;
-                if (line && ctx.measureText(candidate).width > maxWidth) {
-                    ctx.fillText(line, x, y + lineNumber * lineHeight, maxWidth);
-                    line = word;
-                    lineNumber++;
-                    if (lineNumber >= maxLines) break;
-                } else {
-                    line = candidate;
-                }
-            }
-            if (line && lineNumber < maxLines) ctx.fillText(line, x, y + lineNumber * lineHeight, maxWidth);
-        }
-
-        const missionZones = ["Zone-A", "Zone-B", "Zone-C", "Zone-D"];
-
-        function syncMissionControls() {
-            const chip = document.getElementById("mission-chip");
-            const startButton = document.getElementById("mission-start-btn");
-            const endButton = document.getElementById("mission-end-btn");
-            const operatorSelect = document.getElementById("mission-operator");
-            const zoneInput = document.getElementById("mission-zone");
-            const feedback = document.getElementById("mission-feedback");
-            const active = Boolean(state.mission?.active);
-
-            if (chip) {
-                chip.textContent = active
-                    ? `ACTIVE · ${state.mission.operator_name || state.mission.operator_id} · ${state.mission.zone}`
-                    : (state.missionStatusKnown ? "NO ACTIVE MISSION" : "Checking status…");
-                chip.style.color = active ? "#00ff88" : "#fbbf24";
-            }
-            if (startButton) startButton.disabled = active || !state.operators.length;
-            if (endButton) {
-                endButton.disabled = !active;
-                endButton.textContent = Date.now() < state.endMissionConfirmUntil ? "Confirm end mission" : "End mission";
-            }
-            if (operatorSelect && state.operators.length) {
-                operatorSelect.value = state.operators[state.operatorIndex]?.operator_id || "";
-                operatorSelect.disabled = active;
-            }
-            if (zoneInput) {
-                zoneInput.value = state.zone;
-                zoneInput.disabled = active;
-            }
-            if (feedback && state.missionFeedback) feedback.textContent = state.missionFeedback;
-            if (typeof drawMissionPanel === "function" && typeof missionPanel !== "undefined") drawMissionPanel();
-            if (typeof drawHeaderPanel === "function" && typeof headerPanel !== "undefined") drawHeaderPanel();
-            if (typeof drawBottomPanel === "function" && typeof bottomPanel !== "undefined") drawBottomPanel();
-        }
-
-        async function loadMissionOperators() {
-            const select = document.getElementById("mission-operator");
-            try {
-                const response = await fetch("/api/operators");
-                const payload = await response.json().catch(() => []);
-                if (!response.ok || !Array.isArray(payload)) throw new Error(payload.detail || `HTTP ${response.status}`);
-                state.operators = payload;
-                const selectedMissionOperator = state.mission?.operator_id;
-                const selectedIndex = state.operators.findIndex((operator) => operator.operator_id === selectedMissionOperator);
-                state.operatorIndex = selectedIndex >= 0 ? selectedIndex : 0;
-                if (select) {
-                    select.replaceChildren();
-                    state.operators.forEach((operator) => {
-                        const option = document.createElement("option");
-                        option.value = operator.operator_id;
-                        option.textContent = `${operator.name} (${operator.role})`;
-                        select.appendChild(option);
-                    });
-                    select.disabled = !state.operators.length || Boolean(state.mission?.active);
-                }
-                state.missionFeedback = state.operators.length ? "" : "No operators are registered.";
-            } catch (error) {
-                state.missionFeedback = `Could not load operators: ${error.message}`;
-                if (select) {
-                    select.replaceChildren(new Option("Operators unavailable", ""));
-                    select.disabled = true;
-                }
-            }
-            syncMissionControls();
-        }
-
-        function applyMissionStatus(mission) {
-            state.mission = mission && typeof mission === "object" ? mission : { active: false };
-            state.missionStatusKnown = true;
-            // Hand/joystick motion is always allowed without an active mission; only voice/LLM require a mission.
-            state.motionMissionBlocked = false;
-            if (state.mission.active && state.commandStatus === "MISSION_REQUIRED") {
-                updateCommandStatus("READY", "Mission active; ready to drive");
-            }
-            syncMissionControls();
-        }
-
-        async function refreshMissionStatus() {
-            try {
-                const response = await fetch("/api/mission/status");
-                const mission = await response.json().catch(() => ({}));
-                if (response.ok) applyMissionStatus(mission);
-            } catch (error) {
-                // Keep the last known mission state; command requests still report OFFLINE if needed.
-            }
-        }
-
-        async function startMission() {
-            const operator = state.operators[state.operatorIndex];
-            const zone = String(document.getElementById("mission-zone")?.value || state.zone).trim();
-            if (!operator || !zone) {
-                state.missionFeedback = "Choose an operator and enter a zone.";
-                syncMissionControls();
-                return;
-            }
-            state.zone = zone;
-            state.missionFeedback = "Starting mission…";
-            syncMissionControls();
-            try {
-                const response = await fetch("/api/mission/start", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ operator_id: operator.operator_id, zone })
-                });
-                const mission = await response.json().catch(() => ({}));
-                if (!response.ok) throw new Error(mission.detail || `HTTP ${response.status}`);
-                applyMissionStatus(mission);
-                state.missionFeedback = `Mission started for ${mission.operator_name || operator.name}.`;
-            } catch (error) {
-                state.missionFeedback = `Mission start failed: ${error.message}`;
-            }
-            syncMissionControls();
-        }
-
-        async function endMission() {
-            if (Date.now() >= state.endMissionConfirmUntil) {
-                state.endMissionConfirmUntil = Date.now() + 5000;
-                state.missionFeedback = "Select End mission again within 5 seconds to confirm.";
-                syncMissionControls();
-                setTimeout(() => {
-                    if (Date.now() >= state.endMissionConfirmUntil) {
-                        state.endMissionConfirmUntil = 0;
-                        syncMissionControls();
-                    }
-                }, 5100);
-                return;
-            }
-            state.endMissionConfirmUntil = 0;
-            state.missionFeedback = "Ending mission…";
-            syncMissionControls();
-            try {
-                const response = await fetch("/api/mission/stop", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ reason: "Operator ended mission" })
-                });
-                const mission = await response.json().catch(() => ({}));
-                if (!response.ok) throw new Error(mission.detail || `HTTP ${response.status}`);
-                applyMissionStatus(mission);
-                state.missionFeedback = "Mission ended. Start a mission to drive again.";
-                updateCommandStatus("MISSION_REQUIRED", "Start a mission to drive");
-            } catch (error) {
-                state.missionFeedback = `Mission end failed: ${error.message}`;
-            }
-            syncMissionControls();
-        }
-
-        document.getElementById("mission-start-btn")?.addEventListener("click", startMission);
-        document.getElementById("mission-end-btn")?.addEventListener("click", endMission);
-        document.getElementById("mission-controls")?.addEventListener("click", (event) => event.stopPropagation());
-        document.getElementById("mission-operator")?.addEventListener("change", (event) => {
-            state.operatorIndex = Math.max(0, state.operators.findIndex((operator) => operator.operator_id === event.target.value));
-            syncMissionControls();
-        });
-        document.getElementById("mission-zone")?.addEventListener("input", (event) => {
-            state.zone = event.target.value || "Zone-A";
-            drawMissionPanel();
-        });
-        loadMissionOperators();
-        refreshMissionStatus();
-        setInterval(refreshMissionStatus, 3000);
-
-        // 2. CENTER PANEL: LIVE ROBOT CAMERA (Forward Optics Display at eye level 1.6m, dist 2.0m)
-        const centerPanel = createHoloPanel(
-            1.80, 1.12, 840, 520,
-            new THREE.Vector3(0, EYE_LEVEL, -2.0),
-            0, 0 // Center front
-        );
-
-        function drawHeaderPanel() {
-            const { ctx, canvas: c, texture } = headerPanel;
-            ctx.clearRect(0, 0, c.width, c.height);
-
-            // Translucent rounded bar with glowing border
-            ctx.fillStyle = "rgba(10, 16, 28, 0.94)";
-            ctx.strokeStyle = "rgba(220, 230, 255, 0.95)";
-            ctx.lineWidth = 2.5;
-            roundRect(ctx, 4, 4, c.width - 8, c.height - 8, 14, true, true);
-
-            // Left: Wordmark BARRY
-            ctx.fillStyle = "#00f0ff";
-            ctx.font = "900 24px -apple-system, monospace";
-            ctx.fillText("BARRY", 24, 49);
-
-            // Mission Chip (Interactive: click toggles mission card)
-            const activeMission = Boolean(state.mission?.active);
-            const chipX = 130;
-            const chipY = 16;
-            const chipW = 340;
-            const chipH = 50;
-            ctx.fillStyle = activeMission ? "rgba(0, 255, 136, 0.18)" : "rgba(251, 191, 36, 0.18)";
-            ctx.strokeStyle = activeMission ? "#00ff88" : "#fbbf24";
-            ctx.lineWidth = 1.5;
-            roundRect(ctx, chipX, chipY, chipW, chipH, 8, true, true);
-
-            ctx.fillStyle = activeMission ? "#00ff88" : "#fbbf24";
-            ctx.font = "bold 14px monospace";
-            const missionLabel = activeMission
-                ? `ACTIVE · ${state.mission.operator_name || state.mission.operator_id || "Operator"} · ${state.mission.zone || "Zone"}`
-                : (state.missionStatusKnown ? "NO ACTIVE MISSION" : "CHECKING MISSION…");
-            ctx.textAlign = "center";
-            ctx.fillText(missionLabel.slice(0, 42), chipX + chipW / 2, chipY + 31);
-            ctx.textAlign = "left";
-
-            // Helper chip function
-            function drawHeaderChip(x, w, label, val, valColor = "#ffffff") {
-                ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
-                ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
-                ctx.lineWidth = 1;
-                roundRect(ctx, x, chipY, w, chipH, 8, true, true);
-
-                ctx.fillStyle = "#94a3b8";
-                ctx.font = "11px monospace";
-                ctx.fillText(label, x + 10, chipY + 20);
-
-                ctx.fillStyle = valColor;
-                ctx.font = "bold 15px monospace";
-                ctx.fillText(val, x + 10, chipY + 41);
-            }
-
-            // Right Status Chips: Robot, Control, FPS, RTT, Battery
-            drawHeaderChip(485, 115, "ROBOT", state.robotConnected ? "ONLINE" : "--", state.robotConnected ? "#00ff88" : "#94a3b8");
-            drawHeaderChip(610, 115, "CONTROL", state.robotMode.toUpperCase(), state.robotConnected ? "#00f0ff" : "#94a3b8");
-            drawHeaderChip(735, 80, "FPS", `${state.fps}`, "#38bdf8");
-            drawHeaderChip(825, 75, "RTT", state.rttMs !== null ? `${state.rttMs}ms` : "--", "#a78bfa");
-            drawHeaderChip(910, 75, "BATTERY", state.battery > 0 ? `${Math.round(state.battery)}%` : "--%", state.battery > 20 ? "#00ff88" : "#ff2a4b");
-
-            texture.needsUpdate = true;
-        }
-
-        function drawEmergencyBanner() {
-            const { ctx, canvas: c, texture } = emergencyBanner;
-            ctx.clearRect(0, 0, c.width, c.height);
-
-            if (!state.eStopActive) {
-                emergencyBanner.mesh.visible = false;
-                return;
-            }
-            emergencyBanner.mesh.visible = true;
-
-            // Translucent glowing emergency red panel
-            ctx.fillStyle = "rgba(69, 10, 10, 0.96)";
-            ctx.strokeStyle = "#dc2626";
-            ctx.lineWidth = 3.5;
-            roundRect(ctx, 4, 4, c.width - 8, c.height - 8, 18, true, true);
-
-            // Warning Pill
-            ctx.fillStyle = "rgba(220, 38, 38, 0.35)";
-            ctx.strokeStyle = "#ef4444";
-            ctx.lineWidth = 1.5;
-            roundRect(ctx, 24, 20, 260, 36, 8, true, true);
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 13px monospace";
-            ctx.textAlign = "center";
-            ctx.fillText("⚠ EMERGENCY STOP LATCHED", 154, 43);
-            ctx.textAlign = "left";
-
-            // Title
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 26px -apple-system, monospace";
-            ctx.fillText("SAFETY INTERLOCK ENGAGED", 24, 95);
-
-            // Detail
-            ctx.fillStyle = "#fca5a5";
-            ctx.font = "15px -apple-system, monospace";
-            ctx.fillText("All robot locomotion and direct kinematics are frozen.", 24, 126);
-            ctx.fillText("Clear surrounding hazard and reset e-stop to resume driving.", 24, 148);
-
-            // RESET BUTTON
-            const btnX = 220;
-            const btnY = 175;
-            const btnW = 280;
-            const btnH = 65;
-            ctx.fillStyle = "#dc2626";
-            ctx.strokeStyle = "#ffffff";
-            ctx.lineWidth = 2;
-            roundRect(ctx, btnX, btnY, btnW, btnH, 12, true, true);
-
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 22px -apple-system, monospace";
-            ctx.textAlign = "center";
-            ctx.fillText("RESET E-STOP", btnX + btnW / 2, btnY + 41);
-            ctx.textAlign = "left";
-
-            texture.needsUpdate = true;
-        }
-
-        function drawCenterPanel() {
-            const { ctx, canvas: c, texture } = centerPanel;
-            ctx.clearRect(0, 0, c.width, c.height);
-
-            // Outer Frame with glowing white border
-            ctx.fillStyle = "rgba(10, 15, 24, 0.92)";
-            ctx.strokeStyle = "rgba(230, 238, 255, 0.95)";
-            ctx.lineWidth = 3.5;
-            roundRect(ctx, 4, 4, c.width - 8, c.height - 8, 16, true, true);
-
-            // Top Header: BARRY MODE · MANUAL
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 20px -apple-system, monospace";
-            ctx.fillText("BARRY", 28, 42);
-
-            ctx.fillStyle = "#94a3b8";
-            ctx.font = "16px -apple-system, monospace";
-            ctx.fillText("MODE · MANUAL · more modes later", 120, 42);
-
-            ctx.fillText("·· --", c.width - 80, 42);
-
-            // Inner Video Display Area
-            const vidX = 24;
-            const vidY = 62;
-            const vidW = c.width - 48;
-            const vidH = c.height - 86;
-
-            ctx.fillStyle = "#020408";
-            ctx.strokeStyle = "rgba(255, 255, 255, 0.25)";
-            ctx.lineWidth = 1.5;
-            roundRect(ctx, vidX, vidY, vidW, vidH, 8, true, true);
-
-            const camImg = document.getElementById("vr-cam-feed");
-            const hasLiveFrame = camImg && camImg.naturalWidth > 0;
-            if (hasLiveFrame) {
-                try {
-                    ctx.drawImage(camImg, vidX, vidY, vidW, vidH);
-                } catch(e) {}
-            }
-
-            // Video Top HUD Overlay
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 14px monospace";
-            ctx.fillText(`LIVE ${state.fps} FPS`, vidX + 16, vidY + 28);
-            ctx.fillText(`OPTICS`, vidX + 140, vidY + 28);
-
-            const roll = state.roll === null || isNaN(state.roll) ? "0.0" : Number(state.roll).toFixed(1);
-            const pitch = state.pitch === null || isNaN(state.pitch) ? "0.0" : Number(state.pitch).toFixed(1);
-            const attitudeText = `ROLL ${roll}° · PITCH ${pitch}°`;
-            ctx.fillText(attitudeText, vidX + vidW - 240, vidY + 28);
-
-            // Center Crosshair Reticle
-            const cx = vidX + vidW / 2;
-            const cy = vidY + vidH / 2 - 10;
-            ctx.strokeStyle = "rgba(0, 240, 255, 0.6)";
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            ctx.arc(cx, cy, 18, 0, Math.PI * 2);
-            ctx.stroke();
-
-            ctx.beginPath();
-            ctx.arc(cx, cy, 3, 0, Math.PI * 2);
-            ctx.fillStyle = "rgba(0, 240, 255, 0.9)";
-            ctx.fill();
-
-            if (!hasLiveFrame) {
-                ctx.fillStyle = "#94a3b8";
-                ctx.font = "bold 15px monospace";
-                ctx.textAlign = "center";
-                ctx.fillText("[ CONNECTING TO CAMERA STREAM... ]", cx, cy + 54);
-                ctx.font = "13px -apple-system, monospace";
-                ctx.fillText("http://192.168.137.1:8000/api/camera/stream", cx, cy + 78);
-                ctx.textAlign = "left";
-            }
-
-            texture.needsUpdate = true;
-        }
-        // 3. BOTTOM PANEL: INTENSITY, STOP & CONTROL STRIP (Tilted desk at 0.9m distance)
-        const bottomPanel = createHoloPanel(
-            1.35, 0.28, 800, 166,
-            new THREE.Vector3(0, deskY, deskZ),
-            0, deskTiltX
-        );
-
-        // Restored: deleted in 1d4f16c while drawBottomPanel still calls it. Without it the page
-        // throws during start-up, the render loop never runs, and neither the virtual joystick nor
-        // the XR thumbsticks (both polled in the render loop) ever send motion.
-        function drawSegmentBtn(ctx, x, y, w, h, text, active) {
-            ctx.fillStyle = active ? "#6366f1" : "rgba(255, 255, 255, 0.08)";
-            ctx.strokeStyle = active ? "#a5b4fc" : "rgba(255, 255, 255, 0.2)";
-            ctx.lineWidth = 1;
-            roundRect(ctx, x, y, w, h, 8, true, true);
-
-            ctx.fillStyle = active ? "#ffffff" : "#94a3b8";
-            ctx.font = "bold 14px -apple-system, monospace";
-            ctx.textAlign = "center";
-            ctx.fillText(text, x + w / 2, y + h / 2 + 5);
-            ctx.textAlign = "left";
-        }
-
-        function drawBottomPanel() {
-            const { ctx, canvas: c, texture } = bottomPanel;
-            ctx.clearRect(0, 0, c.width, c.height);
-
-            // Translucent rounded bar with glowing border
-            ctx.fillStyle = "rgba(10, 16, 28, 0.94)";
-            ctx.strokeStyle = "rgba(220, 230, 255, 0.95)";
-            ctx.lineWidth = 3;
-            roundRect(ctx, 4, 4, c.width - 8, c.height - 8, 20, true, true);
-
-            // INTENSITY Label
-            ctx.fillStyle = "#94a3b8";
-            ctx.font = "bold 13px -apple-system, monospace";
-            ctx.fillText("INTENSITY", 28, 38);
-
-            // Intensity Segmented Buttons: LOW, MEDIUM, HIGH
-            drawSegmentBtn(ctx, 24, 52, 76, 56, "LOW", state.intensity === "LOW");
-            drawSegmentBtn(ctx, 106, 52, 96, 56, "MEDIUM", state.intensity === "MEDIUM");
-            drawSegmentBtn(ctx, 208, 52, 80, 56, "HIGH", state.intensity === "HIGH");
-
-            // BIG RED STOP BUTTON
-            const stopX = 310;
-            const stopY = 26;
-            const stopW = 230;
-            const stopH = 88;
-            ctx.fillStyle = state.eStopActive ? "#991b1b" : "#dc2626";
-            roundRect(ctx, stopX, stopY, stopW, stopH, 14, true, false);
-
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 26px -apple-system, monospace";
-            ctx.textAlign = "center";
-            ctx.fillText(state.eStopActive ? "RESET E-STOP" : "STOP", stopX + stopW / 2, stopY + 44);
-
-            ctx.font = "13px -apple-system, monospace";
-            ctx.fillText("A button · or laser trigger", stopX + stopW / 2, stopY + 70);
-
-            // END MISSION BUTTON (visible and active when mission is in progress)
-            const activeMission = Boolean(state.mission?.active);
-            if (activeMission) {
-                const endX = 556;
-                const endY = 40;
-                const endW = 120;
-                const endH = 58;
-                ctx.fillStyle = Date.now() < state.endMissionConfirmUntil ? "#b91c1c" : "rgba(220, 38, 38, 0.25)";
-                ctx.strokeStyle = "#ef4444";
-                ctx.lineWidth = 1.5;
-                roundRect(ctx, endX, endY, endW, endH, 10, true, true);
-
-                ctx.fillStyle = "#ffffff";
-                ctx.font = "bold 13px -apple-system, monospace";
-                ctx.fillText(Date.now() < state.endMissionConfirmUntil ? "CONFIRM?" : "End mission", endX + endW / 2, endY + 35);
-            }
-
-            // EXIT VR BUTTON
-            const exitX = activeMission ? 690 : 570;
-            const exitW = activeMission ? 95 : 180;
-            const exitY = 40;
-            const exitH = 58;
-            ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
-            ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
-            ctx.lineWidth = 1.5;
-            roundRect(ctx, exitX, exitY, exitW, exitH, 10, true, true);
-
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 15px -apple-system, monospace";
-            ctx.fillText("Exit VR", exitX + exitW / 2, exitY + 35);
-            ctx.textAlign = "left"; // Reset
-
-            texture.needsUpdate = true;
-        }
-
-        // 4. RIGHT PANEL: ACTIONS, POSTURES & SENSORS (Placed on +36° arc at 1.3m)
-        const rightPanel = createHoloPanel(
-            0.92, 1.09, 540, 640,
-            new THREE.Vector3(rightArcX, EYE_LEVEL, rightArcZ),
-            -SIDE_PANEL_YAW, 0 // Angled -36° inward facing pilot
-        );
-
-        function drawRightPanel() {
-            const { ctx, canvas: c, texture } = rightPanel;
-            ctx.clearRect(0, 0, c.width, c.height);
-
-            // Translucent rounded panel with glowing border
-            ctx.fillStyle = "rgba(10, 16, 28, 0.88)";
-            ctx.strokeStyle = "rgba(220, 230, 255, 0.9)";
-            ctx.lineWidth = 3;
-            roundRect(ctx, 4, 4, c.width - 8, c.height - 8, 16, true, true);
-
-            // Header: ACTIONS & POSTURES
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 24px -apple-system, monospace";
-            ctx.fillText("ACTIONS & POSTURES", 32, 48);
-
-            ctx.fillStyle = "#94a3b8";
-            ctx.font = "14px -apple-system, monospace";
-            ctx.fillText("DOGZILLA S2 · DIRECT KINEMATICS", 32, 74);
-
-            // Divider Line
-            ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(32, 88);
-            ctx.lineTo(c.width - 32, 88);
-            ctx.stroke();
-
-            // POSTURES Title
-            ctx.fillStyle = "#00f0ff";
-            ctx.font = "bold 16px -apple-system, monospace";
-            ctx.fillText("QUICK POSTURE PRESETS", 32, 118);
-
-            // Posture Tiles: 2 columns x 3 rows
-            const postures = [
-                { label: "STAND", id: "stand" },
-                { label: "SIT", id: "sit" },
-                { label: "LIE DOWN", id: "liedown" },
-                { label: "BOW", id: "bow" },
-                { label: "BALANCE", id: "balance" },
-                { label: "WAVE", id: "wave" }
-            ];
-
-            const tileW = 224;
-            const tileH = 50;
-            const startX = 32;
-            const startY = 136;
-            const gapX = 28;
-            const gapY = 14;
-
-            postures.forEach((p, idx) => {
-                const col = idx % 2;
-                const row = Math.floor(idx / 2);
-                const tx = startX + col * (tileW + gapX);
-                const ty = startY + row * (tileH + gapY);
-
-                const isActive = (state.lastCommand === p.id);
-                ctx.fillStyle = isActive ? "rgba(99, 102, 241, 0.35)" : "rgba(255, 255, 255, 0.08)";
-                ctx.strokeStyle = isActive ? "#a5b4fc" : "rgba(255, 255, 255, 0.2)";
-                ctx.lineWidth = 1.5;
-                roundRect(ctx, tx, ty, tileW, tileH, 10, true, true);
-
-                ctx.fillStyle = isActive ? "#ffffff" : "#d9e6f2";
-                ctx.font = "bold 15px -apple-system, monospace";
-                ctx.textAlign = "center";
-                ctx.fillText(p.label, tx + tileW / 2, ty + 31);
-                ctx.textAlign = "left";
-            });
-
-            // GAIT & MOTION Title
-            const gaitY = startY + 3 * (tileH + gapY) + 20;
-            ctx.fillStyle = "#00f0ff";
-            ctx.font = "bold 16px -apple-system, monospace";
-            ctx.fillText("GAIT & LOCOMOTION MODES", 32, gaitY);
-
-            // Gait Buttons: Trot, Crawl
-            const gaits = [
-                { label: "TROT GAIT (Agile)", id: "trot" },
-                { label: "CRAWL GAIT (Stable)", id: "crawl" }
-            ];
-            gaits.forEach((g, idx) => {
-                const tx = startX + idx * (tileW + gapX);
-                const ty = gaitY + 16;
-                ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
-                ctx.strokeStyle = "rgba(255, 255, 255, 0.2)";
-                ctx.lineWidth = 1.5;
-                roundRect(ctx, tx, ty, tileW, tileH, 10, true, true);
-
-                ctx.fillStyle = "#d9e6f2";
-                ctx.font = "bold 14px -apple-system, monospace";
-                ctx.textAlign = "center";
-                ctx.fillText(g.label, tx + tileW / 2, ty + 31);
-                ctx.textAlign = "left";
-            });
-
-            // AI & VISION Title
-            const aiY = gaitY + tileH + 34;
-            ctx.fillStyle = "#00f0ff";
-            ctx.font = "bold 16px -apple-system, monospace";
-            ctx.fillText("INTELLIGENCE & SENSORS", 32, aiY);
-
-            // AI Action Buttons
-            const aiActions = [
-                { label: "AI VISION SCAN", id: "ai_scan" },
-                { label: "ZERO IMU HEADING", id: "zero_imu" }
-            ];
-            aiActions.forEach((a, idx) => {
-                const tx = startX + idx * (tileW + gapX);
-                const ty = aiY + 16;
-                ctx.fillStyle = "rgba(16, 185, 129, 0.15)";
-                ctx.strokeStyle = "rgba(16, 185, 129, 0.4)";
-                ctx.lineWidth = 1.5;
-                roundRect(ctx, tx, ty, tileW, tileH, 10, true, true);
-
-                ctx.fillStyle = "#34d399";
-                ctx.font = "bold 14px -apple-system, monospace";
-                ctx.textAlign = "center";
-                ctx.fillText(a.label, tx + tileW / 2, ty + 31);
-                ctx.textAlign = "left";
-            });
-
-            // Footer info
-            ctx.fillStyle = "#6366f1";
-            ctx.beginPath();
-            ctx.arc(42, 608, 6, 0, Math.PI * 2);
-            ctx.fill();
-
-            ctx.fillStyle = "#94a3b8";
-            ctx.font = "14px -apple-system, monospace";
-            ctx.fillText("Point VR laser or mouse click to command", 58, 613);
-
-            texture.needsUpdate = true;
-        }
-
-        // --- Helper: Canvas Rounded Rectangle ---
-        function roundRect(ctx, x, y, width, height, radius, fill, stroke) {
-            ctx.beginPath();
-            ctx.moveTo(x + radius, y);
-            ctx.lineTo(x + width - radius, y);
-            ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
-            ctx.lineTo(x + width, y + height - radius);
-            ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
-            ctx.lineTo(x + radius, y + height);
-            ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
-            ctx.lineTo(x, y + radius);
-            ctx.quadraticCurveTo(x, y, x + radius, y);
-            ctx.closePath();
-            if (fill) ctx.fill();
-            if (stroke) ctx.stroke();
-        }
-
-        // Render initial panel graphics
-        drawLeftPanel();
-        drawCenterPanel();
-        drawBottomPanel();
-        drawRightPanel();
-        drawMissionPanel();
-        drawHeaderPanel();
-        drawEmergencyBanner();
-
-        // --- Interaction: Raycasting & Click Handling ---
-        const raycaster = new THREE.Raycaster();
-        const mouse = new THREE.Vector2();
-        const virtualStickCenter = { x: 170, y: 480, radius: 92 };
-        let virtualJoystickOwner = null;
-        let virtualJoystickLastSentAt = 0;
-        let virtualJoystickHasSentMotion = false;
-
-        function virtualStickHit(ray) {
-            const hit = ray.intersectObject(leftPanel.mesh)[0];
-            if (!hit || !hit.uv) return null;
-            const x = hit.uv.x * leftPanel.canvas.width;
-            const y = (1 - hit.uv.y) * leftPanel.canvas.height;
-            return { hit, x, y };
-        }
-
-        function updateVirtualStickFromHit(pointer, requireOnPad = false) {
-            if (!pointer) {
-                virtualJoystickAxes.forward = 0;
-                virtualJoystickAxes.turn = 0;
-                drawLeftPanel();
-                return;
-            }
-            let dx = (pointer.x - virtualStickCenter.x) / virtualStickCenter.radius;
-            let dy = (virtualStickCenter.y - pointer.y) / virtualStickCenter.radius;
-            const length = Math.hypot(dx, dy);
-            if (requireOnPad && length > 1.35) return false;
-            if (length > 1) {
-                dx /= length;
-                dy /= length;
-            }
-            if (Math.abs(dx) < 0.12) dx = 0;
-            if (Math.abs(dy) < 0.12) dy = 0;
-            // Screen-right turns the robot right; positive MotionCommand.turn is left.
-            virtualJoystickAxes.turn = -dx;
-            virtualJoystickAxes.forward = dy;
-            drawLeftPanel();
-            return true;
-        }
-
-        function setVirtualJoystickOwner(owner, pointer) {
-            if (virtualJoystickOwner || !updateVirtualStickFromHit(pointer, true)) return false;
-            virtualJoystickOwner = owner;
-            virtualJoystickLastSentAt = 0;
-            return true;
-        }
-
-        function releaseVirtualJoystick(owner) {
-            if (virtualJoystickOwner !== owner) return;
-            virtualJoystickOwner = null;
-            virtualJoystickAxes.forward = 0;
-            virtualJoystickAxes.turn = 0;
-            virtualJoystickLastSentAt = performance.now();
-            const hadMotion = virtualJoystickHasSentMotion;
-            virtualJoystickHasSentMotion = false;
-            drawLeftPanel();
-            if (hadMotion) sendMotionAxes(0, 0, 0);
-        }
-
-        function updateVirtualJoystickControls() {
-            if (!virtualJoystickOwner) return;
-            if (state.eStopActive) {
-                virtualJoystickOwner = null;
-                virtualJoystickAxes.forward = 0;
-                virtualJoystickAxes.turn = 0;
-                virtualJoystickHasSentMotion = false;
-                drawLeftPanel();
-                return;
-            }
-            if (virtualJoystickOwner !== "mouse") {
-                const controller = virtualJoystickOwner;
-                const tempMatrix = new THREE.Matrix4();
-                tempMatrix.identity().extractRotation(controller.matrixWorld);
-                raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
-                raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
-                updateVirtualStickFromHit(virtualStickHit(raycaster));
-            }
-
-            const now = performance.now();
-            const moving = Math.abs(virtualJoystickAxes.forward) > 0 || Math.abs(virtualJoystickAxes.turn) > 0;
-            if (now - virtualJoystickLastSentAt >= 120 && (moving || virtualJoystickHasSentMotion)) {
-                sendMotionAxes(
-                    virtualJoystickAxes.forward * state.speed,
-                    0,
-                    virtualJoystickAxes.turn * state.speed
-                );
-                virtualJoystickHasSentMotion = moving;
-                virtualJoystickLastSentAt = now;
-            }
-        }
-
-        // --- Hardware VR Controller Thumbstick Poller (Quest Touch / Touch Plus) ---
-        let xrWasDeflected = false;
-        let xrLastSentAt = 0;
-
-        function updateXrControllerThumbsticks() {
-            if (!renderer.xr.isPresenting) return;
-            const session = renderer.xr.getSession();
-            if (!session || !session.inputSources) return;
-
-            let fwd = 0;
-            let strafe = 0;
-            let turn = 0;
-            let eStopPressed = false;
-
-            for (const source of session.inputSources) {
-                if (!source.gamepad) continue;
-                const gp = source.gamepad;
-                const axes = gp.axes;
-                const buttons = gp.buttons;
-
-                // Stop button check: A button on right controller (index 4) or thumbstick press (index 3)
-                if (buttons) {
-                    if (source.handedness === 'right') {
-                        if ((buttons[4] && buttons[4].pressed) || (buttons[3] && buttons[3].pressed)) {
-                            eStopPressed = true;
-                        }
-                    }
-                }
-
-                if (axes && axes.length >= 4) {
-                    // Standard WebXR Gamepad mapping:
-                    // axes[2]: thumbstick X (-1 left, +1 right)
-                    // axes[3]: thumbstick Y (-1 up/forward, +1 down/backward)
-                    if (source.handedness === 'left') {
-                        const ax = axes[2];
-                        const ay = axes[3];
-                        if (Math.abs(ay) > 0.12) fwd -= ay;      // pushing stick up is negative Y -> forward
-                        if (Math.abs(ax) > 0.12) strafe -= ax;   // pushing stick left -> strafe left
-                    } else if (source.handedness === 'right') {
-                        const ax = axes[2];
-                        if (Math.abs(ax) > 0.12) turn -= ax;     // pushing stick left -> turn left
-                    }
-                }
-            }
-
-            if (eStopPressed && !state.eStopActive) {
-                triggerEmergencyStop();
-                return;
-            }
-
-            fwd = Math.max(-1, Math.min(1, fwd));
-            strafe = Math.max(-1, Math.min(1, strafe));
-            turn = Math.max(-1, Math.min(1, turn));
-
-            const isDeflected = Math.abs(fwd) > 0.05 || Math.abs(strafe) > 0.05 || Math.abs(turn) > 0.05;
-            const now = performance.now();
-
-            if (isDeflected) {
-                state.cmdFwd = fwd;
-                state.cmdStrafe = strafe;
-                state.cmdTurn = turn;
-                if (now - xrLastSentAt >= 100) {
-                    xrLastSentAt = now;
-                    sendMotionAxes(fwd * state.speed, strafe * state.speed, turn * state.speed);
-                }
-                xrWasDeflected = true;
-            } else if (xrWasDeflected) {
-                xrWasDeflected = false;
-                state.cmdFwd = 0;
-                state.cmdStrafe = 0;
-                state.cmdTurn = 0;
-                sendMotionAxes(0, 0, 0);
-            }
-        }
-
-        async function handleBottomPanelClick(uvX, uvY) {
-            const x = uvX * bottomPanel.canvas.width;
-            const y = (1 - uvY) * bottomPanel.canvas.height;
-
-            // Intensity Buttons: y: 45 to 115
-            if (y >= 45 && y <= 115) {
-                if (x >= 24 && x <= 100) {
-                    state.intensity = 'LOW';
-                    state.speed = 0.3;
-                    playChime(600, 0.05);
-                    drawBottomPanel();
-                } else if (x >= 106 && x <= 202) {
-                    state.intensity = 'MEDIUM';
-                    state.speed = 0.6;
-                    playChime(700, 0.05);
-                    drawBottomPanel();
-                } else if (x >= 208 && x <= 288) {
-                    state.intensity = 'HIGH';
-                    state.speed = 1.0;
-                    playChime(850, 0.05);
-                    drawBottomPanel();
-                }
-            }
-
-            // Stop button: x: 310 to 540, y: 26 to 114
-            if (x >= 310 && x <= 540 && y >= 26 && y <= 114) {
-                if (state.eStopActive) await resetEmergencyStop();
-                else await stopRobot();
-            }
-
-            const activeMission = Boolean(state.mission?.active);
-            if (activeMission) {
-                // End mission button: x: 556 to 676, y: 40 to 98
-                if (x >= 556 && x <= 676 && y >= 40 && y <= 98) {
-                    await endMission();
-                }
-                // Exit VR button: x: 690 to 785, y: 40 to 98
-                if (x >= 690 && x <= 785 && y >= 40 && y <= 98) {
-                    const session = renderer.xr.getSession();
-                    if (session) session.end();
-                }
-            } else {
-                // Exit VR button: x: 570 to 750, y: 40 to 98
-                if (x >= 570 && x <= 750 && y >= 40 && y <= 98) {
-                    const session = renderer.xr.getSession();
-                    if (session) session.end();
-                }
-            }
-        }
-
-        async function handleMissionPanelClick(uvX, uvY) {
-            const x = uvX * missionPanel.canvas.width;
-            const y = (1 - uvY) * missionPanel.canvas.height;
-
-            // Operator prev/next: y: 100 to 155
-            if (y >= 100 && y <= 155) {
-                if (x >= 24 && x <= 74 && state.operators.length && !state.mission?.active) {
-                    state.operatorIndex = (state.operatorIndex - 1 + state.operators.length) % state.operators.length;
-                    syncMissionControls();
-                } else if (x >= 526 && x <= 576 && state.operators.length && !state.mission?.active) {
-                    state.operatorIndex = (state.operatorIndex + 1) % state.operators.length;
-                    syncMissionControls();
-                }
-            }
-            // Zone prev/next: y: 175 to 230
-            else if (y >= 175 && y <= 230 && !state.mission?.active) {
-                const current = missionZones.indexOf(state.zone);
-                if (x >= 24 && x <= 74) state.zone = missionZones[(current - 1 + missionZones.length) % missionZones.length];
-                else if (x >= 526 && x <= 576) state.zone = missionZones[(current + 1 + missionZones.length) % missionZones.length];
-                syncMissionControls();
-            }
-            // Start mission: x: 175 to 425, y: 235 to 300
-            else if (y >= 235 && y <= 300) {
-                if (x >= 175 && x <= 425 && !state.mission?.active) await startMission();
-            }
-        }
-
-        async function handleEmergencyBannerClick(uvX, uvY) {
-            const x = uvX * emergencyBanner.canvas.width;
-            const y = (1 - uvY) * emergencyBanner.canvas.height;
-            // Reset button: x: 200 to 520, y: 160 to 250
-            if (x >= 200 && x <= 520 && y >= 160 && y <= 250) {
-                playChime(600, 0.08);
-                await resetEmergencyStop();
-            }
-        }
-
-        function handleHeaderPanelClick(uvX, uvY) {
-            const x = uvX * headerPanel.canvas.width;
-            // Clicking mission chip (x: 130 to 470) toggles mission panel
-            if (x >= 130 && x <= 470) {
-                missionPanel.mesh.visible = !missionPanel.mesh.visible;
-                playChime(700, 0.05);
-            }
-        }
-
-        async function handleRightPanelClick(uvX, uvY) {
-            playChime(850, 0.08);
-            let action = null;
-            let posturePreset = null;
-
-            if (uvX >= 0.05 && uvX <= 0.48) {
-                if (uvY >= 0.70 && uvY <= 0.80) posturePreset = "stand";
-                else if (uvY >= 0.60 && uvY <= 0.70) posturePreset = "liedown";
-                else if (uvY >= 0.50 && uvY <= 0.60) posturePreset = "balance";
-                else if (uvY >= 0.37 && uvY <= 0.47) action = "trot";
-                else if (uvY >= 0.21 && uvY <= 0.31) action = "ai_scan";
-            } else if (uvX >= 0.52 && uvX <= 0.95) {
-                if (uvY >= 0.70 && uvY <= 0.80) posturePreset = "sit";
-                else if (uvY >= 0.60 && uvY <= 0.70) posturePreset = "bow";
-                else if (uvY >= 0.50 && uvY <= 0.60) posturePreset = "wave";
-                else if (uvY >= 0.37 && uvY <= 0.47) action = "crawl";
-                else if (uvY >= 0.21 && uvY <= 0.31) action = "zero_imu";
-            }
-
-            if (posturePreset) {
-                state.lastCommand = posturePreset;
-                drawRightPanel();
-                const postureHeights = {
-                    stand: "high", liedown: "low", balance: "medium",
-                    sit: "low", bow: "medium", wave: "medium"
-                };
-                await sendApiCommand("/api/v1/posture", {
-                    body: { height: postureHeights[posturePreset], roll: 0, pitch: 0, yaw: 0 },
-                    sequenced: true
-                });
-            } else if (action) {
-                if (action === "ai_scan") {
-                    state.lastCommand = "ai_scan";
-                    drawRightPanel();
-                    try { await fetch('/api/v1/missions/scan', { method: 'POST' }); } catch(e) {}
-                } else if (action === "zero_imu") {
-                    state.roll = 0;
-                    state.pitch = 0;
-                    state.lastCommand = "zero_imu";
-                    drawCenterPanel();
-                    drawRightPanel();
-                } else if (action === "trot" || action === "crawl") {
-                    state.lastCommand = action;
-                    drawRightPanel();
-                    await sendApiCommand("/api/v1/movement-style", {
-                        body: { intensity: state.intensity.toLowerCase(), gait: action === "crawl" ? "walk" : "trot" },
-                        sequenced: true
-                    });
-                } else {
-                    sendLocomotion(action);
-                }
-            }
-        }
-
-        function dispatchRaycastInteraction(ray) {
-            const interactiveMeshes = [bottomPanel.mesh, rightPanel.mesh];
-            if (headerPanel && headerPanel.mesh) interactiveMeshes.push(headerPanel.mesh);
-            if (missionPanel && missionPanel.mesh.visible) interactiveMeshes.push(missionPanel.mesh);
-            if (emergencyBanner && emergencyBanner.mesh.visible) interactiveMeshes.push(emergencyBanner.mesh);
-
-            const hits = ray.intersectObjects(interactiveMeshes);
-            if (hits.length > 0) {
-                const hit = hits[0];
-                const uv = hit.uv;
-                if (hit.object === bottomPanel.mesh) {
-                    handleBottomPanelClick(uv.x, uv.y);
-                } else if (hit.object === rightPanel.mesh) {
-                    handleRightPanelClick(uv.x, uv.y);
-                } else if (hit.object === missionPanel.mesh) {
-                    handleMissionPanelClick(uv.x, uv.y);
-                } else if (hit.object === emergencyBanner.mesh) {
-                    handleEmergencyBannerClick(uv.x, uv.y);
-                } else if (hit.object === headerPanel.mesh) {
-                    handleHeaderPanelClick(uv.x, uv.y);
-                }
-            }
-        }
-
-        window.addEventListener('click', (event) => {
-            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
-            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
-            raycaster.setFromCamera(mouse, camera);
-            dispatchRaycastInteraction(raycaster);
-        });
-
-        // VR Controller Support with Visual Laser Pointers
-        function buildLaserPointer() {
-            const geo = new THREE.BufferGeometry().setFromPoints([
-                new THREE.Vector3(0, 0, 0),
-                new THREE.Vector3(0, 0, -3.5)
-            ]);
-            const mat = new THREE.LineBasicMaterial({
-                color: 0x00f0ff,
-                transparent: true,
-                opacity: 0.55
-            });
-            return new THREE.Line(geo, mat);
-        }
-
-        const controller1 = renderer.xr.getController(0);
-        controller1.add(buildLaserPointer());
-        scene.add(controller1);
-
-        const controller2 = renderer.xr.getController(1);
-        controller2.add(buildLaserPointer());
-        scene.add(controller2);
-
-        function setControllerRay(controller) {
-            const tempMatrix = new THREE.Matrix4();
-            tempMatrix.identity().extractRotation(controller.matrixWorld);
-            raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
-            raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
-        }
-
-        function handleControllerSelectStart(controller) {
-            setControllerRay(controller);
-            const joystickPointer = virtualStickHit(raycaster);
-            if (joystickPointer && setVirtualJoystickOwner(controller, joystickPointer)) return;
-            dispatchRaycastInteraction(raycaster);
-        }
-
-        function handleControllerSelectEnd(controller) {
-            releaseVirtualJoystick(controller);
-        }
-
-        controller1.addEventListener('selectstart', () => handleControllerSelectStart(controller1));
-        controller2.addEventListener('selectstart', () => handleControllerSelectStart(controller2));
-        controller1.addEventListener('selectend', () => handleControllerSelectEnd(controller1));
-        controller2.addEventListener('selectend', () => handleControllerSelectEnd(controller2));
-        renderer.xr.addEventListener('sessionend', () => {
-            if (virtualJoystickOwner && virtualJoystickOwner !== "mouse") {
-                releaseVirtualJoystick(virtualJoystickOwner);
-            }
-        });
-
-        // Desktop 360 Drag Look Controls
-        let isDragging = false;
-        let prevMouseX = 0;
-        let prevMouseY = 0;
-        let camYaw = 0;
-        let camPitch = 0;
-
-        function recenterCamera() {
-            camYaw = 0;
-            camPitch = 0;
-            camera.position.set(0, EYE_LEVEL, 0);
-            camera.rotation.set(0, 0, 0, 'YXZ');
-            playChime(900, 0.08);
-            updateCommandStatus("VIEW_RESET", "View recentered");
-        }
-        document.getElementById("recenter-view-btn")?.addEventListener("click", recenterCamera);
-
-        window.addEventListener('mousedown', (e) => {
-            if (e.target.tagName === 'BUTTON' || e.target.tagName === 'A' || (e.target.closest && e.target.closest('#desktop-ui'))) return;
-            if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'A') {
-                mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
-                mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
-                raycaster.setFromCamera(mouse, camera);
-                const joystickPointer = virtualStickHit(raycaster);
-                if (joystickPointer && setVirtualJoystickOwner("mouse", joystickPointer)) {
-                    e.preventDefault();
-                    return;
-                }
-                isDragging = true;
-                prevMouseX = e.clientX;
-                prevMouseY = e.clientY;
-            }
-        });
-
-        window.addEventListener('mousemove', (e) => {
-            if (virtualJoystickOwner === "mouse") {
-                mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
-                mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
-                raycaster.setFromCamera(mouse, camera);
-                updateVirtualStickFromHit(virtualStickHit(raycaster));
-                return;
-            }
-            if (isDragging && !renderer.xr.isPresenting) {
-                const dx = e.clientX - prevMouseX;
-                const dy = e.clientY - prevMouseY;
-                prevMouseX = e.clientX;
-                prevMouseY = e.clientY;
-                camYaw -= dx * 0.003;
-                camPitch = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, camPitch - dy * 0.003));
-                camera.rotation.set(camPitch, camYaw, 0, 'YXZ');
-            }
-        });
-
-        window.addEventListener('mouseup', () => {
-            isDragging = false;
-            releaseVirtualJoystick("mouse");
-        });
-
-        // --- Web Audio & Sound Feedback ---
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        function playChime(freq = 600, duration = 0.08) {
-            try {
-                if (audioCtx.state === 'suspended') audioCtx.resume();
-                const osc = audioCtx.createOscillator();
-                const gain = audioCtx.createGain();
-                osc.type = 'sine';
-                osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
-                gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
-                osc.connect(gain);
-                gain.connect(audioCtx.destination);
-                osc.start();
-                osc.stop(audioCtx.currentTime + duration);
-            } catch (e) {}
-        }
-
-        // --- Gateway-backed, coalescing robot command dispatcher ---
-        let isDispatching = false;
-        let pendingMotion = null;
-        let motionGeneration = 0;
-
-        function sendLocomotion(action, speed = state.speed) {
-            if (action === "stop") return stopRobot();
-            const magnitude = Math.max(0, Math.min(1, Number(speed) || 0));
-            const axes = { forward: 0, strafe: 0, turn: 0 };
-            if (action === "forward") axes.forward = magnitude;
-            else if (action === "backward") axes.forward = -magnitude;
-            else if (action === "strafe_left") axes.strafe = magnitude;
-            else if (action === "strafe_right") axes.strafe = -magnitude;
-            else if (action === "turn_left") axes.turn = magnitude;
-            else if (action === "turn_right") axes.turn = -magnitude;
-            else {
-                updateCommandStatus("INVALID", `Unsupported motion: ${action}`);
-                return;
-            }
-            sendMotionAxes(axes.forward, axes.strafe, axes.turn);
-        }
-
-        function sendMotionAxes(forward, strafe, turn) {
-            const command = {
-                forward: Math.max(-1, Math.min(1, forward)),
-                strafe: Math.max(-1, Math.min(1, strafe)),
-                turn: Math.max(-1, Math.min(1, turn)),
-                generation: motionGeneration
-            };
-            state.forward = command.forward;
-            state.strafe = command.strafe;
-            state.turn = command.turn;
-            state.lastCommand = command.forward || command.strafe || command.turn ? "motion" : "stop";
-            drawLeftPanel();
-
-            const isStop = !command.forward && !command.strafe && !command.turn;
-            if (isStop) return stopRobot();
-            if (state.motionMissionBlocked) {
-                updateCommandStatus("MISSION_REQUIRED", "Start a mission to drive");
-                return;
-            }
-            if (state.eStopActive) {
-                updateCommandStatus("ESTOP_ACTIVE", "Reset the emergency stop before moving");
-                return;
-            }
-            pendingMotion = command;
-            if (!isDispatching) void dispatchPendingMotion();
-        }
-
-        async function dispatchPendingMotion() {
-            isDispatching = true;
-            try {
-                while (pendingMotion) {
-                    const command = pendingMotion;
-                    pendingMotion = null;
-                    if (state.eStopActive || command.generation !== motionGeneration) continue;
-                    const { generation, ...axes } = command;
-                    await sendApiCommand("/api/v1/motion", {
-                        body: axes,
-                        sequenced: true,
-                        shouldSend: () => generation === motionGeneration && !state.eStopActive
-                    });
-                }
-            } finally {
-                isDispatching = false;
-                if (pendingMotion) void dispatchPendingMotion();
-            }
-        }
-
-        async function stopRobot() {
-            motionGeneration++;
-            pendingMotion = null;
-            state.forward = 0;
-            state.strafe = 0;
-            state.turn = 0;
-            state.lastCommand = "stop";
-            drawLeftPanel();
-            return sendApiCommand("/api/v1/stop");
-        }
-
-        async function triggerEmergencyStop() {
-            playChime(300, 0.25);
-            motionGeneration++;
-            pendingMotion = null;
-            state.eStopActive = true;
-            virtualJoystickOwner = null;
-            virtualJoystickAxes.forward = 0;
-            virtualJoystickAxes.turn = 0;
-            virtualJoystickHasSentMotion = false;
-            drawLeftPanel();
-            drawBottomPanel();
-            drawHeaderPanel();
-            drawEmergencyBanner();
-            return sendApiCommand("/api/v1/emergency-stop", { source: "emergency" });
-        }
-
-        async function resetEmergencyStop() {
-            state.eStopActive = false;
-            drawBottomPanel();
-            drawHeaderPanel();
-            drawEmergencyBanner();
-            return sendApiCommand("/api/v1/emergency-stop/reset", { sequenced: true });
-        }
-
-        // --- Keyboard Controls (WASD / Arrows / Space) ---
-        const activeKeys = new Set();
-        let keyTeleopInterval = null;
-
-        function updateKeyMovement() {
-            const fwd = Number(activeKeys.has('w') || activeKeys.has('arrowup')) - Number(activeKeys.has('s') || activeKeys.has('arrowdown'));
-            const strafe = Number(activeKeys.has('a')) - Number(activeKeys.has('d'));
-            const turn = Number(activeKeys.has('arrowleft') || activeKeys.has('q')) - Number(activeKeys.has('arrowright') || activeKeys.has('e'));
-
-            state.cmdFwd = fwd;
-            state.cmdStrafe = strafe;
-            state.cmdTurn = turn;
-            drawLeftPanel();
-
-            if (fwd !== 0 || strafe !== 0 || turn !== 0) {
-                playChime(750, 0.04);
-                sendMotionAxes(fwd * state.speed, strafe * state.speed, turn * state.speed);
-            } else {
-                sendMotionAxes(0, 0, 0);
-            }
-        }
-
-        window.addEventListener('keydown', (e) => {
-            if (e.repeat) return;
-            const key = e.key.toLowerCase();
-            if (key === 'r') {
-                recenterCamera();
-                return;
-            }
-            if (key === ' ') {
-                e.preventDefault();
-                triggerEmergencyStop();
-                return;
-            }
-            if (['w', 's', 'a', 'd', 'q', 'e', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) {
-                activeKeys.add(key);
-                updateKeyMovement();
-                if (!keyTeleopInterval) {
-                    keyTeleopInterval = setInterval(updateKeyMovement, 120);
-                }
-            }
-        });
-
-        window.addEventListener('keyup', (e) => {
-            const key = e.key.toLowerCase();
-            if (activeKeys.has(key)) {
-                activeKeys.delete(key);
-                updateKeyMovement();
-                if (activeKeys.size === 0 && keyTeleopInterval) {
-                    clearInterval(keyTeleopInterval);
-                    keyTeleopInterval = null;
-                }
-            }
-        });
-
-        // --- WebSocket Telemetry Loop ---
-        function initWebSocket() {
-            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const ws = new WebSocket(`${proto}//${location.host}/ws`);
-            ws.onopen = () => {
-                state.robotConnected = true;
-                drawLeftPanel();
-                drawCenterPanel();
-                drawHeaderPanel();
-            };
-            ws.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    if (data.type === 'telemetry' && data.telemetry) {
-                        const t = data.telemetry;
-                        if (t.battery_pct !== undefined) state.battery = t.battery_pct;
-                        if (t.roll !== undefined) state.roll = t.roll;
-                        if (t.pitch !== undefined) state.pitch = t.pitch;
-                        if (t.emergency_stopped !== undefined) state.eStopActive = t.emergency_stopped;
-                        drawLeftPanel();
-                        drawCenterPanel();
-                        drawBottomPanel();
-                        drawHeaderPanel();
-                        drawEmergencyBanner();
-                    }
-                    if (data.type === 'mission_update' && data.mission) applyMissionStatus(data.mission);
-                    if (data.type === 'auth_event') {
-                        if (data.authorized && data.operator) {
-                            playChime(1040, 0.12);
-                            const opIdx = state.operators.findIndex(o => o.operator_id === data.operator.operator_id);
-                            if (opIdx >= 0) {
-                                state.operatorIndex = opIdx;
-                                const select = document.getElementById("mission-operator");
-                                if (select) select.value = data.operator.operator_id;
-                            }
-                            state.missionFeedback = data.message || `Flipper Badge Verified: ${data.operator.name}`;
-                            updateCommandStatus("READY", state.missionFeedback);
-                        } else {
-                            playChime(320, 0.2);
-                            state.missionFeedback = data.message || `Unauthorized badge: ${data.tag_uid}`;
-                            updateCommandStatus("AUTH_REQUIRED", state.missionFeedback);
-                        }
-                        if (data.mission) applyMissionStatus(data.mission);
-                        else syncMissionControls();
-                    }
-                } catch (e) {}
-            };
-            ws.onclose = () => {
-                state.robotConnected = false;
-                drawLeftPanel();
-                drawHeaderPanel();
-                setTimeout(initWebSocket, 2000);
-            };
-        }
-        initWebSocket();
-
-        // --- Main Render Loop ---
-        const clock = new THREE.Clock();
-        let frameCount = 0;
-        let lastFpsTime = performance.now();
-        let lastVideoDrawTime = 0;
-
-        renderer.setAnimationLoop(() => {
-            const delta = clock.getDelta();
-            planetGroup.rotation.y += delta * 0.05;
-            starField.rotation.y -= delta * 0.005;
-
-            // Drive from the in-world virtual joystick while its control is held.
-            updateVirtualJoystickControls();
-
-            // Drive from physical VR controller thumbsticks (Meta Quest Touch / Touch Plus)
-            updateXrControllerThumbsticks();
-
-            // Refresh video texture at ~25 FPS
-            const now = performance.now();
-            if (now - lastVideoDrawTime >= 40) {
-                drawCenterPanel();
-                lastVideoDrawTime = now;
-            }
-
-            // Simple FPS counter calculation
-            frameCount++;
-            if (now - lastFpsTime >= 1000) {
-                state.fps = Math.round((frameCount * 1000) / (now - lastFpsTime));
-                frameCount = 0;
-                lastFpsTime = now;
-                drawHeaderPanel();
-            }
-
-            renderer.render(scene, camera);
-        });
-
-        // --- Window Resize Handling ---
-        window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        });
-    </script>
+        state.missionError = d.authorized ? "" : (d.message || `Unauthorized badge ${d.tag_uid || ""}`);
+        if (d.mission) applyMission(d.mission); else markDirty("mission");
+      }
+    } catch (e) {}
+  };
+  ws.onclose = () => setTimeout(connectSocket, 2000);
+}
+
+const cameraImg = document.getElementById("camera-source");
+async function pickCameraSource() {
+  let url = "/api/camera/stream";                       // legacy relay of the dog's Yahboom MJPEG (:6500)
+  try {
+    const r = await fetch("/api/v1/camera/status", { cache: "no-store" });
+    const p = await r.json();
+    state.cameraFps = Number.isFinite(p.actual_fps) ? p.actual_fps : null;
+    if (r.ok && p.connected) url = "/api/v1/camera/stream";
+  } catch (e) {}
+  if (url !== state.cameraUrl) { state.cameraUrl = url; cameraImg.src = `${url}?t=${Date.now()}`; }
+}
+cameraImg.onerror = () => { state.cameraLive = false; markDirty("cameraOverlay"); setTimeout(() => { state.cameraUrl = null; pickCameraSource(); }, 3000); };
+
+// ------------------------------------------------------------------ canvas drawing helpers (mockup px)
+function rr(ctx, x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, Math.max(0, Math.min(r, w / 2, h / 2))); }
+function fillRR(ctx, x, y, w, h, r, fill, stroke = null, lw = 1, dash = null) {
+  rr(ctx, x, y, w, h, r);
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke && lw > 0) { ctx.save(); if (dash) ctx.setLineDash(dash); ctx.lineWidth = lw; ctx.strokeStyle = stroke; rr(ctx, x + lw / 2, y + lw / 2, w - lw, h - lw, r - lw / 2); ctx.stroke(); ctx.restore(); }
+}
+function setFont(ctx, size, { weight = 400, font = "body", tracking = 0 } = {}) {
+  ctx.font = `${weight} ${size}px ${FONT[font]}`;
+  ctx.letterSpacing = `${(tracking * size).toFixed(2)}px`;
+}
+/** Text in a mockup-px rect: vertical middle, align left/center/right. Returns the text width. */
+function txt(ctx, s, x, y, w, h, o = {}) {
+  setFont(ctx, o.size, o);
+  ctx.fillStyle = o.color || T.textPrimary; ctx.textBaseline = "middle";
+  ctx.textAlign = o.align || "left";
+  const tx = o.align === "center" ? x + w / 2 : o.align === "right" ? x + w : x;
+  ctx.fillText(s, tx, y + h / 2, o.fit ? w : undefined);
+  return ctx.measureText(s).width;
+}
+function wrap(ctx, s, x, y, w, h, o = {}) {
+  setFont(ctx, o.size, o);
+  ctx.fillStyle = o.color || T.textPrimary; ctx.textBaseline = "top"; ctx.textAlign = "left";
+  const words = String(s).split(/\s+/); const lines = []; let line = "";
+  for (const word of words) { const t = line ? `${line} ${word}` : word; if (ctx.measureText(t).width > w && line) { lines.push(line); line = word; } else line = t; }
+  if (line) lines.push(line);
+  const lh = o.size * 1.25; const total = lines.length * lh;
+  let ty = o.valign === "bottom" ? y + h - total : o.valign === "middle" ? y + (h - total) / 2 : y;
+  for (const l of lines) { ctx.fillText(l, x, ty, w); ty += lh; }
+}
+function measure(ctx, s, size, o) { setFont(ctx, size, o); return ctx.measureText(s).width; }
+/** ChipView: tone fill, 8 px tone dot, mono bold tone text. x is the left (or right, if anchorRight) edge. */
+function chip(ctx, x, y, { h, padX, gap, r, size, text, tone, anchorRight = false, overlay = false }) {
+  const c = TONES[tone] || TONES.neutral;
+  const tw = measure(ctx, text, size, { weight: 700, font: "mono" });
+  const w = padX * 2 + 8 + gap + tw;
+  const left = anchorRight ? x - w : x;
+  fillRR(ctx, left, y, w, h, r, overlay ? T.chipWhite : c.bg);
+  ctx.beginPath(); ctx.arc(left + padX + 4, y + h / 2, 4, 0, Math.PI * 2); ctx.fillStyle = c.fg; ctx.fill();
+  txt(ctx, text, left + padX + 8 + gap, y, tw + 2, h, { size, weight: 700, font: "mono", color: c.fg });
+  return w;
+}
+function overlayChip(ctx, x, y, text, size, anchorRight = false) {
+  const tw = measure(ctx, text, size, { weight: 700, font: "mono" });
+  const w = tw + 20; const left = anchorRight ? x - w : x;
+  fillRR(ctx, left, y, w, 26, 6, T.chipWhite);
+  txt(ctx, text, left + 10, y, tw + 2, 26, { size, weight: 700, font: "mono" });
+  return w;
+}
+
+// ------------------------------------------------------------------ Panel: a world-space canvas (Unity Canvas @ 0.001)
+const GLOW = 28;   // mockup px of margin around the panel for the outer glow
+const panels = {};
+const interactiveMeshes = [];
+class Panel {
+  /** wPx/hPx in mockup px, S = mm per mockup px, dist = viewing distance (m) for the cap-height rule. */
+  constructor(name, { wPx, hPx, S, dist, draw, glow = 0, order = 1, interactive = true, margin = GLOW }) {
+    Object.assign(this, { name, wPx, hPx, S, dist, draw, glow, margin, targets: [], solids: [], hover: null, visible: true });
+    const pxPerMm = Math.min(3.2, 2.3 / dist);                       // ~2x the Quest 3S angular resolution
+    this.k = Math.min(pxPerMm * S, 4096 / (wPx + 2 * margin), 4096 / (hPx + 2 * margin));   // canvas px per mockup px
+    this.canvas = document.createElement("canvas");
+    this.canvas.width = Math.ceil((wPx + 2 * margin) * this.k);
+    this.canvas.height = Math.ceil((hPx + 2 * margin) * this.k);
+    this.ctx = this.canvas.getContext("2d");
+    this.texture = new THREE.CanvasTexture(this.canvas);
+    this.texture.colorSpace = THREE.SRGBColorSpace;
+    this.texture.anisotropy = 4;
+    const geo = new THREE.PlaneGeometry((wPx + 2 * margin) * S / 1000, (hPx + 2 * margin) * S / 1000);
+    this.mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, depthWrite: false, toneMapped: false }));
+    this.mesh.renderOrder = order;
+    this.mesh.userData.panel = this;
+    this.group = new THREE.Group(); this.group.add(this.mesh);
+    if (interactive) interactiveMeshes.push(this.mesh);
+    panels[name] = this;
+    this.dirty = true;
+  }
+  /** Font size floor from DashboardSceneBuilder.Fs: cap height >= 1.2 cm per metre (12 * dist / 0.73 mm). */
+  fs(px) { return Math.max(px, (12 * this.dist / 0.73) / this.S); }
+  redraw() {
+    const { ctx, canvas, k, margin } = this;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(k, 0, 0, k, margin * k, margin * k);
+    this.targets = []; this.solids = [];
+    this.draw(ctx, this);
+    this.mesh.visible = this.visible;
+    this.texture.needsUpdate = true;
+    this.dirty = false;
+  }
+  /** Panel root skin (PanelRoot): panelBg, 1 px panelBorder, optional glow. */
+  root(ctx, x, y, w, h, r, { fill = T.panelBg, border = T.panelBorder, lw = 1, glow = this.glow } = {}) {
+    this.solids.push({ x, y, w, h });
+    if (glow) { ctx.save(); ctx.shadowColor = glow === 2 ? T.cameraGlow : T.panelGlow; ctx.shadowBlur = (glow === 2 ? 56 : 32) * this.k; fillRR(ctx, x, y, w, h, r, fill); ctx.restore(); }
+    fillRR(ctx, x, y, w, h, r, fill, border, lw);
+  }
+  /** Register a hit rect; returns true while it is hovered (and enabled). */
+  button(id, x, y, w, h, onClick, enabled = true) { this.targets.push({ id, x, y, w, h, onClick, enabled }); return this.hover === id && enabled; }
+  /** { target } for a button, { solid: true } for an opaque area, null for a transparent spot (the ray passes on). */
+  hit(uv) {
+    const x = uv.x * (this.wPx + 2 * this.margin) - this.margin, y = (1 - uv.y) * (this.hPx + 2 * this.margin) - this.margin;
+    const inside = (t) => x >= t.x && x <= t.x + t.w && y >= t.y && y <= t.y + t.h;
+    for (let i = this.targets.length - 1; i >= 0; i--) if (inside(this.targets[i])) return { target: this.targets[i] };
+    return this.solids.some(inside) ? { solid: true } : null;
+  }
+}
+function markDirty(...names) { for (const n of names) if (panels[n]) panels[n].dirty = true; }
+
+/** Unity Place(pos, Euler(pitch, yaw, 0)) with the handedness flip. */
+function placeUnity(obj, x, y, z, pitchDeg = 0, yawDeg = 0) {
+  obj.position.set(x, y, -z);
+  obj.rotation.set(-pitchDeg * DEG, -yawDeg * DEG, 0, "YXZ");
+}
+/** Unity PlaceOnArc: (sin a * d, y, cos a * d), facing the head. */
+function placeOnArc(obj, yawDeg, dist, y) { placeUnity(obj, Math.sin(yawDeg * DEG) * dist, y, Math.cos(yawDeg * DEG) * dist, 0, yawDeg); }
+
+// ------------------------------------------------------------------ panels (DashboardSceneBuilder.Build*)
+function headerChips() {
+  const robot = state.connected ? ["ROBOT CONNECTED", "ok"] : ["ROBOT DISCONNECTED", "danger"];
+  const control = hasControl() ? ["CONTROL: YOU", "accent"] : state.controlActive ? ["CONTROL: OTHER OPERATOR", "warn"] : ["CONTROL: FREE", "ok"];
+  let mission = ["MISSION · ?", "neutral"];
+  if (state.missionKnown) {
+    const m = state.mission;
+    mission = !m?.active ? ["NO MISSION", "warn"] : [`MISSION · ${m.zone || "?"} · ${m.operator_name || m.operator_id || "?"}`, "accent"];
+  }
+  return { robot, control, mission };
+}
+
+const S_FAR = 1800 / 880, S_SIDE = 450 / 270, S_STRIP = 900 / 800;
+
+new Panel("header", {
+  wPx: 1900 / S_FAR, hPx: 56, S: S_FAR, dist: 2.0, glow: 1, order: 1, interactive: false,
+  draw(ctx, p) {
+    const W = p.wPx, H = 56;
+    p.root(ctx, 0, 0, W, H, 14);
+    const c = headerChips(); const cs = p.fs(13);
+    let x = 20;
+    x += txt(ctx, "BARRY", x, 0, 200, H, { size: p.fs(20), weight: 800, font: "brand", tracking: 0.18, color: T.brand }) + 16;
+    chip(ctx, x, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: c.mission[0], tone: c.mission[1] });
+    let rx = W - 20;
+    rx -= chip(ctx, rx, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: c.control[0], tone: c.control[1], anchorRight: true }) + 10;
+    rx -= chip(ctx, rx, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: c.robot[0], tone: c.robot[1], anchorRight: true }) + 10;
+    if (state.estopLatched) chip(ctx, rx, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: "E-STOP LATCHED", tone: "danger", anchorRight: true });
+  },
+});
+
+new Panel("camera", {
+  wPx: 880, hPx: 495, S: S_FAR, dist: 2.0, glow: 2, order: 1, interactive: false,
+  draw(ctx, p) {
+    p.root(ctx, 0, 0, 880, 495, 16);
+    fillRR(ctx, 10, 10, 860, 475, 8, T.videoBg);
+    const cx = 440, cy = 247.5;                                    // reticle + copy (placeholder)
+    ctx.strokeStyle = T.reticle; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(cx, cy, 21, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = T.reticle;
+    ctx.fillRect(cx - 1, cy - 60, 2, 30); ctx.fillRect(cx - 1, cy + 30, 2, 30);
+    ctx.fillRect(cx - 60, cy - 1, 30, 2); ctx.fillRect(cx + 30, cy - 1, 30, 2);
+    txt(ctx, "[ LIVE ROBOT CAMERA ]", 10 + (860 - 700) / 2, 10 + 300, 700, 24, { size: p.fs(15), weight: 700, font: "mono", tracking: 0.12, color: T.camTitle, align: "center" });
+    txt(ctx, "MJPEG stream · frame scales to stream aspect", 10 + (860 - 780) / 2, 10 + 332, 780, 20, { size: p.fs(13), font: "mono", color: T.camSub, align: "center" });
+  },
+});
+
+new Panel("cameraOverlay", {
+  wPx: 880, hPx: 495, S: S_FAR, dist: 2.0, order: 3, interactive: false,
+  draw(ctx, p) {
+    const cs = p.fs(13);
+    let x = 24;
+    x += chip(ctx, x, 24, { h: 26, padX: 10, gap: 6, r: 6, size: cs, text: state.cameraLive ? "LIVE" : "NO VIDEO", tone: state.cameraLive ? "ok" : "warn", overlay: true }) + 8;
+    x += overlayChip(ctx, x, 24, state.cameraFps != null ? `${state.cameraFps.toFixed(0)} fps` : "-- fps", cs) + 8;
+    overlayChip(ctx, x, 24, "frame age -- ms", cs);
+    const rp = `ROLL ${state.roll != null ? state.roll.toFixed(0) : "--"}° · PITCH ${state.pitch != null ? state.pitch.toFixed(0) : "--"}°`;
+    overlayChip(ctx, 880 - 24, 24, rp, cs, true);
+  },
+});
+
+function fmtSigned(v) { if (!v) return "0.00"; const m = Math.abs(v).toFixed(2); return v < 0 ? `−${m}` : m; }
+new Panel("status", {
+  wPx: 270, hPx: 470, S: S_SIDE, dist: 1.3, glow: 1, order: 4, interactive: false,
+  draw(ctx, p) {
+    p.root(ctx, 0, 0, 270, 470, 16);
+    txt(ctx, "STATUS", 20, 20, 200, 16, { size: p.fs(13), weight: 700, tracking: 0.14, color: T.textSecondary });
+    const control = hasControl() ? ["You", T.accent] : state.controlActive ? ["Other operator", T.warnText] : ["Free", T.okText];
+    const cells = [
+      ["Robot", state.connected ? "Connected" : "Disconnected", state.connected ? T.okText : T.dangerText, "body"],
+      ["Control", control[0], control[1], "body"],
+      ["Camera", state.cameraFps != null ? `${state.cameraFps.toFixed(0)} fps` : "-- fps", T.textPrimary, "mono"],
+      ["Backend RTT", state.rttMs != null ? `${Math.round(state.rttMs)} ms` : "-- ms", T.textPrimary, "mono"],
+    ];
+    const cx = [20, 140, 20, 140], cy = [50, 50, 98, 98];
+    cells.forEach(([label, value, color, font], i) => {
+      txt(ctx, label, cx[i], cy[i], 110, 15, { size: p.fs(12), color: T.textSecondary });
+      txt(ctx, value, cx[i], cy[i] + 17, 110, 19, { size: p.fs(16), weight: 700, font, color, fit: true });
+    });
+    const low = state.battery != null && state.battery < 20;
+    txt(ctx, "Battery", 20, 148, 100, 17, { size: p.fs(12), color: T.textSecondary });
+    txt(ctx, state.battery != null ? `${Math.round(state.battery)} %` : "-- %", 130, 148, 120, 17, { size: p.fs(14), weight: 700, font: "mono", align: "right", color: low ? T.dangerText : T.textPrimary });
+    fillRR(ctx, 20, 171, 230, 10, 5, T.track, T.neutralBorder, 1);
+    if (state.battery != null) fillRR(ctx, 20, 171, Math.max(10, 230 * Math.min(100, state.battery) / 100), 10, 5, low ? T.dangerSolid : T.accent);
+    ctx.fillStyle = T.divider; ctx.fillRect(20, 195, 230, 1);
+    txt(ctx, "COMMAND SENT", 20, 210, 230, 15, { size: p.fs(12), weight: 700, tracking: 0.12, color: T.textSecondary });
+    [["Forward", state.sent.forward], ["Strafe", state.sent.strafe], ["Turn", state.sent.turn]].forEach(([name, v], i) => {
+      const y = 239 + i * 26;
+      txt(ctx, name, 20, y, 62, 16, { size: p.fs(13), font: "mono", color: T.textSecondary });
+      fillRR(ctx, 88, y + 4, 104, 8, 4, T.track);
+      const val = Math.max(-1, Math.min(1, v || 0));
+      if (val) {
+        const a = 88 + 104 * (0.5 + Math.min(val, 0) * 0.5), b = 88 + 104 * (0.5 + Math.max(val, 0) * 0.5);
+        fillRR(ctx, a, y + 4, Math.max(2, b - a), 8, 4, T.accent);
+      } else { ctx.fillStyle = T.exitBorder; ctx.fillRect(88 + 52 - 1, y + 2, 2, 12); }
+      txt(ctx, fmtSigned(val), 202, y, 48, 16, { size: p.fs(13), weight: 700, font: "mono", align: "right" });
+    });
+    // Footer chip: the API disclaimer, or the last refusal / stop reason (status is never colour-only).
+    const res = state.result;
+    const centreHint = !state.estopLatched && state.needCentre && state.teleop === "STOPPED" ? "Centre both sticks, then push to drive." : "";
+    const footText = res ? `${res.status}${res.message ? ` · ${res.message}` : ""}` : centreHint || ACCEPTED_DISCLAIMER;
+    fillRR(ctx, 20, 402, 230, 48, 8, res ? T.warnBg : T.neutralFill);
+    ctx.beginPath(); ctx.arc(20 + 14, 402 + 24, 4, 0, Math.PI * 2); ctx.fillStyle = res ? T.warnText : T.accent; ctx.fill();
+    wrap(ctx, footText, 20 + 26, 402, 194, 48, { size: p.fs(12), color: res ? T.warnText : T.grey3D, valign: "middle" });
+  },
+});
+
+new Panel("actions", {
+  wPx: 270, hPx: 470, S: S_SIDE, dist: 1.3, glow: 1, order: 4,
+  draw(ctx, p) {
+    if (!state.actionsOpen) {                                   // collapsed 140x48 pill, centred
+      const x = (270 - 140) / 2, y = (470 - 48) / 2;
+      const hov = p.button("open", x, y, 140, 48, toggleActions);
+      p.root(ctx, x, y, 140, 48, 12, { border: hov ? T.accent : T.panelBorder, lw: hov ? 2 : 1 });
+      txt(ctx, "ACTIONS · B", x, y, 140, 48, { size: p.fs(13), weight: 700, font: "mono", color: T.grey3D, align: "center" });
+      return;
+    }
+    p.root(ctx, 0, 0, 270, 470, 16);
+    txt(ctx, "ACTIONS", 20, 20, 150, 16, { size: p.fs(13), weight: 700, tracking: 0.14, color: T.textSecondary });
+    if (p.button("close", 150, 10, 110, 36, toggleActions)) fillRR(ctx, 150, 12, 104, 32, 8, T.accentSoft);
+    txt(ctx, "B · close", 130, 20, 120, 16, { size: p.fs(12), font: "mono", color: T.textSecondary, align: "right" });
+    const enabled = actionsEnabled();
+    if (!state.actions.length) txt(ctx, state.actionsError ? "Actions unavailable" : "No actions available", 20, 62, 230, 24, { size: p.fs(15), color: T.grey6B });
+    state.actions.slice(0, 5).forEach((a, i) => {
+      const y = 48 + i * 62;
+      const running = state.runningAction === a.id;
+      const hov = p.button(`a${a.id}`, 20, y, 230, 52, () => runAction(a.id), enabled);
+      if (running) fillRR(ctx, 20, y, 230, 52, 10, T.neutralFill, T.runBorder, 1, [6, 4]);
+      else if (hov) fillRR(ctx, 20, y, 230, 52, 10, T.accentSoft, T.accent, 2);
+      else fillRR(ctx, 20, y, 230, 52, 10, T.rowFill, T.neutralBorder, 1);
+      txt(ctx, running ? `${a.name} · running…` : a.name, 34, y, 210, 52, { size: p.fs(15), weight: 700, color: running || !enabled ? T.grey6B : T.textPrimary, fit: true });
+    });
+    wrap(ctx, state.actionsError || "Enabled only while sticks are centred. One action at a time.", 20, 414, 230, 36, { size: p.fs(13), color: T.textSecondary, valign: "bottom" });
+  },
+});
+
+new Panel("strip", {
+  wPx: 960, hPx: 108, S: S_STRIP, dist: 0.9, glow: 1, order: 4,
+  draw(ctx, p) {
+    p.root(ctx, 0, 0, 960, 108, 16);
+    txt(ctx, "INTENSITY", 24, 16.5, 200, 15, { size: p.fs(12), weight: 700, tracking: 0.14, color: T.textSecondary });
+    LEVELS.forEach((lv, i) => {
+      const x = 24 + i * 102, sel = lv === state.intensity;
+      const hov = p.button(`lv${lv}`, x, 39.5, 96, 52, () => setIntensity(lv));
+      fillRR(ctx, x, 39.5, 96, 52, 10, sel ? T.accent : T.neutralFill, sel || hov ? T.accent : T.neutralBorder, hov && !sel ? 2 : 1);
+      txt(ctx, lv, x, 39.5, 96, 52, { size: p.fs(14), weight: 700, tracking: 0.06, color: sel ? "#FFFFFF" : T.grey3D, align: "center", fit: true });
+    });
+    const sh = p.button("stop", 360, 14, 240, 80, () => stopRobot("Stopped by you"));
+    fillRR(ctx, 360, 14, 240, 80, 14, sh ? "#A82222" : T.dangerSolid);
+    txt(ctx, "STOP", 360, 14 + 8, 240, 40, { size: p.fs(30), weight: 800, tracking: 0.12, color: "#FFFFFF", align: "center" });
+    txt(ctx, "A button · or point + trigger", 360, 14 + 50, 240, 20, { size: p.fs(12), font: "mono", color: "#FFFFFF", align: "center", fit: true });
+    const inXR = renderer.xr.isPresenting;
+    const eh = p.button("exit", 636, 28, 140, 52, () => renderer.xr.getSession()?.end(), inXR);
+    fillRR(ctx, 636, 28, 140, 52, 10, "#FFFFFF", eh ? T.accent : T.exitBorder, eh ? 2 : 1);
+    txt(ctx, "Exit VR", 636, 28, 140, 52, { size: p.fs(15), weight: 700, align: "center", color: inXR ? T.textPrimary : T.grey6B });
+    if (state.mission?.active) {                               // End mission: two presses within 3 s
+      const armed = performance.now() < state.endArmedUntil;
+      const label = state.endBusy ? "Ending…" : armed ? `Press again to end (${Math.ceil((state.endArmedUntil - performance.now()) / 1000)} s)` : state.endError ? "End failed · retry" : "End mission";
+      const mh = p.button("end", 796, 28, 140, 52, pressEndMission, !state.endBusy);
+      fillRR(ctx, 796, 28, 140, 52, 10, armed ? T.dangerSoft : "#FFFFFF", armed ? T.dangerSolid : mh ? T.accent : T.neutralBorder, armed || mh ? 2 : 1);
+      wrap(ctx, label, 802, 28, 128, 52, { size: p.fs(13), weight: 700, color: armed ? T.dangerText : T.grey3D, valign: "middle" });
+    }
+  },
+});
+
+new Panel("mission", {
+  wPx: 900, hPx: 480, S: 1, dist: 1.35, order: 5, margin: 8,
+  draw(ctx, p) {
+    p.visible = state.missionKnown && !state.mission?.active;
+    if (!p.visible) return;
+    fillRR(ctx, 0, 0, 900, 480, 24, T.panelBg, T.accent, 4);
+    p.solids.push({ x: 0, y: 0, w: p.wPx, h: p.hPx });
+    txt(ctx, "Start a mission", 32, 20, 836, 48, { size: p.fs(36), weight: 700 });
+    if (state.missionHint) txt(ctx, "Start a mission to drive", 32, 70, 836, 40, { size: p.fs(28), weight: 700, color: T.accent });
+    const ops = state.operators;
+    const op = ops?.[state.operatorIndex];
+    const opText = ops == null ? (state.operatorsError || "Loading operators…") : !ops.length ? "No operators registered" : op.role ? `${op.name} · ${op.role}` : op.name;
+    const mini = (id, x, y, glyph, fn) => { const h = p.button(id, x, y, 80, 76, fn); fillRR(ctx, x, y, 80, 76, 14, h ? T.accentSoft : T.neutralFill, h ? T.accent : T.neutralBorder, h ? 2 : 1); txt(ctx, glyph, x, y, 80, 76, { size: p.fs(36), weight: 700, align: "center" }); };
+    const cyc = (n, d) => (n ? ((state.operatorIndex + d) % n + n) % n : 0);
+    txt(ctx, "OPERATOR", 32, 118, 400, 30, { size: p.fs(22), weight: 700, font: "mono", color: T.textSecondary });
+    mini("opPrev", 32, 150, "<", () => { state.operatorIndex = cyc(ops?.length, -1); markDirty("mission"); });
+    txt(ctx, opText, 124, 150, 652, 76, { size: p.fs(30), weight: 700, align: "center", fit: true });
+    mini("opNext", 788, 150, ">", () => { state.operatorIndex = cyc(ops?.length, 1); markDirty("mission"); });
+    txt(ctx, "ZONE", 32, 238, 400, 30, { size: p.fs(22), weight: 700, font: "mono", color: T.textSecondary });
+    mini("zPrev", 32, 270, "<", () => { state.zoneIndex = (state.zoneIndex + ZONES.length - 1) % ZONES.length; markDirty("mission"); });
+    txt(ctx, ZONES[state.zoneIndex], 124, 270, 652, 76, { size: p.fs(30), weight: 700, align: "center" });
+    mini("zNext", 788, 270, ">", () => { state.zoneIndex = (state.zoneIndex + 1) % ZONES.length; markDirty("mission"); });
+    const can = Boolean(op) && !state.missionStarting;
+    const sh = p.button("start", 250, 366, 400, 84, startMission, can);
+    fillRR(ctx, 250, 366, 400, 84, 16, can ? (sh ? "#4A31C4" : T.accent) : T.neutralBorder);
+    txt(ctx, state.missionStarting ? "Starting…" : "Start mission", 250, 366, 400, 84, { size: p.fs(30), weight: 700, color: "#FFFFFF", align: "center" });
+    if (state.missionError) txt(ctx, state.missionError, 32, 452, 836, 26, { size: p.fs(22), color: T.dangerText, fit: true });
+  },
+});
+
+new Panel("banner", {
+  wPx: 1200, hPx: 360, S: 1, dist: 1.6, order: 6, margin: 8,
+  draw(ctx, p) {
+    p.visible = state.estopLatched;
+    if (!p.visible) return;
+    fillRR(ctx, 0, 0, 1200, 360, 24, T.dangerSoft, T.dangerSolid, 4);
+    p.solids.push({ x: 0, y: 0, w: p.wPx, h: p.hPx });
+    chip(ctx, 32, 28, { h: 40, padX: 16, gap: 10, r: 12, size: p.fs(22), text: "E-STOP LATCHED", tone: "danger" });
+    txt(ctx, "Emergency stop latched", 32, 88, 1136, 48, { size: p.fs(36), weight: 700 });
+    const confirming = state.latchPhase === "confirming" && performance.now() < state.latchUntil;
+    const detail = confirming ? "Make sure Barry and the area around it are safe, then press again to confirm."
+      : `${state.latchError ? `${state.latchError} ` : ""}Barry will not move until the e-stop is reset.`;
+    wrap(ctx, detail, 32, 140, 760, 100, { size: p.fs(26) });
+    const label = state.latchPhase === "resetting" ? "Resetting…" : confirming ? `Press again to confirm (${Math.ceil((state.latchUntil - performance.now()) / 1000)} s)` : "Reset e-stop";
+    const h = p.button("reset", 820, 130, 348, 100, pressResetEstop, state.latchPhase !== "resetting");
+    fillRR(ctx, 820, 130, 348, 100, 16, h ? "#A82222" : T.dangerSolid);
+    wrap(ctx, label, 836, 130, 316, 100, { size: p.fs(30), weight: 700, color: "#FFFFFF", valign: "middle" });
+    wrap(ctx, "Reset never moves Barry: centre both sticks, then push to drive.", 32, 262, 1136, 76, { size: p.fs(24), font: "mono", color: T.textSecondary });
+  },
+});
+
+new Panel("brain", {
+  wPx: 600, hPx: 890, S: 1, dist: 1.25, glow: 1, order: 4,
+  draw(ctx, p) {
+    if (!state.brainOpen) {
+      const x = (600 - 220) / 2, y = (890 - 60) / 2;
+      const h = p.button("open", x, y, 220, 60, () => { state.brainOpen = true; markDirty("brain"); });
+      p.root(ctx, x, y, 220, 60, 18, { fill: "#FFFFFF", border: h ? T.accent : T.panelBorder, lw: h ? 2 : 1 });
+      txt(ctx, "BRAIN · Y", x, y, 220, 60, { size: p.fs(22), weight: 700, font: "mono", tracking: 0.1, align: "center" });
+      return;
+    }
+    p.root(ctx, 0, 0, 600, 890, 24, { lw: 2 });
+    txt(ctx, "BRAIN", 28, 20, 300, 38, { size: p.fs(28), weight: 700, tracking: 0.14, color: T.textSecondary });
+    if (p.button("close", 420, 16, 160, 44, () => { state.brainOpen = false; markDirty("brain"); })) fillRR(ctx, 420, 18, 156, 40, 10, T.accentSoft);
+    txt(ctx, "Y · close", 400, 22, 172, 34, { size: p.fs(22), font: "mono", color: T.textSecondary, align: "right" });
+    LLM_PRESETS.forEach(([label, goal], i) => {
+      const y = 70 + i * 64;
+      const h = p.button(`p${i}`, 28, y, 544, 56, () => startGoal(goal), !state.llmStarting);
+      fillRR(ctx, 28, y, 544, 56, 12, h ? T.accentSoft : T.rowFill, h ? T.accent : T.neutralBorder, h ? 2 : 1);
+      txt(ctx, label, 44, y, 520, 56, { size: p.fs(24), weight: 700, fit: true });
+    });
+    const task = state.llmTask || { state: "idle" };
+    const running = task.state === "running";
+    if (running || (state.llmReplaced && state.llmStarting)) txt(ctx, "Starting a new task cancels the current one.", 28, 392, 544, 30, { size: p.fs(21), color: T.textSecondary });
+    const tone = { running: "accent", done: "ok", cancelled: "warn", failed: "danger", limit: "warn", refused: "danger" }[task.state] || "neutral";
+    chip(ctx, 28, 428, { h: 40, padX: 16, gap: 10, r: 12, size: p.fs(22), text: state.llmError ? "ERROR" : String(task.state || "idle").toUpperCase(), tone: state.llmError ? "danger" : tone });
+    const steps = task.steps || []; const first = Math.max(0, steps.length - 6);
+    steps.slice(first).forEach((s, i) => {
+      const y = 480 + i * 38;
+      const args = s.args && typeof s.args === "object" ? Object.values(s.args).join(" ") : "";
+      txt(ctx, `${s.tool}${args ? ` ${args}` : ""}`, 28, y, 340, 34, { size: p.fs(22), font: "mono", fit: true });
+      const st = s.result?.status && s.state !== "done" ? s.result.status : s.state;
+      txt(ctx, String(st || "").toUpperCase(), 380, y, 192, 34, { size: p.fs(22), weight: 700, font: "mono", color: T.textSecondary, align: "right", fit: true });
+    });
+    if (first > 0) txt(ctx, `+${first} earlier`, 28, 708, 300, 28, { size: p.fs(21), font: "mono", color: T.textSecondary });
+    const answer = state.llmError || task.answer || task.message || "";
+    if (answer) wrap(ctx, answer, 28, 738, 544, 74, { size: p.fs(26), weight: 700 });
+    const ch = p.button("cancel", 28, 816, 544, 62, cancelGoal, running && !state.llmCancelling);
+    fillRR(ctx, 28, 816, 544, 62, 14, running ? (ch ? "#A82222" : T.dangerSolid) : T.neutralBorder);
+    txt(ctx, state.llmCancelling ? "Cancelling…" : "Cancel", 28, 816, 544, 62, { size: p.fs(30), weight: 700, color: "#FFFFFF", align: "center" });
+  },
+});
+
+// ------------------------------------------------------------------ renderer, scene, environment
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById("xr"), antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType("local");
+renderer.xr.setFramebufferScaleFactor(1.0);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(T.envSky);
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 200);
+camera.position.set(0, EYE, 0);
+camera.rotation.order = "YXZ";
+scene.add(camera);
+
+const v3 = (hex) => new THREE.Color(hex);
+const unlit = (opts) => new THREE.ShaderMaterial({ ...opts, toneMapped: false });
+
+// Sky (ProceduralSkybox.shader): nebula glows + hashed static stars. Unity +Z forward = three -Z.
+const sky = new THREE.Mesh(new THREE.SphereGeometry(80, 48, 24), unlit({
+  side: THREE.BackSide, depthWrite: false,
+  uniforms: { sky: { value: v3(T.envSky) }, nA: { value: new THREE.Vector4(...T.nebulaA) }, nB: { value: new THREE.Vector4(...T.nebulaB) }, starMin: { value: 0.35 } },
+  vertexShader: `varying vec3 vDir; void main(){ vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `precision highp float; uniform vec3 sky; uniform vec4 nA; uniform vec4 nB; uniform float starMin; varying vec3 vDir;
+    float h31(vec3 p){ p = fract(p * 0.1031); p += dot(p, p.yzx + 33.33); return fract((p.x + p.y) * p.z); }
+    void main(){ vec3 d = normalize(vDir); d.z = -d.z;
+      float gA = pow(clamp((dot(d, normalize(vec3(0.0, 0.08, 1.0))) - 0.55) / 0.45, 0.0, 1.0), 2.0);
+      float gB = pow(clamp((dot(d, normalize(vec3(-0.42, 0.20, 1.0))) - 0.72) / 0.28, 0.0, 1.0), 2.0);
+      vec3 cell = floor(d * 420.0); float star = step(0.992, h31(cell)); float b = mix(starMin, 1.0, h31(cell + 19.7));
+      vec3 c = sky + nA.rgb * (nA.a * gA) + nB.rgb * (nB.a * gB) + vec3(star * b);
+      gl_FragColor = vec4(c, 1.0); }`,
+}));
+sky.renderOrder = -10; sky.frustumCulled = false; scene.add(sky);
+
+// Floor (FloorGrid.shader): 30 m plane centred 5 m ahead, 0.5 m grid fading out by 14 m.
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(30, 30), unlit({
+  uniforms: { floorC: { value: v3(T.floor) }, gridC: { value: v3(T.floorGrid) }, gridA: { value: 0.28 } },
+  vertexShader: `varying vec3 vW; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
+  fragmentShader: `precision highp float; uniform vec3 floorC; uniform vec3 gridC; uniform float gridA; varying vec3 vW;
+    void main(){ vec2 c = vW.xz / 0.5; vec2 d = abs(fract(c - 0.5) - 0.5) / max(fwidth(c), vec2(0.0001));
+      float line = 1.0 - clamp(min(d.x, d.y), 0.0, 1.0);
+      float fade = 1.0 - smoothstep(14.0 * 0.35, 14.0, distance(vW.xz, cameraPosition.xz));
+      gl_FragColor = vec4(mix(floorC, gridC, line * fade * gridA), 1.0); }`,
+}));
+floor.rotation.x = -Math.PI / 2; floor.position.set(0, 0, -5); floor.renderOrder = -9; scene.add(floor);
+
+// Operator platform (PlatformDisc.shader): r 1.25 m disc, rim + dashed ring.
+const platform = new THREE.Mesh(new THREE.CircleGeometry(1.25, 96), unlit({
+  uniforms: { fillC: { value: v3(T.platformFill) }, rimC: { value: v3(T.platformRim) }, dashC: { value: v3(T.platformRingDashed) } },
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `precision highp float; uniform vec3 fillC; uniform vec3 rimC; uniform vec3 dashC; varying vec2 vUv;
+    void main(){ vec2 c = vUv - 0.5; float r = length(c);
+      float rim = smoothstep(0.465, 0.49, r); float band = 1.0 - smoothstep(0.012, 0.025, abs(r - 0.39));
+      float a = atan(c.y, c.x) / 6.2831853 + 0.5; float dash = step(0.38, fract(a * 36.0));
+      vec3 col = mix(fillC, rimC, rim); col = mix(col, dashC, band * dash * 0.6); gl_FragColor = vec4(col, 1.0); }`,
+}));
+platform.rotation.x = -Math.PI / 2; platform.position.y = 0.005; platform.renderOrder = -8; scene.add(platform);
+
+// Ringed planet + pale moon (EnvironmentView): azimuth/elevation from the eye at 30 m.
+function fromEye(az, el, d) { const h = Math.cos(el * DEG) * d; return new THREE.Vector3(Math.sin(az * DEG) * h, EYE + Math.sin(el * DEG) * d, -Math.cos(az * DEG) * h); }
+const planetScale = Math.tan(2.7 * DEG) * 30;
+const planetPos = fromEye(38, 24.5, 30);
+const planet = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 24), unlit({
+  uniforms: { l: { value: v3(T.planetLight) }, m: { value: v3(T.planetMid) }, k: { value: v3(T.planetDark) } },
+  vertexShader: `varying vec3 vN; void main(){ vN = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `precision highp float; uniform vec3 l; uniform vec3 m; uniform vec3 k; varying vec3 vN;
+    void main(){ float t = clamp(0.5 - 0.5 * dot(vN, normalize(vec3(-0.45, 0.55, 0.7))), 0.0, 1.0);
+      vec3 c = t < 0.6 ? mix(l, m, t / 0.6) : mix(m, k, (t - 0.6) / 0.4); gl_FragColor = vec4(c, 1.0); }`,
+}));
+planet.position.copy(planetPos); planet.scale.setScalar(planetScale); scene.add(planet);
+const ringPivot = new THREE.Group();
+ringPivot.position.copy(planetPos); ringPivot.scale.setScalar(planetScale);
+ringPivot.rotation.set(-11 * DEG, 0, -14 * DEG, "YXZ");
+const ring = new THREE.Mesh(new THREE.RingGeometry(1.62, 1.87, 96), new THREE.MeshBasicMaterial({ color: T.planetRing, transparent: true, opacity: 0.8, side: THREE.DoubleSide, toneMapped: false }));
+ring.rotation.x = -Math.PI / 2; ringPivot.add(ring); scene.add(ringPivot);
+const moon = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 8), new THREE.MeshBasicMaterial({ color: "#E9E4FF", transparent: true, opacity: 0.85, toneMapped: false }));
+moon.position.copy(fromEye(-40, 25, 30)); moon.scale.setScalar(Math.tan(0.5 * DEG) * 30); scene.add(moon);
+
+// ------------------------------------------------------------------ place panels (DashboardSceneBuilder.Build)
+const P = panels;
+placeUnity(P.header.group, 0, EYE + 0.588, 2.0);
+placeUnity(P.camera.group, 0, EYE, 2.0);
+placeUnity(P.cameraOverlay.group, 0, EYE, 2.0); P.cameraOverlay.group.translateZ(0.004);
+placeOnArc(P.status.group, -SIDE_PANEL_YAW, 1.3, EYE);
+placeOnArc(P.actions.group, SIDE_PANEL_YAW, 1.3, EYE);
+placeUnity(P.strip.group, 0, EYE - 0.9 * Math.sin(25 * DEG), 0.9 * Math.cos(25 * DEG), 15, 0);
+placeOnArc(P.brain.group, 46, 1.25, EYE + 0.1);
+placeUnity(P.mission.group, 0, EYE - 0.22, 1.35);
+placeUnity(P.banner.group, 0, EYE + 0.12, 1.6);
+for (const p of Object.values(panels)) scene.add(p.group);
+
+// Live video: its own plane over the camera screen's inner area (inset 10 mockup px), aspect "contain".
+const videoCanvas = document.createElement("canvas"); videoCanvas.width = 640; videoCanvas.height = 360;
+const videoCtx = videoCanvas.getContext("2d");
+const videoTex = new THREE.CanvasTexture(videoCanvas); videoTex.colorSpace = THREE.SRGBColorSpace;
+const innerW = 860 * S_FAR / 1000, innerH = 475 * S_FAR / 1000;
+const videoMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: videoTex, toneMapped: false }));
+videoMesh.renderOrder = 2; videoMesh.visible = false;
+P.camera.group.add(videoMesh); videoMesh.position.z = 0.002;
+let lastVideoDraw = 0, videoW = 0, videoH = 0;
+function updateVideo(now) {
+  if (now - lastVideoDraw < 40) return;
+  lastVideoDraw = now;
+  const w = cameraImg.naturalWidth, h = cameraImg.naturalHeight;
+  const live = cameraImg.complete && w > 0 && h > 0;
+  if (live !== state.cameraLive) { state.cameraLive = live; markDirty("cameraOverlay"); }
+  videoMesh.visible = live;
+  if (!live) return;
+  if (w !== videoW || h !== videoH) {
+    videoW = w; videoH = h;
+    videoCanvas.width = Math.min(1280, w); videoCanvas.height = Math.round(videoCanvas.width * h / w);
+    videoTex.dispose();                                         // texture size changed
+    const aspect = w / h; let vw = innerW, vh = innerW / aspect;
+    if (vh > innerH) { vh = innerH; vw = innerH * aspect; }
+    videoMesh.scale.set(vw, vh, 1);
+  }
+  try { videoCtx.drawImage(cameraImg, 0, 0, videoCanvas.width, videoCanvas.height); videoTex.needsUpdate = true; } catch (e) { /* frame not decodable yet */ }
+}
+
+// ------------------------------------------------------------------ controllers: rays, cursor, tooltips
+const controllers = [];
+function buildRay() {
+  const g = new THREE.Group();
+  const core = new THREE.Mesh(new THREE.CylinderGeometry(0.0012, 0.0012, 1, 6), new THREE.MeshBasicMaterial({ color: T.rayCore, toneMapped: false }));
+  const glow = new THREE.Mesh(new THREE.CylinderGeometry(0.0035, 0.0035, 1, 8), new THREE.MeshBasicMaterial({ color: T.rayGlow, transparent: true, opacity: 0.35, depthWrite: false, toneMapped: false }));
+  for (const m of [core, glow]) { m.rotation.x = -Math.PI / 2; m.renderOrder = 10; g.add(m); }
+  g.userData.setLength = (len) => { for (const m of [core, glow]) { m.scale.y = len; m.position.z = -len / 2; } };
+  g.userData.setLength(3);
+  return g;
+}
+function buildCursor() {
+  const g = new THREE.Group();
+  const ringM = new THREE.Mesh(new THREE.RingGeometry(0.0065, 0.0105, 32), new THREE.MeshBasicMaterial({ color: T.accent, depthTest: false, toneMapped: false }));
+  const fill = new THREE.Mesh(new THREE.CircleGeometry(0.0065, 32), new THREE.MeshBasicMaterial({ color: "#FFFFFF", depthTest: false, toneMapped: false }));
+  const dot = new THREE.Mesh(new THREE.CircleGeometry(0.003, 16), new THREE.MeshBasicMaterial({ color: T.accent, depthTest: false, toneMapped: false }));
+  ringM.renderOrder = 11; fill.renderOrder = 12; dot.renderOrder = 13;
+  g.add(ringM, fill, dot);
+  return g;
+}
+
+/** ControllerTooltips: 360x220 mm canvas at the grip, pills + leader lines (positions in mm, y up). */
+const TOOLTIPS = {
+  left: [["L", "Move · strafe", -117, -12, 114, 0, 24, -60, -12], ["X", "Intensity", 128, -2, 92, 46, 21, 82, -2]],
+  right: [["R", "Turn", 130, -12, 100, 0, 24, 80, -12], ["A", "STOP", -128, -2, 92, -46, 21, -82, -2, true], ["B", "Actions", -128, 58, 92, -38, 44, -82, 58]],
+};
+function buildTooltips(hand) {
+  const k = 3, W = 360, H = 220;
+  const cv = document.createElement("canvas"); cv.width = W * k; cv.height = H * k;
+  const ctx = cv.getContext("2d"); ctx.scale(k, k);
+  const at = (x, y) => [W / 2 + x, H / 2 - y];
+  for (const [key, label, x, y, w, lx0, ly0, lx1, ly1, stop] of TOOLTIPS[hand]) {
+    ctx.strokeStyle = T.leader; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(...at(lx0, ly0)); ctx.lineTo(...at(lx1, ly1)); ctx.stroke();
+    const [cx, cy] = at(x, y);
+    fillRR(ctx, cx - w / 2, cy - 14, w, 28, 14, stop ? T.dangerSolid : "#FFFFFF", stop ? T.dangerSolid : T.neutralBorder, 1);
+    const kw = measure(ctx, `${key} `, 13, { weight: 800 }), lw = measure(ctx, label, 13, { weight: stop ? 700 : 400 });
+    const sx = cx - (kw + lw) / 2;
+    txt(ctx, `${key} `, sx, cy - 14, kw, 28, { size: 13, weight: 800, color: stop ? "#FFFFFF" : T.textPrimary });
+    txt(ctx, label, sx + kw, cy - 14, lw + 2, 28, { size: 13, weight: stop ? 700 : 400, color: stop ? "#FFFFFF" : T.textPrimary });
+  }
+  const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(W / 1000, H / 1000), new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, toneMapped: false }));
+  m.renderOrder = 9;
+  return m;
+}
+
+const raycaster = new THREE.Raycaster();
+function pick(origin, direction) {
+  raycaster.set(origin, direction);
+  const visible = interactiveMeshes.filter((m) => m.visible);
+  for (const hit of raycaster.intersectObjects(visible, false)) {   // nearest opaque hit wins
+    if (!hit.uv) continue;
+    const panel = hit.object.userData.panel;
+    const h = panel.hit(hit.uv);
+    if (h) return { panel, target: h.target || null, hit };
+  }
+  return null;
+}
+function setHover(owner, result) {
+  const target = result?.target || null;
+  const key = target ? `${result.panel.name}:${target.id}` : null;
+  if (owner.hoverKey !== key) {
+    if (owner.hover?.panel) { owner.hover.panel.hover = null; owner.hover.panel.dirty = true; }
+    owner.hoverKey = key;
+    if (target) { result.panel.hover = target.id; result.panel.dirty = true; }
+  }
+  owner.hover = target ? result : null;
+}
+function clickTarget(h) { if (h?.target?.enabled && h.target.onClick) { h.target.onClick(); h.panel.dirty = true; } }
+
+for (let i = 0; i < 2; i++) {
+  const target = renderer.xr.getController(i);
+  const grip = renderer.xr.getControllerGrip(i);
+  const ray = buildRay(); target.add(ray);
+  const cur = buildCursor(); cur.visible = false; scene.add(cur);
+  const c = { index: i, target, grip, ray, cursor: cur, source: null, hand: null, hover: null, hoverKey: null, prev: {}, tips: null };
+  target.addEventListener("connected", (e) => {
+    c.source = e.data; c.hand = e.data.handedness;
+    if (c.tips) grip.remove(c.tips);
+    if (c.hand === "left" || c.hand === "right") { c.tips = buildTooltips(c.hand); c.tips.rotation.x = -1.1; c.tips.position.set(0, 0.03, 0.02); grip.add(c.tips); }
+  });
+  target.addEventListener("disconnected", () => {
+    if (state.teleop === "DRIVING") stopRobot("Controller lost");     // tracking lost while driving → STOP
+    c.source = null; c.hand = null; cur.visible = false; setHover(c, null);
+  });
+  target.addEventListener("selectstart", () => clickTarget(c.hover));
+  scene.add(target); scene.add(grip);
+  controllers.push(c);
+}
+
+// Per-frame controller handling: rays/cursor, buttons (A STOP, grips+A e-stop, B actions, X intensity, Y brain), sticks.
+const tmpMat = new THREE.Matrix4(), tmpOrigin = new THREE.Vector3(), tmpDir = new THREE.Vector3(), tmpQuat = new THREE.Quaternion();
+let estopHeld = 0;
+function updateControllers(now, dt) {
+  let lx = 0, ly = 0, rx = 0, lGrip = false, rGrip = false, aHeld = false;
+  for (const c of controllers) {
+    const src = c.source;
+    if (!src) { c.cursor.visible = false; continue; }
+    tmpMat.identity().extractRotation(c.target.matrixWorld);
+    tmpOrigin.setFromMatrixPosition(c.target.matrixWorld);
+    tmpDir.set(0, 0, -1).applyMatrix4(tmpMat);
+    const res = pick(tmpOrigin, tmpDir);
+    setHover(c, res);
+    if (res) {
+      c.ray.userData.setLength(res.hit.distance);
+      c.cursor.visible = true; c.cursor.position.copy(res.hit.point);
+      c.cursor.quaternion.copy(res.hit.object.getWorldQuaternion(tmpQuat)); c.cursor.translateZ(0.003);
+    } else { c.ray.userData.setLength(3); c.cursor.visible = false; }
+    const gp = src.gamepad; if (!gp) continue;
+    const b = (i) => Boolean(gp.buttons[i]?.pressed);
+    const edge = (i) => { const p = b(i); const was = c.prev[i]; c.prev[i] = p; return p && !was; };
+    const ax = gp.axes.length >= 4 ? [gp.axes[2], gp.axes[3]] : [gp.axes[0] || 0, gp.axes[1] || 0];
+    if (c.hand === "left") {
+      [lx, ly] = ax; lGrip = b(1);
+      if (edge(4)) cycleIntensity();                                            // X
+      if (edge(5)) { state.brainOpen = !state.brainOpen; markDirty("brain"); }  // Y
+    } else if (c.hand === "right") {
+      rx = ax[0]; rGrip = b(1); aHeld = b(4);
+      if (edge(4)) stopRobot("Stopped by you");                                 // A = STOP (highest priority)
+      if (edge(5)) toggleActions();                                             // B
+    }
+  }
+  // Dedicated e-stop: both grips + A held 0.3 s (EmergencyStopGesture). A alone already sent STOP.
+  if (lGrip && rGrip && aHeld) { estopHeld += dt; if (estopHeld >= ESTOP_HOLD_S && !state.estopLatched) triggerEmergencyStop(); }
+  else estopHeld = 0;
+  const [sx, sy] = radial(lx, ly); const [tx] = radial(rx, 0);
+  teleopTick(now, { forward: r2(-sy), strafe: r2(-sx), turn: r2(-tx) }, "hand");
+}
+
+// ------------------------------------------------------------------ desktop: mouse look/click, armed keyboard
+let dragging = false, dragMoved = 0, yaw = 0, pitch = 0, lastX = 0, lastY = 0;
+const mouseOwner = { hover: null, hoverKey: null };
+const ndc = new THREE.Vector2();
+function mousePick(e) {
+  ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  raycaster.setFromCamera(ndc, camera);
+  setHover(mouseOwner, pick(raycaster.ray.origin.clone(), raycaster.ray.direction.clone()));
+}
+renderer.domElement.addEventListener("pointerdown", (e) => { dragging = true; dragMoved = 0; lastX = e.clientX; lastY = e.clientY; });
+addEventListener("pointermove", (e) => {
+  if (renderer.xr.isPresenting) return;
+  if (dragging) {
+    const dx = e.clientX - lastX, dy = e.clientY - lastY; dragMoved += Math.abs(dx) + Math.abs(dy);
+    yaw -= dx * 0.004; pitch = Math.max(-1.2, Math.min(1.2, pitch - dy * 0.004));
+    camera.rotation.set(pitch, yaw, 0, "YXZ"); lastX = e.clientX; lastY = e.clientY;
+  }
+  mousePick(e);
+});
+addEventListener("pointerup", (e) => {
+  const wasDrag = dragging && dragMoved >= 6; dragging = false;
+  if (!wasDrag && !renderer.xr.isPresenting && e.target === renderer.domElement) { mousePick(e); clickTarget(mouseOwner.hover); }
+});
+
+const keys = new Set();
+const armKeys = document.getElementById("arm-keys");
+armKeys.addEventListener("change", () => {
+  document.getElementById("sim-banner").style.display = armKeys.checked ? "block" : "none";
+  if (!armKeys.checked && state.teleop === "DRIVING") stopRobot("Keyboard disarmed");
+  keys.clear(); armKeys.blur();
+});
+addEventListener("keydown", (e) => {
+  const k = e.key.toLowerCase();
+  if (k === " ") { e.preventDefault(); stopRobot("Stopped by you"); return; }            // STOP always works
+  if (!armKeys.checked || e.repeat) return;
+  if (k === "i") cycleIntensity();
+  else if (k === "tab") { e.preventDefault(); toggleActions(); }
+  else keys.add(k);
+});
+addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
+addEventListener("blur", () => { keys.clear(); if (state.teleop === "DRIVING") stopRobot("Window lost focus"); });
+function keyboardAxes() {
+  const v = (a, b) => Number(keys.has(a)) - Number(keys.has(b));
+  return { forward: v("w", "s"), strafe: v("a", "d"), turn: v("q", "e") };
+}
+
+// ------------------------------------------------------------------ Enter VR (reason shown when unavailable)
+const vrButton = document.getElementById("enter-vr"), vrReason = document.getElementById("vr-reason");
+async function setupVr() {
+  if (!("xr" in navigator)) {
+    vrButton.textContent = "VR UNAVAILABLE";
+    vrReason.textContent = window.isSecureContext ? "This browser has no WebXR." :
+      `WebXR is blocked on plain HTTP. In the Quest browser open chrome://flags, enable "Insecure origins treated as secure" for ${location.origin}, then relaunch.`;
+    return;
+  }
+  const ok = await navigator.xr.isSessionSupported("immersive-vr").catch(() => false);
+  if (!ok) { vrButton.textContent = "VR NOT SUPPORTED"; vrReason.textContent = "No immersive-vr on this device (desktop preview only)."; return; }
+  vrButton.disabled = false; vrButton.textContent = "ENTER VR"; vrReason.textContent = "";
+  vrButton.onclick = async () => {
+    try {
+      const session = await navigator.xr.requestSession("immersive-vr", { optionalFeatures: ["local-floor", "bounded-floor", "hand-tracking"] });
+      session.addEventListener("end", onSessionEnd);
+      session.addEventListener("visibilitychange", () => { if (session.visibilityState !== "visible" && state.teleop === "DRIVING") stopRobot("Headset focus lost"); });
+      await renderer.xr.setSession(session);
+      // Origin = head at session start, lifted to the 1.6 m eye height the layout is built for.
+      const base = renderer.xr.getReferenceSpace();
+      renderer.xr.setReferenceSpace(base.getOffsetReferenceSpace(new XRRigidTransform({ x: 0, y: -EYE, z: 0 })));
+      state.needCentre = true;
+      vrButton.textContent = "EXIT VR"; vrButton.onclick = () => session.end();
+      reportClient("info", "XR session started");
+      markDirty("strip");
+    } catch (err) {
+      vrReason.textContent = `VR failed to start: ${err.name || ""} ${err.message || err}`;
+      reportClient("error", `requestSession/setSession failed: ${err.name} ${err.message}`);
+    }
+  };
+}
+function onSessionEnd() {
+  if (state.teleop === "DRIVING" || pendingMotion) stopRobot("VR session ended");
+  for (const c of controllers) { c.source = null; c.cursor.visible = false; }
+  setupVr(); markDirty("strip");
+  camera.position.set(0, EYE, 0); camera.rotation.set(pitch, yaw, 0, "YXZ");
+}
+document.addEventListener("visibilitychange", () => { if (document.hidden && state.teleop === "DRIVING") stopRobot("App paused"); });
+
+// ------------------------------------------------------------------ main loop
+let lastFrame = performance.now(), lastRedraw = 0, frames = 0;
+renderer.setAnimationLoop(() => {
+  const now = performance.now(); const dt = Math.min(0.1, (now - lastFrame) / 1000); lastFrame = now;
+  try {
+    if (renderer.xr.isPresenting) updateControllers(now, dt);
+    else if (armKeys.checked) teleopTick(now, keyboardAxes(), "hand");
+    updateVideo(now);
+    if (state.latchPhase === "confirming") { if (now > state.latchUntil) state.latchPhase = "idle"; markDirty("banner"); }
+    if (state.endArmedUntil) { if (now > state.endArmedUntil) state.endArmedUntil = 0; markDirty("strip"); }
+    if (now - lastRedraw > 50) { lastRedraw = now; for (const p of Object.values(panels)) if (p.dirty) p.redraw(); }
+  } catch (err) { if (!window.__loopErr) { window.__loopErr = true; reportClient("error", `frame: ${err.stack || err}`); } }
+  renderer.render(scene, camera);
+  if (++frames === 120 && renderer.xr.isPresenting) reportClient("info", "XR rendered 120 frames");
+});
+addEventListener("resize", () => {
+  if (renderer.xr.isPresenting) return;
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight);
+});
+renderer.xr.addEventListener("sessionstart", () => { frames = 0; });
+
+// ------------------------------------------------------------------ start
+Promise.all([
+  document.fonts.load('700 20px "Inter"'), document.fonts.load('700 20px "JetBrains Mono"'), document.fonts.load('800 20px "Orbitron"'),
+]).catch(() => {}).finally(() => { for (const p of Object.values(panels)) p.dirty = true; });
+setupVr();
+acquireControlSession();
+pollStatus(); setInterval(pollStatus, 1000);
+pollTelemetry(); setInterval(pollTelemetry, 2000);
+pickCameraSource(); setInterval(pickCameraSource, 5000);
+loadOperators(); refreshMission(); setInterval(refreshMission, 3000);
+loadActions();
+connectSocket();
+fetch("/api/v1/llm/task").then((r) => (r.ok ? r.json() : null)).then((t) => { if (t) { state.llmTask = t; markDirty("brain"); if (t.state === "running") pollLlm(); } }).catch(() => {});
+window.__barry = { state, panels, renderer, scene, camera, controllers, teleopTick, updateControllers, clientLog };
+</script>
 </body>
 </html>

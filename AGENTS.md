@@ -1,59 +1,76 @@
-# Multi-Agent Collaboration Protocol: BARRY Project
+# BARRY: agent team rules and collaboration protocol
 
-This document establishes the communication, pull request (PR), and synchronization protocol between the two autonomous coding agents collaborating on the BARRY repository:
+One source of truth for every agent (Tomville team agents and partner agents) working on this repository.
 
-- **Agent Alpha (Cockpit, Gateway, Backend, WebXR, Linux VM)**
-- **Agent Beta (Dogzilla Hardware, Unity PC-VR / Barry.exe, Windows / VR Rig)**
+## 0. Team (Tomville office)
 
----
+- **Lead:** Claude Opus (`claude`). Splits the plan into GitHub issues, reviews, tests and **merges** PRs, but only with Tom's approval.
+- **Workers:** Claude Sonnet (`claude2`), Codex (`codex1`, `codex2`). Work only on tasks the lead assigned; never merge, including their own PRs.
+- **Partner agents / human teammates** (e.g. Agent Alpha / Agent Beta below) follow the same PR protocol and also do not self-merge.
+- Plan: `docs/control-plan.md`. Read it first and follow the documents it links to.
 
-## 1. Agent Communication Channel & Rules
+### Tomville commands
+- Message another agent: `tmv send AGENT "text"` (not `herdr agent prompt`; tmv logs the sender).
+- Work items are GitHub issues: `tmv task new "title"`, `tmv task take N`, `tmv task move N review`, `tmv task list`.
+- Lead only: with `[board] watch = true`, keep `tmv watch` running and restart it after handling each change.
 
-### A. Pull Request Reviews & Comments
-Every Pull Request created or updated by either agent MUST include:
-1. **Clear Context & Motivation**: Exactly what problem is solved and why.
-2. **Component Changes**: Breakdown of backend, API, frontend/Unity, or WebXR changes.
-3. **Contract / Wire Changes**: Any change to endpoints, headers, request/response models, or defaults.
-4. **Verification Proofs**: Terminal output, unit test results, or screenshots/logs proving it works.
-5. **Impact on Partner Agent**: Explicit instructions on what the other agent needs to do (e.g. `git pull`, restart service, env variable changes, or layout alignments).
-
-### B. Ingesting Changes from the Other Agent
-When pulling or reviewing changes from the partner agent:
-1. **Read PR Body & Commit Details First**: Read the detailed description and comments using `gh pr view <PR#> --comments` or `git log -n 1 --stat`.
-2. **Check for Contract/Layout Conflicts**:
-   - Check if Unity layout changes affect WebXR layout or vice versa.
-   - Check if API routes or authentication headers changed.
-3. **Run Regression Tests**: Run the pytest suite or relevant tests before and after merging.
-4. **Post Constructive Feedback**: If something breaks or conflicts, comment directly on the PR with specific error traces and suggested fixes.
+### Everyone
+- Work only inside the project root; don't read files outside it unless given the exact path.
+- Never read or print secrets (`.env`, API keys, `ROBOT_API_KEY`, `CAMERA_API_KEY`, key files). Use `.env.example` for setting names.
+- Never commit to `main`; one branch and one PR per task. No force-push, no history rewrites, no deleting branches you didn't create.
+- No system-wide installs; project dependencies go in the project's own requirement files.
+- Don't connect to the real robot, Raspberry Pi, Quest headset or Flipper Zero. Use `ROBOT_MODE=simulation` and `CAMERA_DEVICE=synthetic`. Real-hardware tests are run by Tom.
+- Never weaken emergency-stop, stop, watchdog or speed-cap behaviour. If a task seems to need that, stop and ask the lead.
+- Run the tests that cover your change before asking for review, and list them with their results in the PR.
 
 ---
 
-## 2. Current Architecture & Alignment Status
+## 1. Pull requests and reviews
 
-### Layout Alignment: WebXR Cockpit vs. Unity PC-VR (`Barry.exe`)
-- The WebXR cockpit (`backend/static/cockpit_vr.html`) has been aligned to the **36° curved cylindrical arc layout** matching Unity `Barry.exe`:
-  - **Left Panel (-36°)**: Telemetry, Kinematics, Battery reserve, Pitch/Roll, and Virtual Analog Joystick.
-  - **Center Panel (0°)**: Live DOGZILLA Front Camera Video Feed (relayed from Pi `:6500` or test feed), YOLO Detection Overlays, and Recenter HUD button.
-  - **Right Panel (+36°)**: BARRY AI Brain (Claude / LLM status), Structured Voice Commands, and Inspection Event Logs.
-  - **Floor Console / Bottom**: Emergency E-Stop button and system reset controls.
-- **When Agent Beta transfers or refines Unity layouts**:
-  - Keep coordinate frames and panel angular offsets consistent across Unity and WebXR.
-  - Use `docs/joystick_and_flipper_mission_workflow.md` as reference for motion control and arbitration.
+### A. Every PR body MUST include
+1. **Context & motivation**: exactly what problem is solved and why.
+2. **Component changes**: backend, API, frontend/Unity or WebXR, file by file.
+3. **Contract / wire changes**: endpoints, headers, request/response models, env vars, defaults.
+4. **Verification proofs**: exact commands with the output tail, screenshots or logs.
+5. **Impact on other agents**: what they must do (pull, restart, env variable changes, layout alignment).
 
-### Motion Control & Authentication Status (Full Access Mode)
-- **Active Mission Gating**: Currently set to **Full Access Mode** (`REQUIRE_ACTIVE_MISSION=false` in `.env`).
-  - Hand Joystick (`source="hand"`), Voice (`source="voice"`), and LLM (`source="llm"`) can move the robot freely without needing an active mission.
-- **Card / Badge Provisioning**: Set to **Auto-Provision Mode** (`AUTH_ALLOW_UNREGISTERED_TAGS=true` in `.env`).
-  - Any RFID/NFC tag UID scanned is automatically accepted and provisioned as an operator so tests never fail on missing credentials.
-- **Anonymous Relay Allowed**: `QUEST_API_KEY_ALLOW_ANONYMOUS=true` is enabled for frictionless Unity and WebXR local streaming.
+### B. Ingesting changes from another agent
+1. **Read the PR body and commits first**: `gh pr view <N> --comments`, `gh pr diff <N>`, `git log -n 1 --stat`.
+2. **Check for contract/layout conflicts**: Unity ↔ WebXR layout, API routes, auth headers, safety behaviour.
+3. **Run regression tests** before and after (`pytest -q tests`).
+4. **Comment on the PR** with the decision and reasoning; on problems, include the error trace and a suggested fix.
+
+### C. Workflow
+1. Branch per task (`<type>/<description>`), descriptive commits, `gh pr create` with the body above.
+2. Check mergeability: `gh pr view --json mergeable,mergeStateStatus`.
+3. Worker: `tmv task move N review`, then `tmv send claude "PR #N ready"`.
+4. **Only the lead merges**, after review, tests and Tom's approval. Keep `main` deployable.
 
 ---
 
-## 3. Standard Git Workflow
-1. Never push directly to `main`.
-2. Always create a feature branch (`git checkout -b <type>/<description>`).
-3. Commit with descriptive messages.
-4. Push branch and open a PR with `gh pr create`.
-5. Verify mergeability (`gh pr view --json mergeable,mergeStateStatus`).
-6. Merge using merge commit or squash, and delete branch (`gh pr merge --merge --delete-branch`).
-7. Keep `main` deployable at all times.
+## 2. Current architecture and alignment status
+
+### WebXR cockpit = 1:1 port of the Unity dashboard
+`backend/static/cockpit_vr.html` is a port of `frontend/barry-vr/Assets/Barry/App/Editor/DashboardSceneBuilder.cs`
+(same positions, sizes, Galactic theme tokens, copy and controller mapping; three.js r187 self-hosted in
+`backend/static/vendor/`). **Any Unity layout change must be mirrored in the WebXR page in the same PR, or in a linked follow-up.**
+
+| Panel | Unity placement (eye 1.6 m, +Z forward) | Notes |
+|---|---|---|
+| Header strip | (0, 1.6 + 0.588, 2.0) | BARRY, mission chip, e-stop / robot / control chips |
+| Camera screen | (0, 1.6, 2.0), 1.80 m wide | MJPEG from `/api/v1/camera/stream`, else the dog relay `/api/camera/stream` |
+| Status panel | arc −36°, 1.3 m | robot, control, camera fps, RTT, battery, COMMAND SENT bars |
+| Actions panel | arc +36°, 1.3 m | collapsed `ACTIONS · B` pill; list from `/api/v1/actions` |
+| Brain panel | arc +46°, 1.25 m, y + 0.1 | collapsed `BRAIN · Y` tab; `/api/v1/llm/*` |
+| Control strip | 25° below eye at 0.9 m, tilted 15° up | intensity, STOP, Exit VR, End mission |
+| Mission card | (0, 1.6 − 0.22, 1.35) | shown while no mission is active |
+| E-stop banner | (0, 1.6 + 0.12, 1.6) | shown while latched; reset needs two presses |
+
+Conversion to three.js: `(x, y, z)` → `(x, y, −z)`, yaw `a` → `rotation.y = −a`, pitch `p` → `rotation.x = −p`.
+Controller mapping (HANDOFF §6): left stick move/strafe, right stick X turn, A = STOP, both grips + A held 0.3 s = e-stop,
+B = actions, X = intensity, Y = brain. Release of the sticks sends STOP; after any stop the sticks must be centred before driving again.
+
+### Motion control and authentication (testing defaults, pending Tom's decision; see PR #124 review)
+- `REQUIRE_ACTIVE_MISSION=false`: hand, voice and LLM can move the robot without an active mission.
+- `AUTH_ALLOW_UNREGISTERED_TAGS=true`: any scanned tag UID is auto-provisioned as an operator.
+- `QUEST_API_KEY_ALLOW_ANONYMOUS=true`, `CAMERA_API_KEY_ALLOW_ANONYMOUS=true`: anonymous relay for local tests.
