@@ -102,6 +102,10 @@ Open `http://<laptop-ip>:8000/cockpit/vr` in the Quest Browser and click **ENTER
   - Verify glowing neon bounding boxes with label pills (e.g. `person 89%`, `chair 92%`) render over the live camera stream.
   - Header chip displays `DETECT · <n>`.
   - Confirm bounding boxes hide automatically if camera feed or detection telemetry drops for >2 seconds.
+- [ ] **Digital Zoom & Contrast Presets (PR #158)**:
+  - At the bottom of the camera viewport, observe the **ZOOM 1.0x** and **FILTER: NORMAL** buttons.
+  - Point and pull trigger on **ZOOM**: cycles through 1.0x, 1.5x, 2.0x, and 3.0x with tactile haptic clicks, cropping into the video stream while correctly expanding and clipping YOLO bounding box coordinates.
+  - Point and pull trigger on **FILTER**: cycles through **NORMAL** (standard color), **BOOST** (high-contrast + brightened for indoor lighting), and **NIGHT** (high-gamma enhanced for dark corners).
 
 ### E. Autonomous Find-Object Session Controls (PR #136, #138, #144, #152)
 - [ ] **Find Presets in Brain Panel**:
