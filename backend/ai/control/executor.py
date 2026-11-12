@@ -206,6 +206,7 @@ class Task:
     target: str | None = None
     outcome: str | None = None  # find runs: found | not_found | timeout | camera_lost | limit | refused | error | cancelled
     found: dict[str, Any] | None = None
+    found_snapshot: str | None = None  # base64 JPEG data URL of the snapshot where target was spotted
     deadline: float | None = None
     timeout_s: float | None = None
     model_calls: int = 0
@@ -221,6 +222,7 @@ class Task:
     session_s: float | None = None
     pitch: float = 0.0  # the body posture the executor last applied (level / medium = 0 / "medium")
     height: str = "medium"
+    _last_look_jpeg: bytes | None = field(default=None, repr=False)
     _finish: tuple[str, str] | None = field(default=None, repr=False)
     _clock: Callable[[], float] = field(default=time.monotonic, repr=False)
     _runner: "asyncio.Task[None] | None" = field(default=None, repr=False)
@@ -244,6 +246,7 @@ class Task:
                 "answer": self.answer, "turns": self.turns, "steps": [s.to_dict() for s in self.steps]}
         if self.mode == "find":
             data.update({"mode": "find", "target": self.target, "outcome": self.outcome, "found": self.found,
+                         "found_snapshot": self.found_snapshot,
                          "seconds_left": self.seconds_left(), "timeout_s": self.timeout_s,
                          "model_calls": self.model_calls, "input_tokens": self.input_tokens,
                          "output_tokens": self.output_tokens, "phase": self.phase, "searches": self.searches,
@@ -576,6 +579,9 @@ class TaskRunner:
                 label, where = task._finish
                 task._finish = None
                 task.found = {"label": label, "where": where}
+                if getattr(task, "_last_look_jpeg", None):
+                    import base64
+                    task.found_snapshot = f"data:image/jpeg;base64,{base64.b64encode(task._last_look_jpeg).decode('ascii')}"
                 task.outcome = "found"
                 return "found"
             task.phase = "searching"
@@ -652,6 +658,7 @@ class TaskRunner:
         if (want_pitch, want_height) != (task.pitch, task.height):
             await self._apply_posture(task, want_height, want_pitch)   # then settle ~0.5 s before the photo
         image = await capture_look(self._camera, clock=self._clock)   # CameraLost -> the run stops
+        task._last_look_jpeg = image.jpeg
         try:
             raw = await self._gateway.detections()
         except Exception:

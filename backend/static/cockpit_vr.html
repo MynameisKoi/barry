@@ -1087,10 +1087,29 @@ function scrollBrainStick(controller, axis, pointing, now) {
     scrollBrain(axis > 0 ? 1 : -1); controller.brainScrollAt = now;
   }
 }
+let snapshotImg = null, snapshotSrc = null;
+function getSnapshotImage(src) {
+  if (!src || typeof Image === "undefined") return null;
+  if (snapshotSrc !== src) {
+    snapshotSrc = src;
+    snapshotImg = new Image();
+    snapshotImg.onload = () => markDirty("brain");
+    snapshotImg.src = src;
+  }
+  return (snapshotImg && snapshotImg.complete && snapshotImg.naturalWidth) ? snapshotImg : null;
+}
+
 function drawBrainAnswer(ctx, p, answer, task, running) {
   const key = JSON.stringify([task.id, answer]);
   if (state.brainAnswerKey !== key) { state.brainAnswerKey = key; state.brainScroll = 0; }
-  const y = running ? 738 : 480, h = 812 - y, size = p.fs(26), lineHeight = size * 1.25, width = 482;
+  const y = running ? 738 : 480, h = 812 - y, size = p.fs(26), lineHeight = size * 1.25;
+  const snap = (!running && task.found_snapshot) ? getSnapshotImage(task.found_snapshot) : null;
+  const textX = snap ? 198 : 28, width = snap ? 312 : 482;
+  if (snap) {
+    fillRR(ctx, 28, y, 156, 104, 10, T.videoBg, T.accent, 2);
+    try { ctx.drawImage(snap, 30, y + 2, 152, 100); } catch (_) {}
+    txt(ctx, "TARGET SPOTTED", 28, y + 108, 156, 20, { size: p.fs(12), weight: 700, font: "mono", color: T.accent, align: "center" });
+  }
   setFont(ctx, size, { weight: 700 });
   const lines = [];
   for (const paragraph of String(answer).split("\n")) {
@@ -1105,15 +1124,15 @@ function drawBrainAnswer(ctx, p, answer, task, running) {
   state.brainScrollMax = Math.max(0, lines.length - count);
   state.brainScroll = Math.max(0, Math.min(state.brainScrollMax, state.brainScroll || 0));
   const offset = state.brainScroll, buttonHeight = Math.min(44, (h - 26) / 2);
-  ctx.save(); ctx.beginPath(); ctx.rect(28, y, width, h - 26); ctx.clip();
-  lines.slice(offset, offset + count).forEach((line, i) => txt(ctx, line, 28, y + i * lineHeight, width, lineHeight, {size, weight:700, fit:true}));
+  ctx.save(); ctx.beginPath(); ctx.rect(textX, y, width, h - 26); ctx.clip();
+  lines.slice(offset, offset + count).forEach((line, i) => txt(ctx, line, textX, y + i * lineHeight, width, lineHeight, {size, weight:700, fit:true}));
   ctx.restore();
   for (const [id, label, by, delta, enabled] of [["answerUp", "▲", y, -1, offset > 0], ["answerDown", "▼", y + h - 26 - buttonHeight, 1, offset < state.brainScrollMax]]) {
     const hover = p.button(id, 520, by, 52, buttonHeight, () => scrollBrain(delta), enabled);
     fillRR(ctx, 520, by, 52, buttonHeight, 8, enabled ? (hover ? T.accentSoft : T.rowFill) : T.neutralFill);
     txt(ctx, label, 520, by, 52, buttonHeight, {size:p.fs(18), align:"center", color:enabled ? T.accent : T.textSecondary});
   }
-  if (lines.length > count) txt(ctx, `line ${offset + 1}–${Math.min(lines.length, offset + count)} of ${lines.length}`, 28, y + h - 26, width, 26, {size:p.fs(13), font:"mono", color:T.textSecondary});
+  if (lines.length > count) txt(ctx, `line ${offset + 1}–${Math.min(lines.length, offset + count)} of ${lines.length}`, textX, y + h - 26, width, 26, {size:p.fs(13), font:"mono", color:T.textSecondary});
 }
 
 new Panel("brain", {

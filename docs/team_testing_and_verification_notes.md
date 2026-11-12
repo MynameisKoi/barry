@@ -105,6 +105,9 @@ Open `http://<laptop-ip>:8000/cockpit/vr` in the Quest Browser and click **ENTER
   - Click any preset: **ball**, **person**, **chair**, or **bottle**.
   - **Check**: Movable AUTO progress bar appears below camera showing current phase (`SEARCHING`, `WATCHING`, `LOST`) with countdown timer and step arguments.
   - **Check**: The dedicated **Stop finding** button cleanly interrupts the autonomous loop immediately.
+- [ ] **Visual "Found Object" Snapshot Preview**:
+  - When the AI locks onto a target and enters `WATCHING` (or finishes finding), observe the Brain panel.
+  - **Check**: A dedicated `TARGET SPOTTED` card appears displaying a visual snapshot thumbnail (156x104px) showing the exact camera image at the moment the AI spotted the target, with the multi-line explanation formatted cleanly alongside it.
 - [ ] **Scrollable Brain Answers**:
   - When the AI generates a long multi-line explanation, verify the answer area expands downward and can be scrolled vertically using:
     - On-screen ▲ / ▼ touch buttons.

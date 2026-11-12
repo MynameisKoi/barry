@@ -272,6 +272,8 @@ async def test_fake_brain_drives_look_move_look_found_and_the_run_ends_with_a_st
     assert all(s.state == "done" for s in task.steps)
     assert task.steps[0].note == "Looking around."                      # the model's short reason is kept
     assert task.found["label"] == "ball" and task.found["where"] == "ahead, about 1 m"
+    assert task.found_snapshot is not None and task.found_snapshot.startswith("data:image/jpeg;base64,")
+    assert task.to_dict()["found_snapshot"] == task.found_snapshot
     assert gw.of("run_bounded")[0]["source"] == "llm" and "stop" in gw.names     # parked: stop sent when it entered WATCH
     assert phase_sequence(task) == ["searching", "watching"]            # exactly one search, then watching
     await runner.cancel()                                                # end the session
