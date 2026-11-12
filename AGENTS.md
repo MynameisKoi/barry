@@ -69,7 +69,7 @@ One source of truth for every agent (Tomville team agents and partner agents) wo
 Conversion to three.js: `(x, y, z)` → `(x, y, −z)`, yaw `a` → `rotation.y = −a`, pitch `p` → `rotation.x = −p`.
 Controller mapping (HANDOFF §6): left stick move/strafe, right stick X turn, A = STOP, both grips + A held 0.3 s = e-stop,
 B = actions, X = intensity, Y = brain. Release of the sticks sends STOP; after any stop the sticks must be centred before driving again.
-WebXR only: point at a panel and hold grip to move it (driving is paused while holding; saved per headset in localStorage);
+WebXR only: hold Y (>= 0.35 s) = push-to-talk to `POST /api/v1/voice/command` (tap Y still toggles the Brain); point at a panel and hold grip to move it (driving is paused while holding; saved per headset in localStorage);
 both thumbsticks clicked in for 1 s resets the layout. The control strip sits 35° below the eye line (tilted 30°) in both apps.
 Camera: with `ROBOT_MODE=remote` the laptop camera service (YOLO, `/api/v1/camera/*`) reads the dog's MJPEG feed
 (`DOG_VIDEO_URL`, else port 6500 on the `ROBOT_REMOTE_URL` host), never the laptop webcam; `CAMERA_SOURCE=dog` forces it.

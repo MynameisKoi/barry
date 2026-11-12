@@ -57,3 +57,13 @@ def test_client_log_roundtrip_is_bounded():
         entries = client.get("/api/debug/client-log").json()["entries"]
         assert len(entries) == 100
         assert entries[-1]["message"].startswith("m104") and len(entries[-1]["message"]) == 1500
+
+
+def test_cockpit_vr_push_to_talk():
+    html = TestClient(app).get("/cockpit/vr").text
+    assert 'fetch("/api/v1/voice/command", { method: "POST", body: form })' in html
+    assert 'form.append("audio", blob' in html                   # field name the voice router expects
+    assert "const VOICE_HOLD_S = 0.35, VOICE_MAX_MS = 15000;" in html  # hold Y; router caps clips at 15 s
+    assert "Y: tap toggles the Brain panel (Unity), hold >= 0.35 s = push-to-talk." in html
+    assert '["Y", "Hold: talk"' in html                          # controller tooltip
+    assert 'id="talk"' in html                                    # desktop hold-to-talk button

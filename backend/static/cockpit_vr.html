@@ -37,6 +37,7 @@
 <div id="hud">
   <button id="enter-vr" disabled>CHECKING VR…</button>
   <label><input type="checkbox" id="arm-keys"> Arm keyboard driving</label>
+  <button id="talk" type="button" style="background:#FFFFFF;color:#1F1E1B;border:1px solid #DAD5CB;cursor:pointer">Hold to talk (V)</button>
   <button id="reset-layout" type="button" style="background:#FFFFFF;color:#1F1E1B;border:1px solid #DAD5CB;cursor:pointer">Reset panel layout</button>
   <span id="vr-reason"></span>
 </div>
@@ -117,6 +118,82 @@ const state = {
   teleop: "DISARMED", needCentre: true, failures: 0,
 };
 const hasControl = () => Boolean(controlSessionId);
+
+// ------------------------------------------------------------------ push-to-talk voice (POST /api/v1/voice/command)
+// Hold Y (or V / the HUD button on desktop): record from the headset mic, release to send. The backend transcribes,
+// runs a matched command (forward/back N s, turn left/right N°, stop, emergency stop) as source "voice", or hands
+// anything else to the LLM brain. Max 15 s per clip (the router's limit).
+const VOICE_HOLD_S = 0.35, VOICE_MAX_MS = 15000;
+const voice = { phase: "idle", stream: null, recorder: null, chunks: [], timer: null, startedAt: 0 };
+state.voice = { phase: "idle", text: "" };
+let audioCtx = null;
+function chime(freq, ms) {
+  try {
+    audioCtx = audioCtx || new AudioContext();
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.frequency.value = freq; g.gain.setValueAtTime(0.08, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + ms / 1000);
+    o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime + ms / 1000);
+  } catch (e) {}
+}
+function setVoice(phase, text = "") { state.voice = { phase, text }; markDirty("header", "status"); }
+async function ensureMic() {
+  if (voice.stream && voice.stream.active) return voice.stream;
+  if (!navigator.mediaDevices?.getUserMedia) throw new Error(window.isSecureContext ? "no microphone API" : "microphone needs HTTPS or the chrome://flags origin");
+  voice.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  return voice.stream;
+}
+async function startTalking() {
+  if (voice.phase !== "idle") return;
+  voice.phase = "starting";
+  try {
+    const stream = await ensureMic();
+    if (voice.phase !== "starting") return;              // released before the mic opened
+    const type = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((t) => window.MediaRecorder?.isTypeSupported?.(t)) || "";
+    voice.recorder = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
+    voice.chunks = [];
+    voice.recorder.ondataavailable = (e) => { if (e.data && e.data.size) voice.chunks.push(e.data); };
+    voice.recorder.onstop = () => sendClip(new Blob(voice.chunks, { type: voice.recorder.mimeType || "audio/webm" }));
+    voice.recorder.start();
+    voice.phase = "recording"; voice.startedAt = performance.now();
+    voice.timer = setTimeout(stopTalking, VOICE_MAX_MS);
+    chime(880, 90); setVoice("listening");
+  } catch (err) {
+    voice.phase = "idle";
+    setVoice("error", `Mic unavailable: ${err.name === "NotAllowedError" ? "permission denied" : err.message || err.name}`);
+    reportClient("error", `voice mic: ${err.name} ${err.message}`);
+  }
+}
+function stopTalking() {
+  clearTimeout(voice.timer);
+  if (voice.phase === "starting") { voice.phase = "idle"; return; }
+  if (voice.phase !== "recording") return;
+  voice.phase = "sending"; chime(520, 90);
+  try { voice.recorder.stop(); } catch (e) { voice.phase = "idle"; }
+}
+async function sendClip(blob) {
+  if (performance.now() - voice.startedAt < 300 || blob.size < 500) { voice.phase = "idle"; setVoice("error", "Too short: hold Y while you speak"); return; }
+  setVoice("sending", "Transcribing…");
+  const ext = blob.type.includes("mp4") ? "m4a" : "webm";
+  const form = new FormData(); form.append("audio", blob, `clip.${ext}`);
+  try {
+    const r = await fetch("/api/v1/voice/command", { method: "POST", body: form });
+    const p = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(p.detail || `HTTP ${r.status}`);
+    const said = p.transcript ? `“${p.transcript}”` : "(nothing heard)";
+    if (p.matched) {
+      const res = p.command_result || {};
+      const st = String(res.status || "sent").toUpperCase();
+      setVoice("done", `${said} → ${p.command}${p.args && Object.keys(p.args).length ? " " + Object.values(p.args).join(" ") : ""} · ${st}`);
+      if (p.command === "emergency_stop") latchEstop();
+    } else {
+      setVoice("done", `${said} → Brain`);
+      if (p.task) { state.llmTask = p.task; state.brainOpen = true; markDirty("brain"); pollLlm(); }
+    }
+  } catch (err) {
+    setVoice("error", `Voice failed: ${err.message}`);
+  } finally { voice.phase = "idle"; }
+}
 
 // ------------------------------------------------------------------ HTTP (control session + sequenced commands)
 let controlSessionId = null;
@@ -592,7 +669,10 @@ new Panel("header", {
     const c = headerChips(); const cs = p.fs(13);
     let x = 20;
     x += txt(ctx, "BARRY", x, 0, 200, H, { size: p.fs(20), weight: 800, font: "brand", tracking: 0.18, color: T.brand }) + 16;
-    chip(ctx, x, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: c.mission[0], tone: c.mission[1] });
+    x += chip(ctx, x, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: c.mission[0], tone: c.mission[1] }) + 10;
+    const vp = state.voice.phase;
+    if (vp === "listening") chip(ctx, x, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: "LISTENING · release Y to send", tone: "danger" });
+    else if (vp === "sending") chip(ctx, x, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: "TRANSCRIBING…", tone: "accent" });
     let rx = W - 20;
     rx -= chip(ctx, rx, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: c.control[0], tone: c.control[1], anchorRight: true }) + 10;
     rx -= chip(ctx, rx, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: c.robot[0], tone: c.robot[1], anchorRight: true }) + 10;
@@ -668,7 +748,8 @@ new Panel("status", {
     // Footer chip: the API disclaimer, or the last refusal / stop reason (status is never colour-only).
     const res = state.result;
     const centreHint = !state.estopLatched && state.needCentre && state.teleop === "STOPPED" ? "Centre both sticks, then push to drive." : "";
-    const footText = res ? `${res.status}${res.message ? ` · ${res.message}` : ""}` : centreHint || ACCEPTED_DISCLAIMER;
+    const voiceText = ["done", "error"].includes(state.voice.phase) ? `VOICE · ${state.voice.text}` : "";
+    const footText = res ? `${res.status}${res.message ? ` · ${res.message}` : ""}` : voiceText || centreHint || ACCEPTED_DISCLAIMER;
     fillRR(ctx, 20, 402, 230, 48, 8, res ? T.warnBg : T.neutralFill);
     ctx.beginPath(); ctx.arc(20 + 14, 402 + 24, 4, 0, Math.PI * 2); ctx.fillStyle = res ? T.warnText : T.accent; ctx.fill();
     wrap(ctx, footText, 20 + 26, 402, 194, 48, { size: p.fs(12), color: res ? T.warnText : T.grey3D, valign: "middle" });
@@ -995,7 +1076,7 @@ function buildCursor() {
 
 /** ControllerTooltips: 360x220 mm canvas at the grip, pills + leader lines (positions in mm, y up). */
 const TOOLTIPS = {
-  left: [["L", "Move · strafe", -117, -12, 114, 0, 24, -60, -12], ["X", "Intensity", 128, -2, 92, 46, 21, 82, -2]],
+  left: [["L", "Move · strafe", -117, -12, 114, 0, 24, -60, -12], ["X", "Intensity", 128, -2, 92, 46, 21, 82, -2], ["Y", "Hold: talk", 134, 58, 104, 38, 44, 82, 58]],
   right: [["R", "Turn", 130, -12, 100, 0, 24, 80, -12], ["A", "STOP", -128, -2, 92, -46, 21, -82, -2, true], ["B", "Actions", -128, 58, 92, -38, 44, -82, 58]],
 };
 function buildTooltips(hand) {
@@ -1118,7 +1199,12 @@ function updateControllers(now, dt) {
     if (c.hand === "left") {
       [lx, ly] = ax; lGrip = b(1);
       if (edge(4)) cycleIntensity();                                            // X
-      if (edge(5)) { state.brainOpen = !state.brainOpen; markDirty("brain"); }  // Y
+      // Y: tap toggles the Brain panel (Unity), hold >= 0.35 s = push-to-talk.
+      if (b(5)) { c.yHeld = (c.yHeld || 0) + dt; if (c.yHeld >= VOICE_HOLD_S && !c.yTalking) { c.yTalking = true; startTalking(); } }
+      else if (c.yHeld) {
+        if (c.yTalking) stopTalking(); else { state.brainOpen = !state.brainOpen; markDirty("brain"); }
+        c.yHeld = 0; c.yTalking = false;
+      }
     } else if (c.hand === "right") {
       rx = ax[0]; rGrip = b(1); aHeld = b(4);
       if (edge(4)) stopRobot("Stopped by you");                                 // A = STOP (highest priority)
@@ -1260,7 +1346,12 @@ loadActions();
 connectSocket();
 fetch("/api/v1/llm/task").then((r) => (r.ok ? r.json() : null)).then((t) => { if (t) { state.llmTask = t; markDirty("brain"); if (t.state === "running") pollLlm(); } }).catch(() => {});
 document.getElementById("reset-layout").addEventListener("click", resetLayout);
-window.__barry = { state, panels, renderer, scene, camera, controllers, teleopTick, updateControllers, clientLog, startGrab, resetLayout, screenRoot };
+const talkBtn = document.getElementById("talk");
+talkBtn.addEventListener("pointerdown", (e) => { e.preventDefault(); startTalking(); });
+for (const ev of ["pointerup", "pointerleave", "pointercancel"]) talkBtn.addEventListener(ev, stopTalking);
+addEventListener("keydown", (e) => { if (e.key.toLowerCase() === "v" && !e.repeat && document.activeElement?.tagName !== "INPUT") startTalking(); });
+addEventListener("keyup", (e) => { if (e.key.toLowerCase() === "v") stopTalking(); });
+window.__barry = { state, panels, renderer, scene, camera, controllers, teleopTick, updateControllers, clientLog, startGrab, resetLayout, screenRoot, sendClip, voice };
 </script>
 </body>
 </html>
