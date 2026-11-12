@@ -90,6 +90,8 @@ Open `http://<laptop-ip>:8000/cockpit/vr` in the Quest Browser and click **ENTER
   - **Option 1**: Hold controller button **Y** for ≥ 0.35s (tap < 0.35s toggles Brain panel).
   - **Option 2**: Point controller ray at the red **Hold to talk** button on the control strip and pull trigger.
   - **Feedback**: Header chip shows `LISTENING · release to send`; speak command ("forward 1 meter", "turn left", "emergency stop"); release button; header displays `TRANSCRIBING…` and executes intent.
+- [ ] **Live Mic Volume Meter & VU Graphic**:
+  - While speaking during push-to-talk, verify the Header chip animates a live volume bar glyph (`LISTENING ▅`) and the "Hold to talk" button displays a dynamic emerald green level meter (`#34D399`) that rises and falls with your voice volume.
 
 ### D. AI Vision & Live Detections Overlay (PR #130, #131)
 - [ ] **YOLO Overlays on Camera Viewport**:

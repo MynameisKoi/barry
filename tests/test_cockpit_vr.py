@@ -364,3 +364,42 @@ assert.equal(pulses[0].duration, 300);
 '''
     result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_cockpit_vr_voice_level_meter_updates_and_renders_vu_bars():
+    import shutil
+    import subprocess
+    import pytest
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js required for cockpit behavior tests")
+    html = TestClient(app).get("/cockpit/vr").text
+    analyser_block = html[html.index("function setupVoiceAnalyser(stream)"):html.index("function setVoice(phase, text = \"\")")]
+    script = r'''
+const assert = require('node:assert/strict');
+const voice = { phase: 'idle', level: 0, analyser: null, dataArray: null };
+''' + analyser_block + r'''
+// When not recording, level is 0
+assert.equal(updateVoiceLevel(), 0);
+
+// Set recording with a mock analyser returning frequency data
+voice.phase = 'recording';
+voice.dataArray = new Uint8Array([64, 128, 192, 255]);
+voice.analyser = {
+  getByteFrequencyData: (arr) => {
+    arr.set([64, 128, 192, 255]);
+  }
+};
+const lvl = updateVoiceLevel();
+assert.ok(lvl > 0.5 && lvl <= 1.0, `Expected level between 0.5 and 1.0, got ${lvl}`);
+assert.equal(voice.level, lvl);
+
+// Test reset on stop
+voice.phase = 'idle';
+assert.equal(updateVoiceLevel(), 0);
+assert.equal(voice.level, 0);
+'''
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "LISTENING ${bars} · release to send" in html
+    assert 'fillRR(ctx, 736, 70, barW, 4, 2, "#34D399")' in html
