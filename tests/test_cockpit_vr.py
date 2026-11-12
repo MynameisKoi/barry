@@ -101,6 +101,98 @@ def test_cockpit_vr_talk_button_on_control_strip():
     assert "if (c.holding) { releaseTarget(c.holding); c.holding = null; }" in html  # controller lost mid-hold
 
 
+def _run_find_ui_js(checks):
+    """Execute the shipped find UI handlers with DOM/fetch/canvas test doubles."""
+    import shutil
+    import subprocess
+    import pytest
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for cockpit JavaScript behavior tests")
+    html = TestClient(app).get("/cockpit/vr").text
+    presets = html[html.index("const LLM_PRESETS = ["):html.index("// Galactic theme tokens")]
+    handlers = html[html.index("const finding = () =>"):html.index("let llmPoll = null;")]
+    start_goal = html[html.index("async function startGoal(goal)"):html.index("async function cancelGoal()")]
+    helpers = html[html.index("function scrollBrain(lines)"):html.index('new Panel("brain",')]
+    panels = html[html.index('new Panel("brain",'):html.index("// ------------------------------------------------------------------ renderer, scene, environment")]
+    script = r'''
+const assert = require("node:assert/strict");
+const state = {brainOpen:true, llmTask:{state:"idle", steps:[]}};
+const desktop = {};
+const document = {getElementById:()=>desktop};
+const markDirty = ()=>{};
+const setFont = ()=>{};
+const pollLlm = ()=>{};
+const cancelGoal = ()=>{};
+const T = new Proxy({}, {get:()=>"color"});
+const S_FAR=1, S_SIDE=1;
+const chip=()=>{}, fillRR=()=>{}, wrap=()=>{};
+let texts=[], buttons={};
+const txt=(_ctx,text)=>texts.push(text);
+const definitions={};
+class Panel {constructor(name, options){definitions[name]=options;}}
+const ctx = {save:()=>{},restore:()=>{},beginPath:()=>{},rect:()=>{},clip:()=>{},measureText:()=>({width:10})};
+const panel = {fs:x=>x, root:()=>{}, button:(id,x,y,w,h,fn)=>{buttons[id]=fn;return false;}};
+let calls=[];
+global.fetch=async(url,options)=>{calls.push({url,options});return {ok:true,json:async()=>({task:{mode:"find",state:"running",target:"ball",steps:[]}})};};
+''' + presets + handlers + start_goal + helpers + panels + '\n(async()=>{\n' + checks + '\n})().catch(e=>{console.error(e);process.exit(1)});'
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_find_presets_send_object_to_find_endpoint():
+    _run_find_ui_js(r'''
+for (const object of ["ball","person","chair","bottle"]) {
+  const preset=LLM_PRESETS.find(([label])=>label===`Find a ${object}`);
+  assert.ok(preset, object);
+  await startGoal(preset[1]);
+  const call=calls.at(-1);
+  assert.equal(call.url,"/api/v1/llm/find");
+  assert.equal(call.options.method,"POST");
+  assert.deepEqual(JSON.parse(call.options.body),{object});
+}
+''')
+
+
+def test_find_auto_bar_and_desktop_button_only_show_during_running_find():
+    _run_find_ui_js(r'''
+for (const mode of [undefined,"plan","find"]) {
+  for (const stateName of ["idle","running","done","cancelled","failed"]) {
+    state.llmTask={mode,state:stateName,steps:[]};
+    definitions.auto.draw({},panel);
+    syncFinding();
+    const expected=mode==="find" && stateName==="running";
+    assert.equal(panel.visible,expected,`${mode}/${stateName}`);
+    assert.equal(desktop.hidden,!expected);
+  }
+}
+''')
+
+
+def test_stop_finding_controls_use_find_stop_endpoint():
+    _run_find_ui_js(r'''
+state.llmTask={mode:"find",state:"running",steps:[]};
+definitions.auto.draw({},panel);
+await buttons.stopFinding();
+assert.equal(calls.at(-1).url,"/api/v1/llm/find/stop");
+assert.equal(calls.at(-1).options.method,"POST");
+''')
+    html = TestClient(app).get("/cockpit/vr").text
+    assert 'document.getElementById("stop-finding").addEventListener("click", stopFinding)' in html
+
+
+def test_brain_cancel_switches_label_and_handler_for_find_tasks():
+    _run_find_ui_js(r'''
+for (const mode of ["plan","find"]) {
+  texts=[];buttons={};state.llmTask={mode,state:"running",steps:[]};
+  definitions.brain.draw(ctx,panel);
+  assert.ok(texts.includes(mode==="find" ? "Stop finding" : "Cancel"));
+  assert.equal(buttons.cancel,mode==="find" ? stopFinding : cancelGoal);
+}
+''')
+
+
 def test_brain_answer_scroll_behavior_and_controller_motion_isolation():
     """Run shipped canvas/scroll/controller code against Node test doubles."""
     import shutil
