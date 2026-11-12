@@ -91,3 +91,11 @@ def test_cockpit_vr_push_to_talk():
     assert "Y: tap toggles the Brain panel (Unity), hold >= 0.35 s = push-to-talk." in html
     assert '["Y", "Hold: talk"' in html                          # controller tooltip
     assert 'id="talk"' in html                                    # desktop hold-to-talk button
+
+
+def test_cockpit_vr_talk_button_on_control_strip():
+    html = TestClient(app).get("/cockpit/vr").text
+    assert 'p.hold("talk", 728, 28, 100, 52, startTalking, stopTalking)' in html      # point + hold trigger
+    assert 'target.addEventListener("selectend", () => { if (c.holding)' in html      # release sends the clip
+    assert 'p.button("exit", 616, 28, 100, 52' in html and 'p.button("end", 840, 28, 100, 52' in html
+    assert "if (c.holding) { releaseTarget(c.holding); c.holding = null; }" in html  # controller lost mid-hold
