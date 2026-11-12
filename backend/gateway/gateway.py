@@ -403,19 +403,19 @@ class CommandGateway:
         if self._emergency_stopped:
             return GatewayResult("ESTOP_ACTIVE", "Emergency stop is latched.", cid, source)
         posture = self._commanded_posture
-        if posture.pitch or posture.roll or posture.height.value != "medium":
+        if posture.pitch or posture.roll:
             if source == "hand":
-                result = await self.level_posture(source="hand")
+                result = await self.level_posture(source="hand", height=posture.height.value)
                 if result.status == "ACCEPTED":
                     logging.getLogger(__name__).info("auto-levelled before hand motion; command_id=%s", cid)
                     return None
                 return result
-            return GatewayResult("INVALID", "Level posture to medium height before motion (level_posture).", cid, source)
+            return GatewayResult("INVALID", "Level body tilt before motion (level_posture).", cid, source)
         return None
 
-    async def level_posture(self, *, source: str) -> GatewayResult:
-        """Restore zero attitude and medium height, then wait for posture settling."""
-        return await self.set_posture({"height": "medium", "pitch": 0}, source=source)
+    async def level_posture(self, *, source: str, height: str = "medium") -> GatewayResult:
+        """Restore zero attitude at the requested height (default medium), then settle."""
+        return await self.set_posture({"height": height, "pitch": 0}, source=source)
 
     async def set_posture(self, values: dict[str, Any], *, source: str) -> GatewayResult:
         """Set body attitude (degrees) and height in one command.
@@ -424,7 +424,7 @@ class CommandGateway:
         whether positive or negative pitch points the mounted camera down. Tom must
         verify the physical sign. Simulator posture applies immediately; the default
         POSTURE_SETTLE_S=0.5 is a conservative, uncalibrated hardware estimate.
-        Motion requires commanded zero pitch/roll and medium height (yaw ignored).
+        Motion requires commanded zero pitch/roll (yaw and height do not block).
         Hand motion levels and settles automatically; voice/LLM must level first.
         """
         cid = self._id(source)
@@ -439,12 +439,16 @@ class CommandGateway:
                              values.get("pitch", 0), values.get("yaw", 0))
         except (ValueError, TypeError, KeyError) as exc:
             return GatewayResult("INVALID", str(exc), cid, source)
-        from backend.robot.config import check_attitude
+        from backend.robot.config import check_attitude, check_combination
         reason = check_attitude(target.roll, target.pitch, target.yaw)
         if reason:
             return GatewayResult("INVALID", reason, cid, source)
         async def apply() -> GatewayResult:
-            if self.robot.get_control_state().moving:
+            control = self.robot.get_control_state()
+            reason = check_combination(control.gait, control.intensity, target.height)
+            if reason:
+                return GatewayResult("INVALID", reason, cid, source)
+            if control.moving:
                 stopped = await self._robot_call("stop", source=source, cid=cid)
                 if not stopped.ok:
                     return self._result(stopped, source, cid)

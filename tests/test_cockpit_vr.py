@@ -245,3 +245,60 @@ assert.equal(Math.abs(sent.forward),0);assert.equal(Math.abs(sent.turn),0);asser
 '''
     result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_body_height_buttons_sequence_commands_and_follow_commanded_state():
+    import shutil
+    import subprocess
+    import pytest
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js required for cockpit behavior tests")
+    html = TestClient(app).get("/cockpit/vr").text
+    http = html[html.index("let controlSessionId ="):html.index("// ------------------------------------------------------------------ teleop:")]
+    handlers = html[html.index("function applyBodyHeight(payload)"):html.index("const cycleIntensity =")]
+    panel = html[html.index('new Panel("bodyHeight",'):html.index('new Panel("strip",')]
+    polling = html[html.index("async function pollStatus()"):html.index("async function pollTelemetry()")]
+    telemetry = html[html.index("function applyTelemetry(t)"):html.index("function connectSocket()")]
+    script = r'''
+const assert=require('node:assert/strict');
+const crypto=require('node:crypto');
+const LEVELS=['LOW','MEDIUM','HIGH'],S_SIDE=1;
+const state={bodyHeight:'MEDIUM',heightPending:false};
+const markDirty=()=>{},latchEstop=()=>{};
+const T={accent:'accent',neutralFill:'neutral',neutralBorder:'border',grey3D:'grey'};
+let definition,buttons={},fills=[],calls=[],refuse=false,commanded=null;
+class Panel{constructor(name,options){definition=options;}}
+const txt=()=>{},fillRR=(ctx,x,y,w,h,r,fill)=>fills.push(fill);
+const p={root:()=>{},fs:x=>x,button:(id,x,y,w,h,fn,enabled)=>{buttons[id]={fn,enabled};return false;}};
+global.fetch=async(url,options)=>{
+ calls.push({url,options});
+ if(url==='/api/v1/session')return {ok:true,json:async()=>({session_id:'simulation'})};
+ if(url==='/api/v1/status')return {ok:true,json:async()=>({control_state:{posture:{height:'medium'}}})};
+ return {ok:!refuse,status:refuse?400:200,json:async()=>refuse?{detail:'INVALID: unsafe posture'}:commanded?{control_state:{posture:{height:commanded}}}:{status:'accepted'}};
+};
+''' + http + handlers + panel + polling + telemetry + r'''
+(async()=>{
+ for(const level of LEVELS){
+  definition.draw({},p);await buttons[`height${level}`].fn();
+  const call=calls.at(-1);assert.equal(call.url,'/api/v1/posture');assert.equal(call.options.method,'POST');
+  assert.deepEqual(JSON.parse(call.options.body),{height:level.toLowerCase(),pitch:0});
+  assert.equal(call.options.headers['X-Control-Session'],'simulation');assert.ok(Number(call.options.headers['X-Command-Seq'])>0);
+  assert.equal(state.bodyHeight,level);
+  fills=[];definition.draw({},p);assert.equal(fills.filter(x=>x==='accent').length,1);assert.equal(fills[LEVELS.indexOf(level)],'accent');
+ }
+ refuse=true;await setBodyHeight('LOW');assert.equal(state.bodyHeight,'HIGH');
+ assert.deepEqual(state.result,{status:'INVALID',message:'unsafe posture'});
+ refuse=false;commanded='low';await setBodyHeight('HIGH');assert.equal(state.bodyHeight,'LOW');
+ applyTelemetry({control_state:{posture:{height:'high'}}});assert.equal(state.bodyHeight,'HIGH');
+ applyTelemetry({});assert.equal(state.bodyHeight,'HIGH');
+ applyBodyHeight({control_state:{posture:{height:'invalid'}}});assert.equal(state.bodyHeight,'HIGH');
+ await pollStatus();assert.equal(state.bodyHeight,'MEDIUM');
+})().catch(e=>{console.error(e);process.exit(1)});
+'''
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    # Placement precedes the common registration that supplies moveRoot and saved layout.
+    placement = html.index('placeOnArc(P.bodyHeight.group, -SIDE_PANEL_YAW, 1.3, EYE - 0.51)')
+    registration = html.index('for (const p of Object.values(panels)) { scene.add(p.group); p.moveRoot = p.group; }')
+    assert placement < registration < html.index('const movableRoots =')

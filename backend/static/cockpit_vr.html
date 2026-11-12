@@ -110,7 +110,7 @@ window.addEventListener("unhandledrejection", (e) => reportClient("error", `unha
 // ------------------------------------------------------------------ app state
 const state = {
   connected: false, controlActive: false, rttMs: null, intensity: "MEDIUM", gait: "trot",
-  battery: null, roll: null, pitch: null,
+  battery: null, roll: null, pitch: null, bodyHeight: "MEDIUM", heightPending: false,
   cameraFps: null, cameraLive: false, cameraUrl: null,
   detectionStatus: "unavailable", detections: [], detectionsReceivedAt: 0, detectionsSignature: "",
   sent: { forward: 0, strafe: 0, turn: 0 },          // last command handed to the API (COMMAND SENT bars)
@@ -343,6 +343,21 @@ async function setIntensity(level) {
   showResult(res);
   markDirty("strip");
 }
+function applyBodyHeight(payload) {
+  const height = payload?.control_state?.posture?.height;
+  if (typeof height === "string" && LEVELS.includes(height.toUpperCase())) {
+    state.bodyHeight = height.toUpperCase(); markDirty("bodyHeight");
+  }
+}
+async function setBodyHeight(level) {
+  if (state.heightPending || !LEVELS.includes(level)) return;
+  state.heightPending = true; markDirty("bodyHeight");
+  try {
+    const res = await api("/api/v1/posture", { body: { height: level.toLowerCase(), pitch: 0 }, sequenced: true });
+    if (res?.ok) { state.bodyHeight = level; applyBodyHeight(res.payload); }
+    showResult(res);
+  } finally { state.heightPending = false; markDirty("bodyHeight"); }
+}
 const cycleIntensity = () => setIntensity(LEVELS[(LEVELS.indexOf(state.intensity) + 1) % LEVELS.length]);
 
 // Axis pipeline: radial dead zone + rescale, clamp, 2 dp (InputMapping). Positive strafe/turn = left.
@@ -510,6 +525,7 @@ async function pollStatus() {
     const r = await fetch("/api/v1/status", { cache: "no-store" });
     const p = await r.json();
     state.rttMs = performance.now() - t0;
+    applyBodyHeight(p);
     state.connected = Boolean(p.connected); state.controlActive = Boolean(p.control_session_active);
     if (p.intensity) state.intensity = String(p.intensity).toUpperCase();
     if (p.gait) state.gait = String(p.gait).toLowerCase();
@@ -524,6 +540,7 @@ async function pollTelemetry() {
 }
 function applyTelemetry(t) {
   if (!t || typeof t !== "object") return;
+  applyBodyHeight(t);
   const bat = t.battery_pct ?? t.battery;
   if (bat != null && Number.isFinite(Number(bat))) state.battery = Number(bat);
   const roll = t.roll ?? t.orientation?.roll, pitch = t.pitch ?? t.orientation?.pitch;
@@ -890,6 +907,20 @@ new Panel("actions", {
   },
 });
 
+new Panel("bodyHeight", {
+  wPx: 270, hPx: 100, S: S_SIDE, dist: 1.3, glow: 1, order: 4,
+  draw(ctx, p) {
+    p.root(ctx, 0, 0, 270, 100, 14);
+    txt(ctx, "BODY HEIGHT", 16, 12, 238, 22, { size: p.fs(13), weight: 700, tracking: 0.1, color: T.textSecondary });
+    LEVELS.forEach((level, i) => {
+      const x = 12 + i * 83, selected = state.bodyHeight === level;
+      const hover = p.button(`height${level}`, x, 40, 80, 46, () => setBodyHeight(level), !state.heightPending);
+      fillRR(ctx, x, 40, 80, 46, 8, selected ? T.accent : T.neutralFill, selected || hover ? T.accent : T.neutralBorder);
+      txt(ctx, level, x + 3, 40, 74, 46, { size: p.fs(13), weight: 700, color: selected ? "#FFFFFF" : T.grey3D, align: "center", fit: true });
+    });
+  },
+});
+
 new Panel("strip", {
   wPx: 960, hPx: 108, S: S_STRIP, dist: 0.9, glow: 1, order: 4,
   draw(ctx, p) {
@@ -1161,6 +1192,7 @@ moon.position.copy(fromEye(-40, 25, 30)); moon.scale.setScalar(Math.tan(0.5 * DE
 // ------------------------------------------------------------------ place panels (DashboardSceneBuilder.Build)
 const P = panels;
 placeOnArc(P.status.group, -SIDE_PANEL_YAW, 1.3, EYE);
+placeOnArc(P.bodyHeight.group, -SIDE_PANEL_YAW, 1.3, EYE - 0.51);
 placeOnArc(P.actions.group, SIDE_PANEL_YAW, 1.3, EYE);
 placeUnity(P.strip.group, 0, EYE - 0.9 * Math.sin(STRIP_BELOW_DEG * DEG), 0.9 * Math.cos(STRIP_BELOW_DEG * DEG), STRIP_TILT_DEG, 0);
 placeOnArc(P.brain.group, 46, 1.25, EYE + 0.1);

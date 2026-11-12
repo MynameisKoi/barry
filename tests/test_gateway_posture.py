@@ -125,9 +125,9 @@ def test_hand_auto_level_order_and_settle(kind, caplog):
         expected = 'STOP_DISPATCHED' if kind in {'bounded', 'turn'} else 'ACCEPTED'
         assert (await commands[kind]()).status == expected
         assert asyncio.get_running_loop().time() - started >= .02
-        assert events[:3] == ['stop', ('posture', 'medium', 0), 'motion']
+        assert events[:3] == ['stop', ('posture', 'low', 0), 'motion']
         assert gateway._commanded_posture.pitch == 0
-        assert gateway._commanded_posture.height.value == 'medium'
+        assert gateway._commanded_posture.height.value == 'low'
     with caplog.at_level('INFO'):
         asyncio.run(run())
     assert 'auto-levelled before hand motion' in caplog.text
@@ -175,4 +175,64 @@ def test_stop_interrupts_auto_level_settling_without_motion(emergency):
         await asyncio.wait_for(operation(source='hand'), .5)
         assert (await move).status == 'CANCELLED'
         assert not sim.moving
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('source', ['hand', 'voice', 'llm'])
+@pytest.mark.parametrize('height', ['low', 'high'])
+def test_level_height_choice_survives_motion(source, height):
+    async def run():
+        class NoExtraPosture(RobotSimulator):
+            def set_posture(self, posture):
+                changes.append(posture)
+                return super().set_posture(posture)
+        changes = []
+        sim = NoExtraPosture()
+        gateway = CommandGateway(sim)
+        gateway.posture_settle_s = .001
+        await gateway.set_posture({'height': height}, source=source)
+        assert (await gateway.motion(MotionCommand(forward=.3), source=source)).status == 'ACCEPTED'
+        assert len(changes) == 1
+        assert sim.get_control_state().posture.height.value == height
+    asyncio.run(run())
+
+
+def test_unsafe_height_combination_is_invalid_before_dispatch():
+    from backend.robot.interface import Gait
+    async def run():
+        sim = RobotSimulator()
+        sim.gait = Gait.HIGH_WALK
+        gateway = CommandGateway(sim)
+        result = await gateway.set_posture({'height': 'low'}, source='hand')
+        assert result.status == 'INVALID'
+        assert 'Unsafe combination' in result.message
+        assert sim.get_control_state().posture.height.value == 'medium'
+        assert gateway._commanded_posture.height.value == 'medium'
+    asyncio.run(run())
+
+
+def test_find_started_low_explicitly_levels_to_medium_before_walking():
+    from backend.ai.control.gateway_adapter import CommandGatewayAdapter
+    from tests.test_llm_find import ScriptBrain, call, make, turn
+
+    async def run():
+        walked_at = []
+        class ObservedSimulator(RobotSimulator):
+            def move_analog(self, command):
+                walked_at.append(self.get_control_state().posture.height.value)
+                return super().move_analog(command)
+        sim = ObservedSimulator()
+        gateway = CommandGateway(sim, max_bounded_s=.01)
+        gateway.posture_settle_s = .001
+        await gateway.set_posture({'height': 'low'}, source='llm')
+        adapter = CommandGatewayAdapter(gateway)
+        brain = ScriptBrain([
+            turn(call('look', {'height': 'low'})),
+            turn(call('move', {'direction': 'forward', 'seconds': .2, 'speed': .3})),
+            turn(text='I could not find it.'),
+        ])
+        runner, _, _ = make(brain, gateway=adapter)
+        await runner.start_find('ball')
+        await runner.wait()
+        assert walked_at and set(walked_at) == {'medium'}
     asyncio.run(run())
