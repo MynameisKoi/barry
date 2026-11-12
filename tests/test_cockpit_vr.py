@@ -561,3 +561,96 @@ assert.strictEqual(getRttColor(400), 'dangerText');
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_cockpit_vr_camera_zoom_and_filter_presets():
+    html = TestClient(app).get("/cockpit/vr").text
+    assert "cycleCameraZoom" in html
+    assert "cycleCameraFilter" in html
+    assert "ZOOM_LEVELS = [1.0, 1.5, 2.0, 3.0]" in html
+    assert "FILTER_PRESETS" in html
+    assert "camZoom" in html
+    assert "camFilter" in html
+    assert "videoCtx.filter = filterObj ? filterObj.css : \"none\"" in html
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js not available")
+
+    script = r'''
+const assert = require('assert');
+
+const state = {
+  cameraZoom: 1.0,
+  cameraFilter: "normal"
+};
+let dirtyPanels = [];
+function markDirty(p) { dirtyPanels.push(p); }
+const pulses = [];
+function pulseAllHaptics(i, d) { pulses.push({ i, d }); }
+
+const ZOOM_LEVELS = [1.0, 1.5, 2.0, 3.0];
+function cycleCameraZoom() {
+  const curIdx = ZOOM_LEVELS.indexOf(state.cameraZoom);
+  state.cameraZoom = ZOOM_LEVELS[(curIdx + 1) % ZOOM_LEVELS.length] || 1.0;
+  pulseAllHaptics(0.4, 25);
+  markDirty("cameraOverlay");
+}
+
+const FILTER_PRESETS = [
+  { id: "normal", label: "NORMAL", css: "none" },
+  { id: "boost", label: "BOOST", css: "contrast(1.4) brightness(1.15) saturate(1.2)" },
+  { id: "night", label: "NIGHT", css: "contrast(1.6) brightness(1.4) grayscale(0.2)" },
+];
+function cycleCameraFilter() {
+  const ids = FILTER_PRESETS.map((f) => f.id);
+  const curIdx = ids.indexOf(state.cameraFilter);
+  state.cameraFilter = ids[(curIdx + 1) % ids.length] || "normal";
+  pulseAllHaptics(0.4, 25);
+  markDirty("cameraOverlay");
+}
+
+// Test zoom cycling
+assert.strictEqual(state.cameraZoom, 1.0);
+cycleCameraZoom();
+assert.strictEqual(state.cameraZoom, 1.5);
+assert.strictEqual(pulses.length, 1);
+cycleCameraZoom();
+assert.strictEqual(state.cameraZoom, 2.0);
+cycleCameraZoom();
+assert.strictEqual(state.cameraZoom, 3.0);
+cycleCameraZoom();
+assert.strictEqual(state.cameraZoom, 1.0);
+
+// Test filter cycling
+assert.strictEqual(state.cameraFilter, "normal");
+cycleCameraFilter();
+assert.strictEqual(state.cameraFilter, "boost");
+cycleCameraFilter();
+assert.strictEqual(state.cameraFilter, "night");
+cycleCameraFilter();
+assert.strictEqual(state.cameraFilter, "normal");
+
+// Test zoom crop coordinates (w=640, h=480, zoom=2.0)
+const w = 640, h = 480, z = 2.0;
+const zw = w / z, zh = h / z;
+const zx = (w - zw) / 2, zy = (h - zh) / 2;
+assert.strictEqual(zw, 320);
+assert.strictEqual(zh, 240);
+assert.strictEqual(zx, 160);
+assert.strictEqual(zy, 120);
+
+// Test detection bounding box zoom mapping
+// Original centered box: [0.4, 0.4, 0.6, 0.6]
+let [top, left, bottom, right] = [0.4, 0.4, 0.6, 0.6];
+const offset = (1 - 1 / z) / 2; // 0.25
+left = (left - offset) * z;     // (0.4 - 0.25) * 2 = 0.3
+right = (right - offset) * z;   // (0.6 - 0.25) * 2 = 0.7
+top = (top - offset) * z;       // 0.3
+bottom = (bottom - offset) * z; // 0.7
+assert.strictEqual(Math.round(left * 10) / 10, 0.3);
+assert.strictEqual(Math.round(right * 10) / 10, 0.7);
+'''
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+

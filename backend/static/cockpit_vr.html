@@ -111,7 +111,7 @@ window.addEventListener("unhandledrejection", (e) => reportClient("error", `unha
 const state = {
   connected: false, controlActive: false, rttMs: null, intensity: "MEDIUM", gait: "trot",
   battery: null, roll: null, pitch: null, bodyHeight: "MEDIUM", heightPending: false,
-  cameraFps: null, cameraLive: false, cameraUrl: null,
+  cameraFps: null, cameraLive: false, cameraUrl: null, cameraZoom: 1.0, cameraFilter: "normal",
   detectionStatus: "unavailable", detections: [], detectionsReceivedAt: 0, detectionsSignature: "",
   sent: { forward: 0, strafe: 0, turn: 0 },          // last command handed to the API (COMMAND SENT bars)
   result: null,                                      // { status, message } of the last refusal, null = disclaimer
@@ -655,6 +655,27 @@ async function pickCameraSource() {
 }
 cameraImg.onerror = () => { state.cameraLive = false; markDirty("cameraOverlay"); setTimeout(() => { state.cameraUrl = null; pickCameraSource(); }, 3000); };
 
+const ZOOM_LEVELS = [1.0, 1.5, 2.0, 3.0];
+function cycleCameraZoom() {
+  const curIdx = ZOOM_LEVELS.indexOf(state.cameraZoom);
+  state.cameraZoom = ZOOM_LEVELS[(curIdx + 1) % ZOOM_LEVELS.length] || 1.0;
+  pulseAllHaptics(0.4, 25);
+  markDirty("cameraOverlay");
+}
+
+const FILTER_PRESETS = [
+  { id: "normal", label: "NORMAL", css: "none" },
+  { id: "boost", label: "BOOST", css: "contrast(1.4) brightness(1.15) saturate(1.2)" },
+  { id: "night", label: "NIGHT", css: "contrast(1.6) brightness(1.4) grayscale(0.2)" },
+];
+function cycleCameraFilter() {
+  const ids = FILTER_PRESETS.map((f) => f.id);
+  const curIdx = ids.indexOf(state.cameraFilter);
+  state.cameraFilter = ids[(curIdx + 1) % ids.length] || "normal";
+  pulseAllHaptics(0.4, 25);
+  markDirty("cameraOverlay");
+}
+
 function parseDetection(item) {
   if (!item || typeof item !== "object") return null;
   const label = typeof item.label === "string" ? item.label.trim() : "";
@@ -873,7 +894,7 @@ new Panel("camera", {
 });
 
 new Panel("cameraOverlay", {
-  wPx: 880, hPx: 495, S: S_FAR, dist: 2.0, order: 3, interactive: false,
+  wPx: 880, hPx: 495, S: S_FAR, dist: 2.0, order: 3, interactive: true,
   draw(ctx, p) {
     const cs = p.fs(13);
     const detections = visibleDetections();
@@ -885,8 +906,14 @@ new Panel("cameraOverlay", {
       ctx.beginPath(); ctx.rect(rect.x, rect.y, rect.w, rect.h); ctx.clip();
       for (const detection of detections) {
         const [top, left, bottom, right] = detection.box;
-        const x = rect.x + left * rect.w, y = rect.y + top * rect.h;
-        const w = (right - left) * rect.w, h = (bottom - top) * rect.h;
+        let x = rect.x + left * rect.w, y = rect.y + top * rect.h;
+        let w = (right - left) * rect.w, h = (bottom - top) * rect.h;
+        if (state.cameraZoom > 1.0) {
+          const z = state.cameraZoom, off = (1 - 1 / z) / 2;
+          const l = (left - off) * z, r = (right - off) * z, t = (top - off) * z, b = (bottom - off) * z;
+          x = rect.x + l * rect.w; y = rect.y + t * rect.h;
+          w = (r - l) * rect.w; h = (b - t) * rect.h;
+        }
         ctx.save(); ctx.strokeStyle = T.accent; ctx.lineWidth = 2; ctx.shadowColor = "rgba(255,255,255,0.9)"; ctx.shadowBlur = 4;
         ctx.strokeRect(x, y, w, h); ctx.restore();
         const label = `${detection.label} ${Math.round(detection.confidence * 100)}%`;
@@ -908,6 +935,17 @@ new Panel("cameraOverlay", {
       tone: detectionOn ? "ok" : "neutral", overlay: true });
     const rp = `ROLL ${state.roll != null ? state.roll.toFixed(0) : "--"}° · PITCH ${state.pitch != null ? state.pitch.toFixed(0) : "--"}°`;
     overlayChip(ctx, 880 - 24, 24, rp, cs, true);
+
+    // Zoom and Filter controls at bottom of camera viewport
+    const zLabel = `ZOOM ${state.cameraZoom.toFixed(1)}x`;
+    const zHov = p.button("camZoom", 24, 445, 96, 30, cycleCameraZoom);
+    fillRR(ctx, 24, 445, 96, 30, 6, zHov ? T.accentSoft : "rgba(10,12,18,0.7)", state.cameraZoom > 1.0 ? T.accent : T.neutralBorder, 1);
+    txt(ctx, zLabel, 24, 445, 96, 30, { size: p.fs(12), weight: 700, font: "mono", color: state.cameraZoom > 1.0 ? T.accent : "#FFFFFF", align: "center" });
+
+    const fLabel = `FILTER: ${state.cameraFilter.toUpperCase()}`;
+    const fHov = p.button("camFilter", 128, 445, 120, 30, cycleCameraFilter);
+    fillRR(ctx, 128, 445, 120, 30, 6, fHov ? T.accentSoft : "rgba(10,12,18,0.7)", state.cameraFilter !== "normal" ? T.okText : T.neutralBorder, 1);
+    txt(ctx, fLabel, 128, 445, 120, 30, { size: p.fs(12), weight: 700, font: "mono", color: state.cameraFilter !== "normal" ? T.okText : "#FFFFFF", align: "center" });
   },
 });
 
@@ -1366,7 +1404,18 @@ function updateVideo(now) {
     videoMesh.scale.set(rect.w * S_FAR / 1000, rect.h * S_FAR / 1000, 1);
     markDirty("cameraOverlay");
   }
-  try { videoCtx.drawImage(cameraImg, 0, 0, videoCanvas.width, videoCanvas.height); videoTex.needsUpdate = true; } catch (e) { /* frame not decodable yet */ }
+  try {
+    const filterObj = FILTER_PRESETS.find((f) => f.id === state.cameraFilter);
+    videoCtx.filter = filterObj ? filterObj.css : "none";
+    if (state.cameraZoom && state.cameraZoom > 1.0) {
+      const zw = w / state.cameraZoom, zh = h / state.cameraZoom;
+      const zx = (w - zw) / 2, zy = (h - zh) / 2;
+      videoCtx.drawImage(cameraImg, zx, zy, zw, zh, 0, 0, videoCanvas.width, videoCanvas.height);
+    } else {
+      videoCtx.drawImage(cameraImg, 0, 0, videoCanvas.width, videoCanvas.height);
+    }
+    videoTex.needsUpdate = true;
+  } catch (e) { /* frame not decodable yet */ }
 }
 
 // ------------------------------------------------------------------ controllers: rays, cursor, tooltips
@@ -1697,7 +1746,7 @@ talkBtn.addEventListener("pointerdown", (e) => { e.preventDefault(); startTalkin
 for (const ev of ["pointerup", "pointerleave", "pointercancel"]) talkBtn.addEventListener(ev, stopTalking);
 addEventListener("keydown", (e) => { if (e.key.toLowerCase() === "v" && !e.repeat && document.activeElement?.tagName !== "INPUT") startTalking(); });
 addEventListener("keyup", (e) => { if (e.key.toLowerCase() === "v") stopTalking(); });
-window.__barry = { state, panels, renderer, scene, camera, controllers, teleopTick, updateControllers, clientLog, startGrab, resetLayout, screenRoot, sendClip, voice, pressTarget, releaseTarget, pulseHaptic, pulseAllHaptics, updateVoiceLevel, setupVoiceAnalyser, applyTelemetry };
+window.__barry = { state, panels, renderer, scene, camera, controllers, teleopTick, updateControllers, clientLog, startGrab, resetLayout, screenRoot, sendClip, voice, pressTarget, releaseTarget, pulseHaptic, pulseAllHaptics, updateVoiceLevel, setupVoiceAnalyser, applyTelemetry, cycleCameraZoom, cycleCameraFilter, ZOOM_LEVELS, FILTER_PRESETS };
 </script>
 </body>
 </html>
