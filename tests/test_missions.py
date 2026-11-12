@@ -38,7 +38,8 @@ def test_mission_manager_list_and_get(isolated_db):
     assert fetched_after["ended_at"] is not None
 
 
-def test_authorization_logs_recorded(isolated_db):
+def test_authorization_logs_recorded(monkeypatch, isolated_db):
+    monkeypatch.setenv("AUTH_ALLOW_UNREGISTERED_TAGS", "false")
     auth = AuthService(db_manager=isolated_db)
     ok, op, _ = auth.verify_tag_uid("04:A2:3B:4C:5D:6E:7F")
     assert ok is True

@@ -20,10 +20,11 @@ def sim_gateway():
     return sim, CommandGateway(sim, mission_check=lambda: True, max_speed=0.6, max_bounded_s=1)
 
 
-def test_motion_requires_mission_only_for_voice_and_llm_not_hand(sim_gateway):
+def test_motion_requires_mission_only_for_voice_and_llm_not_hand(monkeypatch, sim_gateway):
+    monkeypatch.setenv("REQUIRE_ACTIVE_MISSION", "true")
     sim, _ = sim_gateway
     gateway = CommandGateway(sim, mission_check=lambda: False)
-    # Voice and LLM require an active mission
+    # Voice and LLM require an active mission when REQUIRE_ACTIVE_MISSION is enabled
     voice_res = asyncio.run(gateway.motion(MotionCommand(forward=0.5), source="voice"))
     assert voice_res.status == "MISSION_REQUIRED"
     assert voice_res.command_id and voice_res.source == "voice"
@@ -39,6 +40,12 @@ def test_motion_requires_mission_only_for_voice_and_llm_not_hand(sim_gateway):
     assert hand_res.status == "ACCEPTED"
     assert hand_res.command_id and hand_res.source == "hand"
     assert sim.moving
+
+    # When REQUIRE_ACTIVE_MISSION is false, voice and llm also move freely without an active mission
+    monkeypatch.setenv("REQUIRE_ACTIVE_MISSION", "false")
+    gateway._last_hand_at = 0.0
+    voice_unlocked = asyncio.run(gateway.motion(MotionCommand(forward=0.5), source="voice"))
+    assert voice_unlocked.status == "ACCEPTED"
 
 
 def test_speed_and_duration_limits_are_clamped(sim_gateway):

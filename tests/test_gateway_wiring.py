@@ -81,7 +81,8 @@ async def test_gateway_adapter_exposes_style_action_and_status(simulator):
 
 
 @pytest.mark.asyncio
-async def test_llm_mission_and_estop_results_return_to_brain(simulator):
+async def test_llm_mission_and_estop_results_return_to_brain(monkeypatch, simulator):
+    monkeypatch.setenv("REQUIRE_ACTIVE_MISSION", "true")
     simulator.emergency_stop()
     app, _, _, runner = setup_app(simulator)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
@@ -300,6 +301,7 @@ async def test_mission_start_and_stop_require_quest_key(monkeypatch):
     import backend.main as main
     monkeypatch.setenv("QUEST_API_KEY", "test-quest-key")
     monkeypatch.delenv("QUEST_API_KEY_ALLOW_ANONYMOUS", raising=False)
+    monkeypatch.setenv("AUTH_ALLOW_UNREGISTERED_TAGS", "false")
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
         for path, payload in [("/api/mission/start", {"operator_id": "missing", "zone": "test"}),
                               ("/api/mission/stop", {"reason": "test"})]:

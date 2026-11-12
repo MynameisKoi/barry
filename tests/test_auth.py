@@ -58,13 +58,25 @@ def test_auth_service_authorized(test_db):
     assert "Alice Vance" in msg
 
 
-def test_auth_service_unauthorized(test_db):
+def test_auth_service_unauthorized(monkeypatch, test_db):
     """Verifies unauthorized test credential rejection."""
+    monkeypatch.setenv("AUTH_ALLOW_UNREGISTERED_TAGS", "false")
     service = AuthService(db_manager=test_db)
     authorized, operator, msg = service.verify_tag_uid("DE:AD:BE:EF:00:11:22")
     assert authorized is False
     assert operator is None
     assert "Unauthorized" in msg
+
+
+def test_auth_service_auto_provision_unregistered(monkeypatch, test_db):
+    """Verifies that when AUTH_ALLOW_UNREGISTERED_TAGS is enabled, any card is accepted & provisioned."""
+    monkeypatch.setenv("AUTH_ALLOW_UNREGISTERED_TAGS", "true")
+    service = AuthService(db_manager=test_db)
+    authorized, operator, msg = service.verify_tag_uid("AA:BB:CC:DD")
+    assert authorized is True
+    assert operator is not None
+    assert operator["tag_uid"] == "AA:BB:CC:DD"
+    assert "Authorized (Auto-Provisioned)" in msg
 
 
 def test_auth_service_empty_uid(test_db):
@@ -75,8 +87,9 @@ def test_auth_service_empty_uid(test_db):
     assert operator is None
 
 
-def test_auth_api_endpoints():
+def test_auth_api_endpoints(monkeypatch):
     """Tests FastAPI /api/auth/scan and /api/operators endpoints."""
+    monkeypatch.setenv("AUTH_ALLOW_UNREGISTERED_TAGS", "false")
     with TestClient(app) as client:
         # 1. Test listing operators
         resp = client.get("/api/operators")
@@ -105,6 +118,7 @@ def test_flipper_zero_mission_lifecycle_and_voice_llm_gating(monkeypatch):
     from backend.services.mission import mission_service
 
     monkeypatch.setenv("QUEST_API_KEY", "test-quest-key")
+    monkeypatch.setenv("REQUIRE_ACTIVE_MISSION", "true")
     with TestClient(app) as client:
         # Ensure clean mission state before test
         mission_service.stop_mission(reason="pre-test reset")

@@ -5,6 +5,7 @@ and authentication event logging in both authorization_logs and events.
 """
 
 from datetime import datetime, timezone
+import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 from backend.database import DatabaseManager, db
@@ -88,6 +89,44 @@ class AuthService:
                 )
                 return True, operator, reason
             else:
+                allow_anon_card = os.environ.get("AUTH_ALLOW_UNREGISTERED_TAGS", "true").lower() in ("1", "true", "yes")
+                if allow_anon_card:
+                    # Auto-provision temporary/guest operator profile so teammate can use any card/UID
+                    anon_op = {
+                        "operator_id": f"OP-GUEST-{clean_hex[-4:] if len(clean_hex) >= 4 else '0000'}",
+                        "name": f"Field Operator ({normalized})",
+                        "role": "Field Testing Specialist",
+                        "tag_uid": normalized,
+                    }
+                    reason = f"Authorized (Auto-Provisioned): {anon_op['name']}"
+                    cursor.execute(
+                        """
+                        INSERT OR REPLACE INTO operators (operator_id, name, role, tag_uid, created_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (anon_op["operator_id"], anon_op["name"], anon_op["role"], normalized, timestamp),
+                    )
+                    cursor.execute(
+                        """
+                        INSERT INTO authorization_logs (operator_id, credential_uid, authorized, timestamp, reason)
+                        VALUES (?, ?, 1, ?, ?)
+                        """,
+                        (anon_op["operator_id"], normalized, timestamp, reason),
+                    )
+                    cursor.execute(
+                        """
+                        INSERT INTO events (mission_id, event_type, description, timestamp)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            None,
+                            "auth_success",
+                            f"Credential auto-provisioned for {anon_op['name']} [UID: {normalized}]",
+                            timestamp,
+                        ),
+                    )
+                    return True, anon_op, reason
+
                 reason = f"Unauthorized credential: UID {normalized} is not registered."
                 # Log in authorization_logs
                 cursor.execute(
