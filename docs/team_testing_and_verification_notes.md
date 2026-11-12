@@ -79,6 +79,11 @@ Open `http://<laptop-ip>:8000/cockpit/vr` in the Quest Browser and click **ENTER
 - [ ] **Emergency Stop (E-Stop)**:
   - Press button **A** on the right controller (or hold Grips + **A** for 0.3s).
   - **Check**: Big red emergency banner appears across the viewport, latches immediately, and halts all motion until cleared.
+- [ ] **VR Controller Haptic Feedback**:
+  - Touch any button or grab a movable panel: feel a crisp tactile click (25ms) in the hand controller.
+  - Latch Emergency Stop (button **A** or grips+**A**): feel a heavy, unmistakable warning rumble (300ms at 1.0 intensity) across both controllers.
+  - Push-to-talk (hold **Y**): feel subtle confirmation pulses on record start and release.
+  - Autonomous find locks onto target (`WATCHING`): feel double-pulse confirmation that the AI spotted the target.
 
 ### C. Voice & Push-to-Talk (PR #128, PR #132)
 - [ ] **In-Headset Push-to-Talk**:

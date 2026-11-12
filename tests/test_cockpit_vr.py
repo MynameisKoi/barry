@@ -302,3 +302,65 @@ global.fetch=async(url,options)=>{
     placement = html.index('placeOnArc(P.bodyHeight.group, -SIDE_PANEL_YAW, 1.3, EYE - 0.51)')
     registration = html.index('for (const p of Object.values(panels)) { scene.add(p.group); p.moveRoot = p.group; }')
     assert placement < registration < html.index('const movableRoots =')
+
+
+def test_vr_haptic_feedback_triggers_on_actions_estop_and_state_events():
+    import shutil
+    import subprocess
+    import pytest
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js required for cockpit behavior tests")
+    html = TestClient(app).get("/cockpit/vr").text
+    haptics_block = html[html.index("// ------------------------------------------------------------------ haptics"):html.index("async function setIntensity(level)")]
+    script = r'''
+const assert = require('node:assert/strict');
+const pulses = [];
+class FakeActuator {
+  pulse(intensity, duration) {
+    pulses.push({ intensity, duration });
+  }
+}
+const controllerA = {
+  source: { gamepad: { hapticActuators: [new FakeActuator()] } }
+};
+const controllerB = {
+  source: { gamepad: { hapticActuators: [new FakeActuator()] } }
+};
+const controllers = [controllerA, controllerB];
+let motionGeneration = 0, pendingMotion = null;
+const state = { sent: {}, teleop: 'IDLE', needCentre: false, estopLatched: false, latchPhase: 'idle', latchError: '' };
+const markDirty = () => {};
+const api = async () => ({ ok: true });
+const showResult = () => {};
+''' + haptics_block + r'''
+// Test direct pulseHaptic
+pulseHaptic(controllerA, 0.4, 25);
+assert.equal(pulses.length, 1);
+assert.equal(pulses[0].intensity, 0.4);
+assert.equal(pulses[0].duration, 25);
+
+// Test pulseAllHaptics
+pulses.length = 0;
+pulseAllHaptics(0.7, 100);
+assert.equal(pulses.length, 2);
+assert.equal(pulses[0].intensity, 0.7);
+assert.equal(pulses[1].intensity, 0.7);
+
+// Test stopRobot triggers haptics
+pulses.length = 0;
+stopRobot('Operator stop');
+assert.equal(pulses.length, 2);
+assert.equal(pulses[0].intensity, 0.6);
+assert.equal(pulses[0].duration, 60);
+
+// Test latchEstop triggers full intensity emergency haptics
+pulses.length = 0;
+latchEstop();
+assert.equal(state.estopLatched, true);
+assert.equal(pulses.length, 2);
+assert.equal(pulses[0].intensity, 1.0);
+assert.equal(pulses[0].duration, 300);
+'''
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
