@@ -243,7 +243,11 @@ def test_api_gateway_and_websocket_share_the_same_loop_results(monkeypatch):
         monkeypatch.setattr(main.asyncio, "sleep", sleep_once)
         run(main.telemetry_broadcaster())
 
-        assert api_response["detections"] == llm_results == sent[0]["detections"]
+        def without_age(detections):
+            return [{k: v for k, v in d.items() if k != "age_s"} for d in detections]
+
+        assert without_age(api_response["detections"]) == without_age(llm_results) == without_age(sent[0]["detections"])
+        assert all(isinstance(d.get("age_s"), (int, float)) for d in api_response["detections"])
         assert detector.calls == calls_before_reads
         assert api_response["status"] == AVAILABLE
     finally:
