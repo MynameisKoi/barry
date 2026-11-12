@@ -469,3 +469,95 @@ assert.notStrictEqual(img1, img3);
     result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
 
+
+def test_cockpit_vr_battery_and_latency_hud_alerts():
+    html = TestClient(app).get("/cockpit/vr").text
+    assert "LOW BATTERY" in html
+    assert "HIGH LATENCY" in html
+    assert "pulseAllHaptics(0.6, 180)" in html
+    assert "pulseAllHaptics(0.5, 120)" in html
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js not available")
+
+    script = r'''
+const assert = require('assert');
+
+const state = {
+  connected: false, controlActive: false, rttMs: null, intensity: "MEDIUM", gait: "trot",
+  battery: null, roll: null, pitch: null, bodyHeight: "MEDIUM", heightPending: false,
+  estopLatched: false,
+};
+const dirty = [];
+function markDirty(...panels) { dirty.push(...panels); }
+function applyBodyHeight() {}
+function latchEstop() { state.estopLatched = true; }
+
+const pulses = [];
+function pulseHaptic(c, intensity, durationMs) {
+  pulses.push({ intensity, durationMs });
+}
+const controllers = [
+  { source: { gamepad: { hapticActuators: [{ pulse: (i, d) => pulses.push({ c: 1, intensity: i, durationMs: d }) }] } } },
+  { source: { gamepad: { hapticActuators: [{ pulse: (i, d) => pulses.push({ c: 2, intensity: i, durationMs: d }) }] } } }
+];
+function pulseAllHaptics(intensity, durationMs) {
+  for (const c of controllers) pulseHaptic(c, intensity, durationMs);
+}
+
+function applyTelemetry(t) {
+  if (!t || typeof t !== "object") return;
+  applyBodyHeight(t);
+  const bat = t.battery_pct ?? t.battery;
+  if (bat != null && Number.isFinite(Number(bat))) {
+    const val = Number(bat);
+    if (val < 20 && (state.battery == null || state.battery >= 20)) {
+      pulseAllHaptics(0.6, 180);
+    }
+    state.battery = val;
+  }
+  const roll = t.roll ?? t.orientation?.roll, pitch = t.pitch ?? t.orientation?.pitch;
+  if (roll != null && Number.isFinite(Number(roll))) state.roll = Number(roll);
+  if (pitch != null && Number.isFinite(Number(pitch))) state.pitch = Number(pitch);
+  const est = t.emergency_stopped ?? t.control_state?.emergency_stopped;
+  if (est === true) latchEstop();
+  markDirty("header", "status", "cameraOverlay");
+}
+
+// 1. High battery -> no pulse
+applyTelemetry({ battery: 80 });
+assert.strictEqual(state.battery, 80);
+assert.strictEqual(pulses.length, 0);
+
+// 2. Battery drops below 20% -> triggers pulse
+applyTelemetry({ battery: 18 });
+assert.strictEqual(state.battery, 18);
+assert.strictEqual(pulses.length, 2); // 2 controllers
+assert.strictEqual(pulses[0].intensity, 0.6);
+assert.strictEqual(pulses[0].durationMs, 180);
+
+// 3. Battery drops further -> already below 20, no repeat pulse
+pulses.length = 0;
+applyTelemetry({ battery: 15 });
+assert.strictEqual(pulses.length, 0);
+
+// 4. Battery recharges above 20 -> drops below 20 again -> pulses
+applyTelemetry({ battery: 50 });
+assert.strictEqual(pulses.length, 0);
+applyTelemetry({ battery: 12 });
+assert.strictEqual(pulses.length, 2);
+
+// 5. Check RTT coloring logic
+function getRttColor(rtt) {
+  return (rtt != null && rtt > 350) ? 'dangerText' : (rtt != null && rtt > 200 ? 'warnText' : 'textPrimary');
+}
+assert.strictEqual(getRttColor(null), 'textPrimary');
+assert.strictEqual(getRttColor(50), 'textPrimary');
+assert.strictEqual(getRttColor(220), 'warnText');
+assert.strictEqual(getRttColor(400), 'dangerText');
+'''
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+

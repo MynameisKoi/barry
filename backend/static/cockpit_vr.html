@@ -586,7 +586,11 @@ async function pollStatus() {
   try {
     const r = await fetch("/api/v1/status", { cache: "no-store" });
     const p = await r.json();
-    state.rttMs = performance.now() - t0;
+    const rtt = performance.now() - t0;
+    if (rtt > 350 && (state.rttMs == null || state.rttMs <= 350)) {
+      pulseAllHaptics(0.5, 120);
+    }
+    state.rttMs = rtt;
     applyBodyHeight(p);
     state.connected = Boolean(p.connected); state.controlActive = Boolean(p.control_session_active);
     if (p.intensity) state.intensity = String(p.intensity).toUpperCase();
@@ -604,13 +608,19 @@ function applyTelemetry(t) {
   if (!t || typeof t !== "object") return;
   applyBodyHeight(t);
   const bat = t.battery_pct ?? t.battery;
-  if (bat != null && Number.isFinite(Number(bat))) state.battery = Number(bat);
+  if (bat != null && Number.isFinite(Number(bat))) {
+    const val = Number(bat);
+    if (val < 20 && (state.battery == null || state.battery >= 20)) {
+      pulseAllHaptics(0.6, 180);
+    }
+    state.battery = val;
+  }
   const roll = t.roll ?? t.orientation?.roll, pitch = t.pitch ?? t.orientation?.pitch;
   if (roll != null && Number.isFinite(Number(roll))) state.roll = Number(roll);
   if (pitch != null && Number.isFinite(Number(pitch))) state.pitch = Number(pitch);
   const est = t.emergency_stopped ?? t.control_state?.emergency_stopped;
   if (est === true) latchEstop();
-  markDirty("status", "cameraOverlay");
+  markDirty("header", "status", "cameraOverlay");
 }
 function connectSocket() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
@@ -831,8 +841,14 @@ new Panel("header", {
     const vp = state.voice.phase;
     if (vp === "listening") {
       const bars = [" ", " ", "▂", "▃", "▄", "▅", "▆", "▇"][Math.min(7, Math.floor(voice.level * 8))] || " ";
-      chip(ctx, x, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: `LISTENING ${bars} · release to send`, tone: "danger" });
-    } else if (vp === "sending") chip(ctx, x, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: "TRANSCRIBING…", tone: "accent" });
+      x += chip(ctx, x, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: `LISTENING ${bars} · release to send`, tone: "danger" }) + 10;
+    } else if (vp === "sending") x += chip(ctx, x, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: "TRANSCRIBING…", tone: "accent" }) + 10;
+    if (state.battery != null && state.battery < 20) {
+      x += chip(ctx, x, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: `LOW BATTERY · ${Math.round(state.battery)}%`, tone: "danger" }) + 10;
+    }
+    if (state.rttMs != null && state.rttMs > 350) {
+      x += chip(ctx, x, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: `HIGH LATENCY · ${Math.round(state.rttMs)}ms`, tone: "warn" }) + 10;
+    }
     let rx = W - 20;
     rx -= chip(ctx, rx, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: c.control[0], tone: c.control[1], anchorRight: true }) + 10;
     rx -= chip(ctx, rx, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: c.robot[0], tone: c.robot[1], anchorRight: true }) + 10;
@@ -902,11 +918,12 @@ new Panel("status", {
     p.root(ctx, 0, 0, 270, 470, 16);
     txt(ctx, "STATUS", 20, 20, 200, 16, { size: p.fs(13), weight: 700, tracking: 0.14, color: T.textSecondary });
     const control = hasControl() ? ["You", T.accent] : state.controlActive ? ["Other operator", T.warnText] : ["Free", T.okText];
+    const rttColor = (state.rttMs != null && state.rttMs > 350) ? T.dangerText : (state.rttMs != null && state.rttMs > 200 ? T.warnText : T.textPrimary);
     const cells = [
       ["Robot", state.connected ? "Connected" : "Disconnected", state.connected ? T.okText : T.dangerText, "body"],
       ["Control", control[0], control[1], "body"],
       ["Camera", state.cameraFps != null ? `${state.cameraFps.toFixed(0)} fps` : "-- fps", T.textPrimary, "mono"],
-      ["Backend RTT", state.rttMs != null ? `${Math.round(state.rttMs)} ms` : "-- ms", T.textPrimary, "mono"],
+      ["Backend RTT", state.rttMs != null ? `${Math.round(state.rttMs)} ms` : "-- ms", rttColor, "mono"],
     ];
     const cx = [20, 140, 20, 140], cy = [50, 50, 98, 98];
     cells.forEach(([label, value, color, font], i) => {
@@ -1680,7 +1697,7 @@ talkBtn.addEventListener("pointerdown", (e) => { e.preventDefault(); startTalkin
 for (const ev of ["pointerup", "pointerleave", "pointercancel"]) talkBtn.addEventListener(ev, stopTalking);
 addEventListener("keydown", (e) => { if (e.key.toLowerCase() === "v" && !e.repeat && document.activeElement?.tagName !== "INPUT") startTalking(); });
 addEventListener("keyup", (e) => { if (e.key.toLowerCase() === "v") stopTalking(); });
-window.__barry = { state, panels, renderer, scene, camera, controllers, teleopTick, updateControllers, clientLog, startGrab, resetLayout, screenRoot, sendClip, voice, pressTarget, releaseTarget, pulseHaptic, pulseAllHaptics, updateVoiceLevel, setupVoiceAnalyser };
+window.__barry = { state, panels, renderer, scene, camera, controllers, teleopTick, updateControllers, clientLog, startGrab, resetLayout, screenRoot, sendClip, voice, pressTarget, releaseTarget, pulseHaptic, pulseAllHaptics, updateVoiceLevel, setupVoiceAnalyser, applyTelemetry };
 </script>
 </body>
 </html>
