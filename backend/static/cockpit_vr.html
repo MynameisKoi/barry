@@ -977,6 +977,46 @@ new Panel("banner", {
   },
 });
 
+// Brain answer scrolling uses whole lines and never changes driving axes.
+function scrollBrain(lines) {
+  state.brainScroll = Math.max(0, Math.min(state.brainScrollMax || 0, (state.brainScroll || 0) + lines));
+  markDirty("brain");
+}
+function scrollBrainStick(controller, axis, pointing, now) {
+  if (!state.brainOpen || !pointing || Math.abs(axis) <= DEAD_ZONE) { controller.brainScrollAt = 0; return; }
+  if (!controller.brainScrollAt || now - controller.brainScrollAt >= 150) {
+    scrollBrain(axis > 0 ? 1 : -1); controller.brainScrollAt = now;
+  }
+}
+function drawBrainAnswer(ctx, p, answer, task, running) {
+  const key = JSON.stringify([task.id, answer]);
+  if (state.brainAnswerKey !== key) { state.brainAnswerKey = key; state.brainScroll = 0; }
+  const y = running ? 738 : 480, h = 812 - y, size = p.fs(26), lineHeight = size * 1.25, width = 482;
+  setFont(ctx, size, { weight: 700 });
+  const lines = [];
+  for (const paragraph of String(answer).split("\n")) {
+    let line = "";
+    for (const word of paragraph.split(/\s+/)) {
+      const next = line ? `${line} ${word}` : word;
+      if (line && ctx.measureText(next).width > width) { lines.push(line); line = word; } else line = next;
+    }
+    lines.push(line);
+  }
+  const count = Math.max(1, Math.floor((h - 26) / lineHeight));
+  state.brainScrollMax = Math.max(0, lines.length - count);
+  state.brainScroll = Math.max(0, Math.min(state.brainScrollMax, state.brainScroll || 0));
+  const offset = state.brainScroll, buttonHeight = Math.min(44, (h - 26) / 2);
+  ctx.save(); ctx.beginPath(); ctx.rect(28, y, width, h - 26); ctx.clip();
+  lines.slice(offset, offset + count).forEach((line, i) => txt(ctx, line, 28, y + i * lineHeight, width, lineHeight, {size, weight:700, fit:true}));
+  ctx.restore();
+  for (const [id, label, by, delta, enabled] of [["answerUp", "▲", y, -1, offset > 0], ["answerDown", "▼", y + h - 26 - buttonHeight, 1, offset < state.brainScrollMax]]) {
+    const hover = p.button(id, 520, by, 52, buttonHeight, () => scrollBrain(delta), enabled);
+    fillRR(ctx, 520, by, 52, buttonHeight, 8, enabled ? (hover ? T.accentSoft : T.rowFill) : T.neutralFill);
+    txt(ctx, label, 520, by, 52, buttonHeight, {size:p.fs(18), align:"center", color:enabled ? T.accent : T.textSecondary});
+  }
+  if (lines.length > count) txt(ctx, `line ${offset + 1}–${Math.min(lines.length, offset + count)} of ${lines.length}`, 28, y + h - 26, width, 26, {size:p.fs(13), font:"mono", color:T.textSecondary});
+}
+
 new Panel("brain", {
   wPx: 600, hPx: 890, S: 1, dist: 1.25, glow: 1, order: 4,
   draw(ctx, p) {
@@ -1002,7 +1042,7 @@ new Panel("brain", {
     if (running || (state.llmReplaced && state.llmStarting)) txt(ctx, "Starting a new task cancels the current one.", 28, 392, 544, 30, { size: p.fs(21), color: T.textSecondary });
     const tone = { running: "accent", done: "ok", cancelled: "warn", failed: "danger", limit: "warn", refused: "danger" }[task.state] || "neutral";
     chip(ctx, 28, 428, { h: 40, padX: 16, gap: 10, r: 12, size: p.fs(22), text: state.llmError ? "ERROR" : String(task.state || "idle").toUpperCase(), tone: state.llmError ? "danger" : tone });
-    const steps = task.steps || []; const first = Math.max(0, steps.length - 6);
+    const steps = running ? (task.steps || []) : []; const first = Math.max(0, steps.length - 6);
     steps.slice(first).forEach((s, i) => {
       const y = 480 + i * 38;
       const a = s.args || {};
@@ -1016,7 +1056,7 @@ new Panel("brain", {
     });
     if (first > 0) txt(ctx, `+${first} earlier`, 28, 708, 300, 28, { size: p.fs(21), font: "mono", color: T.textSecondary });
     const answer = state.llmError || task.answer || (task.mode === "find" && task.outcome ? `${task.outcome.replaceAll("_", " ")} · ${task.message || task.target || ""}` : task.message) || "";
-    if (answer) wrap(ctx, answer, 28, 738, 544, 74, { size: p.fs(26), weight: 700 });
+    drawBrainAnswer(ctx, p, answer, task, running);
     const ch = p.button("cancel", 28, 816, 544, 62, task.mode === "find" ? stopFinding : cancelGoal, running && !state.llmCancelling);
     fillRR(ctx, 28, 816, 544, 62, 14, running ? (ch ? "#A82222" : T.dangerSolid) : T.neutralBorder);
     txt(ctx, state.llmCancelling ? "Stopping…" : task.mode === "find" ? "Stop finding" : "Cancel", 28, 816, 544, 62, { size: p.fs(30), weight: 700, color: "#FFFFFF", align: "center" });
@@ -1351,6 +1391,7 @@ function updateControllers(now, dt) {
         c.yHeld = 0; c.yTalking = false;
       }
     } else if (c.hand === "right") {
+      scrollBrainStick(c, ax[1], pickPanel(c) === panels.brain, now);
       rx = ax[0]; rGrip = b(1); aHeld = b(4);
       if (edge(4)) stopRobot("Stopped by you");                                 // A = STOP (highest priority)
       if (edge(5)) toggleActions();                                             // B
@@ -1380,6 +1421,12 @@ function mousePick(e) {
   raycaster.setFromCamera(ndc, camera);
   setHover(mouseOwner, pick(raycaster.ray.origin.clone(), raycaster.ray.direction.clone()));
 }
+renderer.domElement.addEventListener("wheel", (e) => {
+  if (renderer.xr.isPresenting || !state.brainOpen) return;
+  mousePick(e);
+  const hit = pick(raycaster.ray.origin.clone(), raycaster.ray.direction.clone());
+  if (hit?.panel === panels.brain && e.deltaY) { e.preventDefault(); scrollBrain(e.deltaY > 0 ? 1 : -1); }
+}, { passive: false });
 let mouseHolding = null;
 renderer.domElement.addEventListener("pointerdown", (e) => {
   if (!renderer.xr.isPresenting) { mousePick(e); mouseHolding = pressTarget(mouseOwner.hover); if (mouseHolding) return; }

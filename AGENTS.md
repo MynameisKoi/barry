@@ -77,6 +77,8 @@ Camera: with `ROBOT_MODE=remote` the laptop camera service (YOLO, `/api/v1/camer
 (`DOG_VIDEO_URL`, else port 6500 on the `ROBOT_REMOTE_URL` host), never the laptop webcam; `CAMERA_SOURCE=dog` forces it.
 WebXR detection overlay: `/api/ai/detections` returns normalized `[ymin, xmin, ymax, xmax]` boxes; map them over the contained video rectangle and show only available results with `age_s ≤ 2` while the camera is LIVE.
 
+Brain answers scroll by whole lines with ▲/▼, right-stick Y while pointing, or desktop wheel; idle answers use the expanded clipped area.
+
 ### Motion control and authentication (testing defaults; Tom decided on 2026-11-12 to keep them as they are)
 - `REQUIRE_ACTIVE_MISSION=false`: hand, voice and LLM can move the robot without an active mission.
 - `AUTH_ALLOW_UNREGISTERED_TAGS=true`: any scanned tag UID is auto-provisioned as an operator.
