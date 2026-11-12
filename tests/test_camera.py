@@ -56,10 +56,10 @@ def test_cockpit_vr_endpoint():
         resp = client.get("/cockpit/vr")
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
-        assert "EYE_LEVEL" in resp.text
+        assert "const EYE = 1.6" in resp.text
         assert "SIDE_PANEL_YAW" in resp.text
-        assert "headerPanel" in resp.text
-        assert "emergencyBanner" in resp.text
+        assert 'new Panel("header"' in resp.text
+        assert 'new Panel("banner"' in resp.text
         assert "BARRY" in resp.text
 
     line3 = "Tag UID: A1:B2:C3:D4"

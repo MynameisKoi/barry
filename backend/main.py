@@ -448,13 +448,52 @@ async def get_cockpit_vr():
     return FileResponse(html_path)
 
 
+_client_log: List[Dict[str, Any]] = []
+
+
+@app.post("/api/debug/client-log", tags=["Debug"])
+async def post_client_log(request: Request):
+    """Browser/headset error reports from the VR cockpit (kept in memory, last 100; never secrets)."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    entry = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "client": request.client.host if request.client else None,
+        "level": str(body.get("level", "info"))[:10],
+        "message": str(body.get("message", ""))[:1500],
+        "ua": str(body.get("ua", ""))[:160],
+    }
+    _client_log.append(entry)
+    del _client_log[:-100]
+    logging.getLogger("barry.client").warning("VR client %s: %s", entry["level"], entry["message"])
+    return {"ok": True}
+
+
+@app.get("/api/debug/client-log", tags=["Debug"])
+async def get_client_log():
+    return {"entries": _client_log}
+
+
+def dog_video_url() -> str:
+    """URL of the dog's Yahboom MJPEG feed: DOG_VIDEO_URL, else port 6500 on the ROBOT_REMOTE_URL host."""
+    explicit = os.getenv("DOG_VIDEO_URL", "").strip()
+    if explicit:
+        return explicit
+    from urllib.parse import urlparse
+
+    host = urlparse(os.getenv("ROBOT_REMOTE_URL", "")).hostname
+    return f"http://{host}:6500/video_feed" if host else "http://192.168.137.236:6500/video_feed"
+
+
 @app.get("/api/camera/stream", tags=["Camera"])
 async def stream_camera():
     """Streams live MJPEG video relayed directly from the DOGZILLA robot camera."""
     import httpx
     from fastapi.responses import StreamingResponse
 
-    target_url = "http://192.168.137.236:6500/video_feed"
+    target_url = dog_video_url()
 
     async def stream_generator():
         client = httpx.AsyncClient(timeout=None)
