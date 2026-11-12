@@ -295,6 +295,20 @@ async function dispatchMotion() {
   }
 }
 
+// ------------------------------------------------------------------ haptics
+function pulseHaptic(c, intensity = 0.5, durationMs = 25) {
+  const gp = c?.source?.gamepad;
+  const act = gp?.hapticActuators?.[0];
+  if (act && typeof act.pulse === "function") {
+    try { act.pulse(Math.min(1.0, Math.max(0.0, intensity)), durationMs); } catch (_) {}
+  }
+}
+function pulseAllHaptics(intensity = 0.7, durationMs = 100) {
+  if (Array.isArray(controllers)) {
+    for (const c of controllers) pulseHaptic(c, intensity, durationMs);
+  }
+}
+
 /** STOP: supersedes queued motion, needs sticks centred before the next drive (no auto-resume). */
 function stopRobot(reason = "") {
   motionGeneration++;
@@ -302,6 +316,7 @@ function stopRobot(reason = "") {
   state.sent = { forward: 0, strafe: 0, turn: 0 };
   state.teleop = "STOPPED";
   state.needCentre = true;
+  pulseAllHaptics(0.6, 60);
   markDirty("status", "actions");
   api("/api/v1/stop").then((res) => {
     if (res && res.ok && reason) state.result = { status: "STOPPED", message: reason };
@@ -314,6 +329,7 @@ function latchEstop() {
   if (!state.estopLatched) { state.estopLatched = true; state.latchPhase = "idle"; state.latchError = ""; }
   motionGeneration++; pendingMotion = null; state.needCentre = true; state.teleop = "STOPPED";
   state.sent = { forward: 0, strafe: 0, turn: 0 };
+  pulseAllHaptics(1.0, 300);
   markDirty("header", "status", "banner", "actions");
 }
 
@@ -512,7 +528,16 @@ async function cancelGoal() {
 function pollLlm() {
   if (llmPoll) return;
   llmPoll = setInterval(async () => {
-    try { const r = await fetch("/api/v1/llm/task"); if (r.ok) state.llmTask = await r.json(); } catch (e) {}
+    try {
+      const r = await fetch("/api/v1/llm/task");
+      if (r.ok) {
+        const nextTask = await r.json();
+        if (state.llmTask?.phase === "searching" && nextTask?.phase === "watching") {
+          pulseAllHaptics(0.7, 140);
+        }
+        state.llmTask = nextTask;
+      }
+    } catch (e) {}
     syncFinding();
     if (state.llmTask.state !== "running") { clearInterval(llmPoll); llmPoll = null; }
   }, 1000);
@@ -1354,10 +1379,14 @@ for (let i = 0; i < 2; i++) {
     if (c.holding) { releaseTarget(c.holding); c.holding = null; }
     c.source = null; c.hand = null; cur.visible = false; setHover(c, null);
   });
-  target.addEventListener("selectstart", () => { c.holding = pressTarget(c.hover); if (!c.holding) clickTarget(c.hover); });
-  target.addEventListener("selectend", () => { if (c.holding) { releaseTarget(c.holding); c.holding = null; } });
+  target.addEventListener("selectstart", () => {
+    c.holding = pressTarget(c.hover);
+    if (!c.holding) { if (clickTarget(c.hover)) pulseHaptic(c, 0.4, 25); }
+    else pulseHaptic(c, 0.4, 25);
+  });
+  target.addEventListener("selectend", () => { if (c.holding) { releaseTarget(c.holding); c.holding = null; pulseHaptic(c, 0.3, 20); } });
   target.addEventListener("squeezestart", () => startGrab(c));
-  target.addEventListener("squeezeend", () => { if (c.grab) { c.grab = null; saveLayout(); } });
+  target.addEventListener("squeezeend", () => { if (c.grab) { c.grab = null; saveLayout(); pulseHaptic(c, 0.3, 20); } });
   scene.add(target); scene.add(grip);
   controllers.push(c);
 }
@@ -1377,13 +1406,15 @@ function pickPanel(c) {
   return null;
 }
 function startGrab(c) {
-  if (c.grab || !c.source) return;
+  if (c.grab || !c.source) return false;
   const panel = pickPanel(c);
-  if (!panel) return;
+  if (!panel) return false;
   const root = panel.moveRoot;
-  if (controllers.some((o) => o !== c && o.grab?.root === root)) return;
+  if (controllers.some((o) => o !== c && o.grab?.root === root)) return false;
   root.updateMatrixWorld();
   c.grab = { root, offset: grabMat.copy(c.target.matrixWorld).invert().multiply(root.matrixWorld).clone() };
+  pulseHaptic(c, 0.5, 30);
+  return true;
 }
 /** Follow the hand, keep the panel upright and facing the head. */
 function updateGrab(c) {
@@ -1415,18 +1446,21 @@ function updateControllers(now, dt) {
     const ax = gp.axes.length >= 4 ? [gp.axes[2], gp.axes[3]] : [gp.axes[0] || 0, gp.axes[1] || 0];
     if (c.hand === "left") {
       [lx, ly] = ax; lGrip = b(1);
-      if (edge(4)) cycleIntensity();                                            // X
+      if (edge(4)) { cycleIntensity(); pulseHaptic(c, 0.4, 25); }               // X
       // Y: tap toggles the Brain panel (Unity), hold >= 0.35 s = push-to-talk.
-      if (b(5)) { c.yHeld = (c.yHeld || 0) + dt; if (c.yHeld >= VOICE_HOLD_S && !c.yTalking) { c.yTalking = true; startTalking(); } }
-      else if (c.yHeld) {
-        if (c.yTalking) stopTalking(); else { state.brainOpen = !state.brainOpen; markDirty("brain"); }
+      if (b(5)) {
+        c.yHeld = (c.yHeld || 0) + dt;
+        if (c.yHeld >= VOICE_HOLD_S && !c.yTalking) { c.yTalking = true; startTalking(); pulseHaptic(c, 0.5, 35); }
+      } else if (c.yHeld) {
+        if (c.yTalking) { stopTalking(); pulseHaptic(c, 0.3, 25); }
+        else { state.brainOpen = !state.brainOpen; markDirty("brain"); pulseHaptic(c, 0.4, 20); }
         c.yHeld = 0; c.yTalking = false;
       }
     } else if (c.hand === "right") {
       scrollBrainStick(c, ax[1], pickPanel(c) === panels.brain, now);
       rx = ax[0]; rGrip = b(1); aHeld = b(4);
-      if (edge(4)) stopRobot("Stopped by you");                                 // A = STOP (highest priority)
-      if (edge(5)) toggleActions();                                             // B
+      if (edge(4)) { stopRobot("Stopped by you"); pulseHaptic(c, 0.8, 80); }     // A = STOP (highest priority)
+      if (edge(5)) { toggleActions(); pulseHaptic(c, 0.4, 25); }                 // B
     }
   }
   // Dedicated e-stop: both grips + A held 0.3 s (EmergencyStopGesture). A alone already sent STOP.
@@ -1438,7 +1472,7 @@ function updateControllers(now, dt) {
   if (grabbing) { lx = ly = rx = 0; }
   // Reset layout: both thumbsticks clicked in and held 1 s.
   const sticksDown = controllers.filter((c) => c.source?.gamepad?.buttons[3]?.pressed).length === 2;
-  if (sticksDown) { resetHeld += dt; if (resetHeld >= 1 && resetHeld - dt < 1) { resetLayout(); state.result = { status: "LAYOUT", message: "Panel layout reset" }; markDirty("status"); } }
+  if (sticksDown) { resetHeld += dt; if (resetHeld >= 1 && resetHeld - dt < 1) { resetLayout(); pulseAllHaptics(0.7, 120); state.result = { status: "LAYOUT", message: "Panel layout reset" }; markDirty("status"); } }
   else resetHeld = 0;
   const [sx, sy] = radial(lx, ly); const [tx] = radial(rx, 0);
   teleopTick(now, { forward: r2(-sy), strafe: r2(-sx), turn: r2(-tx) }, "hand");
@@ -1583,7 +1617,7 @@ talkBtn.addEventListener("pointerdown", (e) => { e.preventDefault(); startTalkin
 for (const ev of ["pointerup", "pointerleave", "pointercancel"]) talkBtn.addEventListener(ev, stopTalking);
 addEventListener("keydown", (e) => { if (e.key.toLowerCase() === "v" && !e.repeat && document.activeElement?.tagName !== "INPUT") startTalking(); });
 addEventListener("keyup", (e) => { if (e.key.toLowerCase() === "v") stopTalking(); });
-window.__barry = { state, panels, renderer, scene, camera, controllers, teleopTick, updateControllers, clientLog, startGrab, resetLayout, screenRoot, sendClip, voice, pressTarget, releaseTarget };
+window.__barry = { state, panels, renderer, scene, camera, controllers, teleopTick, updateControllers, clientLog, startGrab, resetLayout, screenRoot, sendClip, voice, pressTarget, releaseTarget, pulseHaptic, pulseAllHaptics };
 </script>
 </body>
 </html>

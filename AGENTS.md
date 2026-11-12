@@ -81,6 +81,8 @@ Brain answers scroll by whole lines with ▲/▼, right-stick Y while pointing, 
 
 BODY HEIGHT: movable panel beneath Status on the left arc; sequenced posture commands and commanded-height readback are independent of walking INTENSITY.
 
+VR HAPTICS: `gamepad.hapticActuators` delivers physical controller feedback: tactile clicks (0.4/25ms) on UI buttons/grabs, heavy pulse (1.0/300ms) on E-Stop latch, and double-pulse (0.7/140ms) when find-object enters WATCH.
+
 ### Motion control and authentication (testing defaults; Tom decided on 2026-11-12 to keep them as they are)
 - `REQUIRE_ACTIVE_MISSION=false`: hand, voice and LLM can move the robot without an active mission.
 - `AUTH_ALLOW_UNREGISTERED_TAGS=true`: any scanned tag UID is auto-provisioned as an operator.
