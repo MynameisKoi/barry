@@ -315,7 +315,7 @@
         scene.fog = new THREE.FogExp2(0x050814, 0.015);
 
         const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 1000);
-        camera.position.set(0, 1.4, 0); // Eye level standing inside cockpit
+        camera.position.set(0, 1.6, 0); // Eye level matching Barry.exe Eye = 1.6f
 
         const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
         renderer.setSize(window.innerWidth, window.innerHeight);
@@ -391,9 +391,9 @@
         // Holographic Cockpit Canopy Ribs (Framing the pilot space)
         const ribMat = new THREE.LineBasicMaterial({ color: 0x00f0ff, transparent: true, opacity: 0.28 });
         [-1, 1].forEach(side => {
-            const curve = new THREE.EllipseCurve(side * 1.6, 1.4, 1.3, 1.5, 0, Math.PI, false, 0);
+            const curve = new THREE.EllipseCurve(side * 1.5, 1.6, 1.4, 1.6, 0, Math.PI, false, 0);
             const pts = curve.getPoints(40);
-            const ribGeo = new THREE.BufferGeometry().setFromPoints(pts.map(p => new THREE.Vector3(p.x, p.y, -2.15)));
+            const ribGeo = new THREE.BufferGeometry().setFromPoints(pts.map(p => new THREE.Vector3(p.x, p.y, -2.05)));
             scene.add(new THREE.Line(ribGeo, ribMat));
         });
 
@@ -423,17 +423,49 @@
             return { canvas: offscreenCanvas, ctx, texture, mesh };
         }
 
-        // 1. LEFT PANEL: STATUS, TELEMETRY & COMMAND SENT (Spread out to left)
+        // Barry.exe Spatial Layout & Ergonomics Constants (Unity DashboardSceneBuilder.cs)
+        const EYE_LEVEL = 1.60;                      // Pilot eye height (1.6m)
+        const SIDE_PANEL_YAW = 36 * Math.PI / 180;   // 36° curved arc (0.6283 rad)
+        const SIDE_PANEL_DIST = 1.30;                // 1.30m viewing distance
+        const leftArcX = -Math.sin(SIDE_PANEL_YAW) * SIDE_PANEL_DIST; // -0.764m
+        const leftArcZ = -Math.cos(SIDE_PANEL_YAW) * SIDE_PANEL_DIST; // -1.052m
+        const rightArcX = Math.sin(SIDE_PANEL_YAW) * SIDE_PANEL_DIST; // +0.764m
+        const rightArcZ = -Math.cos(SIDE_PANEL_YAW) * SIDE_PANEL_DIST; // -1.052m
+
+        // Desk / Control Strip: 25° below eye level, 0.9m distance, tilted 15° up towards pilot
+        const deskAngle = 25 * Math.PI / 180;
+        const deskY = EYE_LEVEL - 0.90 * Math.sin(deskAngle); // 1.22m
+        const deskZ = -0.90 * Math.cos(deskAngle);           // -0.816m
+        const deskTiltX = -15 * Math.PI / 180;              // -0.2618 rad
+
+        // 1. LEFT PANEL: STATUS, TELEMETRY & COMMAND SENT (Placed on -36° arc at 1.3m)
         const leftPanel = createHoloPanel(
-            1.35, 1.6, 540, 640,
-            new THREE.Vector3(-1.85, 1.40, -1.95),
-            Math.PI * 0.23, 0 // Angled ~41.4° inward
+            0.92, 1.09, 540, 640,
+            new THREE.Vector3(leftArcX, EYE_LEVEL, leftArcZ),
+            SIDE_PANEL_YAW, 0 // Angled +36° inward facing pilot
         );
+
+        // MISSION PANEL: Start Mission Card floating in front (pos = 0, Eye - 0.22, 1.35)
         const missionPanel = createHoloPanel(
-            1.35, 0.58, 540, 248,
-            new THREE.Vector3(-1.85, 0.32, -1.95),
-            Math.PI * 0.23, 0
+            1.05, 0.55, 600, 314,
+            new THREE.Vector3(0, EYE_LEVEL - 0.22, -1.35),
+            0, 0
         );
+
+        // FLOATING 3D HEADER STRIP (pos = 0, Eye + 0.588, 2.0; directly above camera screen)
+        const headerPanel = createHoloPanel(
+            1.80, 0.15, 1000, 82,
+            new THREE.Vector3(0, EYE_LEVEL + 0.588, -2.0),
+            0, 0
+        );
+
+        // LATCHED EMERGENCY BANNER (pos = 0, Eye + 0.12, 1.6; shown only when E-STOP active)
+        const emergencyBanner = createHoloPanel(
+            1.20, 0.45, 720, 270,
+            new THREE.Vector3(0, EYE_LEVEL + 0.12, -1.60),
+            0, 0
+        );
+        emergencyBanner.mesh.visible = false;
 
         function drawLeftPanel() {
             const { ctx, canvas: c, texture } = leftPanel;
@@ -571,49 +603,50 @@
         function drawMissionPanel() {
             const { ctx, canvas: c, texture } = missionPanel;
             ctx.clearRect(0, 0, c.width, c.height);
-            ctx.fillStyle = "rgba(10, 16, 28, 0.94)";
-            ctx.strokeStyle = "rgba(0, 240, 255, 0.9)";
+
+            const activeMission = Boolean(state.mission?.active);
+            if (activeMission) {
+                missionPanel.mesh.visible = false;
+                return;
+            }
+            missionPanel.mesh.visible = true;
+
+            ctx.fillStyle = "rgba(10, 16, 28, 0.95)";
+            ctx.strokeStyle = "rgba(0, 240, 255, 0.95)";
             ctx.lineWidth = 3;
-            roundRect(ctx, 4, 4, c.width - 8, c.height - 8, 14, true, true);
+            roundRect(ctx, 4, 4, c.width - 8, c.height - 8, 16, true, true);
 
             ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 22px monospace";
-            ctx.fillText("MISSION CONTROL", 20, 34);
-            const activeMission = state.mission?.active;
-            ctx.fillStyle = activeMission ? "#00ff88" : "#fbbf24";
-            ctx.font = "bold 15px monospace";
-            const missionLabel = activeMission
-                ? `ACTIVE · ${state.mission.operator_name || state.mission.operator_id || "Operator"} · ${state.mission.zone || "Zone"}`
-                : (state.missionStatusKnown ? "NO ACTIVE MISSION" : "CHECKING MISSION…");
-            ctx.fillText(missionLabel.slice(0, 53), 20, 60);
+            ctx.font = "bold 24px monospace";
+            ctx.fillText("MISSION CONTROL", 24, 40);
+
+            ctx.fillStyle = "#fbbf24";
+            ctx.font = "bold 14px monospace";
+            ctx.fillText("START A MISSION TO DRIVE", 24, 68);
 
             const operator = state.operators[state.operatorIndex];
             ctx.fillStyle = "#94a3b8";
-            ctx.font = "13px monospace";
-            ctx.fillText("OPERATOR", 20, 88);
-            drawMissionButton(ctx, 20, 96, 42, 38, "‹", !activeMission && state.operators.length > 0, "#00f0ff");
-            drawMissionButton(ctx, 64, 96, 360, 38, operator ? operator.name : "No operators", false);
-            drawMissionButton(ctx, 426, 96, 42, 38, "›", !activeMission && state.operators.length > 0, "#00f0ff");
+            ctx.font = "bold 13px monospace";
+            ctx.fillText("OPERATOR", 24, 98);
+            drawMissionButton(ctx, 24, 108, 50, 42, "‹", state.operators.length > 0, "#00f0ff");
+            drawMissionButton(ctx, 80, 108, 440, 42, operator ? `${operator.name} (${operator.role})` : "Loading operators…", false);
+            drawMissionButton(ctx, 526, 108, 50, 42, "›", state.operators.length > 0, "#00f0ff");
 
             ctx.fillStyle = "#94a3b8";
-            ctx.fillText("ZONE", 20, 158);
-            drawMissionButton(ctx, 20, 166, 42, 38, "‹", !activeMission, "#00f0ff");
-            drawMissionButton(ctx, 64, 166, 360, 38, state.zone, false);
-            drawMissionButton(ctx, 426, 166, 42, 38, "›", !activeMission, "#00f0ff");
+            ctx.fillText("ZONE", 24, 172);
+            drawMissionButton(ctx, 24, 182, 50, 42, "‹", true, "#00f0ff");
+            drawMissionButton(ctx, 80, 182, 440, 42, state.zone, false);
+            drawMissionButton(ctx, 526, 182, 50, 42, "›", true, "#00f0ff");
 
-            if (!activeMission) {
-                drawMissionButton(ctx, 20, 208, 220, 30, "START MISSION", true, "#00c987");
-                ctx.fillStyle = "#64748b";
-                ctx.font = "bold 13px monospace";
-                ctx.textAlign = "center";
-                ctx.fillText("END MISSION", 360, 228);
-                ctx.textAlign = "left";
-            } else {
-                drawMissionButton(ctx, 20, 208, 220, 30, "MISSION ACTIVE", false);
-                drawMissionButton(ctx, 280, 208, 220, 30,
-                    Date.now() < state.endMissionConfirmUntil ? "CONFIRM END?" : "END MISSION",
-                    true, "#dc2626");
+            // START MISSION button
+            drawMissionButton(ctx, 175, 242, 250, 52, "START MISSION", state.operators.length > 0, "#00c987");
+
+            if (state.missionFeedback) {
+                ctx.fillStyle = "#f87171";
+                ctx.font = "12px monospace";
+                ctx.fillText(state.missionFeedback.slice(0, 60), 24, 304);
             }
+
             texture.needsUpdate = true;
         }
 
@@ -679,6 +712,8 @@
             }
             if (feedback && state.missionFeedback) feedback.textContent = state.missionFeedback;
             if (typeof drawMissionPanel === "function" && typeof missionPanel !== "undefined") drawMissionPanel();
+            if (typeof drawHeaderPanel === "function" && typeof headerPanel !== "undefined") drawHeaderPanel();
+            if (typeof drawBottomPanel === "function" && typeof bottomPanel !== "undefined") drawBottomPanel();
         }
 
         async function loadMissionOperators() {
@@ -809,12 +844,130 @@
         refreshMissionStatus();
         setInterval(refreshMissionStatus, 3000);
 
-        // 2. CENTER PANEL: LIVE ROBOT CAMERA (Forward Optics Display)
+        // 2. CENTER PANEL: LIVE ROBOT CAMERA (Forward Optics Display at eye level 1.6m, dist 2.0m)
         const centerPanel = createHoloPanel(
-            2.1, 1.4, 840, 560,
-            new THREE.Vector3(0, 1.48, -2.4),
+            1.80, 1.12, 840, 520,
+            new THREE.Vector3(0, EYE_LEVEL, -2.0),
             0, 0 // Center front
         );
+
+        function drawHeaderPanel() {
+            const { ctx, canvas: c, texture } = headerPanel;
+            ctx.clearRect(0, 0, c.width, c.height);
+
+            // Translucent rounded bar with glowing border
+            ctx.fillStyle = "rgba(10, 16, 28, 0.94)";
+            ctx.strokeStyle = "rgba(220, 230, 255, 0.95)";
+            ctx.lineWidth = 2.5;
+            roundRect(ctx, 4, 4, c.width - 8, c.height - 8, 14, true, true);
+
+            // Left: Wordmark BARRY
+            ctx.fillStyle = "#00f0ff";
+            ctx.font = "900 24px -apple-system, monospace";
+            ctx.fillText("BARRY", 24, 49);
+
+            // Mission Chip (Interactive: click toggles mission card)
+            const activeMission = Boolean(state.mission?.active);
+            const chipX = 130;
+            const chipY = 16;
+            const chipW = 340;
+            const chipH = 50;
+            ctx.fillStyle = activeMission ? "rgba(0, 255, 136, 0.18)" : "rgba(251, 191, 36, 0.18)";
+            ctx.strokeStyle = activeMission ? "#00ff88" : "#fbbf24";
+            ctx.lineWidth = 1.5;
+            roundRect(ctx, chipX, chipY, chipW, chipH, 8, true, true);
+
+            ctx.fillStyle = activeMission ? "#00ff88" : "#fbbf24";
+            ctx.font = "bold 14px monospace";
+            const missionLabel = activeMission
+                ? `ACTIVE · ${state.mission.operator_name || state.mission.operator_id || "Operator"} · ${state.mission.zone || "Zone"}`
+                : (state.missionStatusKnown ? "NO ACTIVE MISSION" : "CHECKING MISSION…");
+            ctx.textAlign = "center";
+            ctx.fillText(missionLabel.slice(0, 42), chipX + chipW / 2, chipY + 31);
+            ctx.textAlign = "left";
+
+            // Helper chip function
+            function drawHeaderChip(x, w, label, val, valColor = "#ffffff") {
+                ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
+                ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
+                ctx.lineWidth = 1;
+                roundRect(ctx, x, chipY, w, chipH, 8, true, true);
+
+                ctx.fillStyle = "#94a3b8";
+                ctx.font = "11px monospace";
+                ctx.fillText(label, x + 10, chipY + 20);
+
+                ctx.fillStyle = valColor;
+                ctx.font = "bold 15px monospace";
+                ctx.fillText(val, x + 10, chipY + 41);
+            }
+
+            // Right Status Chips: Robot, Control, FPS, RTT, Battery
+            drawHeaderChip(485, 115, "ROBOT", state.robotConnected ? "ONLINE" : "--", state.robotConnected ? "#00ff88" : "#94a3b8");
+            drawHeaderChip(610, 115, "CONTROL", state.robotMode.toUpperCase(), state.robotConnected ? "#00f0ff" : "#94a3b8");
+            drawHeaderChip(735, 80, "FPS", `${state.fps}`, "#38bdf8");
+            drawHeaderChip(825, 75, "RTT", state.rttMs !== null ? `${state.rttMs}ms` : "--", "#a78bfa");
+            drawHeaderChip(910, 75, "BATTERY", state.battery > 0 ? `${Math.round(state.battery)}%` : "--%", state.battery > 20 ? "#00ff88" : "#ff2a4b");
+
+            texture.needsUpdate = true;
+        }
+
+        function drawEmergencyBanner() {
+            const { ctx, canvas: c, texture } = emergencyBanner;
+            ctx.clearRect(0, 0, c.width, c.height);
+
+            if (!state.eStopActive) {
+                emergencyBanner.mesh.visible = false;
+                return;
+            }
+            emergencyBanner.mesh.visible = true;
+
+            // Translucent glowing emergency red panel
+            ctx.fillStyle = "rgba(69, 10, 10, 0.96)";
+            ctx.strokeStyle = "#dc2626";
+            ctx.lineWidth = 3.5;
+            roundRect(ctx, 4, 4, c.width - 8, c.height - 8, 18, true, true);
+
+            // Warning Pill
+            ctx.fillStyle = "rgba(220, 38, 38, 0.35)";
+            ctx.strokeStyle = "#ef4444";
+            ctx.lineWidth = 1.5;
+            roundRect(ctx, 24, 20, 260, 36, 8, true, true);
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 13px monospace";
+            ctx.textAlign = "center";
+            ctx.fillText("⚠ EMERGENCY STOP LATCHED", 154, 43);
+            ctx.textAlign = "left";
+
+            // Title
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 26px -apple-system, monospace";
+            ctx.fillText("SAFETY INTERLOCK ENGAGED", 24, 95);
+
+            // Detail
+            ctx.fillStyle = "#fca5a5";
+            ctx.font = "15px -apple-system, monospace";
+            ctx.fillText("All robot locomotion and direct kinematics are frozen.", 24, 126);
+            ctx.fillText("Clear surrounding hazard and reset e-stop to resume driving.", 24, 148);
+
+            // RESET BUTTON
+            const btnX = 220;
+            const btnY = 175;
+            const btnW = 280;
+            const btnH = 65;
+            ctx.fillStyle = "#dc2626";
+            ctx.strokeStyle = "#ffffff";
+            ctx.lineWidth = 2;
+            roundRect(ctx, btnX, btnY, btnW, btnH, 12, true, true);
+
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 22px -apple-system, monospace";
+            ctx.textAlign = "center";
+            ctx.fillText("RESET E-STOP", btnX + btnW / 2, btnY + 41);
+            ctx.textAlign = "left";
+
+            texture.needsUpdate = true;
+        }
 
         function drawCenterPanel() {
             const { ctx, canvas: c, texture } = centerPanel;
@@ -893,11 +1046,11 @@
 
             texture.needsUpdate = true;
         }
-        // 3. BOTTOM PANEL: INTENSITY & EMERGENCY STOP FLIGHT DOCK (Angled forward desk)
+        // 3. BOTTOM PANEL: INTENSITY, STOP & CONTROL STRIP (Tilted desk at 0.9m distance)
         const bottomPanel = createHoloPanel(
-            1.6, 0.40, 640, 160,
-            new THREE.Vector3(0, 0.58, -1.75),
-            0, -Math.PI / 6.5 // Tilted ~27.7° upwards towards pilot
+            1.35, 0.28, 800, 166,
+            new THREE.Vector3(0, deskY, deskZ),
+            0, deskTiltX
         );
 
         // Restored: deleted in 1d4f16c while drawBottomPanel still calls it. Without it the page
@@ -921,7 +1074,7 @@
             ctx.clearRect(0, 0, c.width, c.height);
 
             // Translucent rounded bar with glowing border
-            ctx.fillStyle = "rgba(10, 16, 28, 0.92)";
+            ctx.fillStyle = "rgba(10, 16, 28, 0.94)";
             ctx.strokeStyle = "rgba(220, 230, 255, 0.95)";
             ctx.lineWidth = 3;
             roundRect(ctx, 4, 4, c.width - 8, c.height - 8, 20, true, true);
@@ -932,31 +1085,48 @@
             ctx.fillText("INTENSITY", 28, 38);
 
             // Intensity Segmented Buttons: LOW, MEDIUM, HIGH
-            drawSegmentBtn(ctx, 24, 52, 68, 52, "LOW", state.intensity === "LOW");
-            drawSegmentBtn(ctx, 92, 52, 88, 52, "MEDIUM", state.intensity === "MEDIUM");
-            drawSegmentBtn(ctx, 180, 52, 74, 52, "HIGH", state.intensity === "HIGH");
+            drawSegmentBtn(ctx, 24, 52, 76, 56, "LOW", state.intensity === "LOW");
+            drawSegmentBtn(ctx, 106, 52, 96, 56, "MEDIUM", state.intensity === "MEDIUM");
+            drawSegmentBtn(ctx, 208, 52, 80, 56, "HIGH", state.intensity === "HIGH");
 
             // BIG RED STOP BUTTON
-            const stopX = 270;
-            const stopY = 28;
+            const stopX = 310;
+            const stopY = 26;
             const stopW = 230;
-            const stopH = 84;
-            ctx.fillStyle = state.eStopActive ? "#991b1b" : "#dc2626"; // Vibrant red
+            const stopH = 88;
+            ctx.fillStyle = state.eStopActive ? "#991b1b" : "#dc2626";
             roundRect(ctx, stopX, stopY, stopW, stopH, 14, true, false);
 
             ctx.fillStyle = "#ffffff";
             ctx.font = "bold 26px -apple-system, monospace";
             ctx.textAlign = "center";
-            ctx.fillText(state.eStopActive ? "RESET E-STOP" : "STOP", stopX + stopW / 2, stopY + 42);
+            ctx.fillText(state.eStopActive ? "RESET E-STOP" : "STOP", stopX + stopW / 2, stopY + 44);
 
             ctx.font = "13px -apple-system, monospace";
-            ctx.fillText("A button · or laser trigger", stopX + stopW / 2, stopY + 68);
+            ctx.fillText("A button · or laser trigger", stopX + stopW / 2, stopY + 70);
+
+            // END MISSION BUTTON (visible and active when mission is in progress)
+            const activeMission = Boolean(state.mission?.active);
+            if (activeMission) {
+                const endX = 556;
+                const endY = 40;
+                const endW = 120;
+                const endH = 58;
+                ctx.fillStyle = Date.now() < state.endMissionConfirmUntil ? "#b91c1c" : "rgba(220, 38, 38, 0.25)";
+                ctx.strokeStyle = "#ef4444";
+                ctx.lineWidth = 1.5;
+                roundRect(ctx, endX, endY, endW, endH, 10, true, true);
+
+                ctx.fillStyle = "#ffffff";
+                ctx.font = "bold 13px -apple-system, monospace";
+                ctx.fillText(Date.now() < state.endMissionConfirmUntil ? "CONFIRM?" : "End mission", endX + endW / 2, endY + 35);
+            }
 
             // EXIT VR BUTTON
-            const exitX = 520;
-            const exitY = 44;
-            const exitW = 100;
-            const exitH = 54;
+            const exitX = activeMission ? 690 : 570;
+            const exitW = activeMission ? 95 : 180;
+            const exitY = 40;
+            const exitH = 58;
             ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
             ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
             ctx.lineWidth = 1.5;
@@ -964,17 +1134,17 @@
 
             ctx.fillStyle = "#ffffff";
             ctx.font = "bold 15px -apple-system, monospace";
-            ctx.fillText("Exit VR", exitX + exitW / 2, exitY + 33);
+            ctx.fillText("Exit VR", exitX + exitW / 2, exitY + 35);
             ctx.textAlign = "left"; // Reset
 
             texture.needsUpdate = true;
         }
 
-        // 4. RIGHT PANEL: ACTIONS, POSTURES & SENSORS (Spread out to right)
+        // 4. RIGHT PANEL: ACTIONS, POSTURES & SENSORS (Placed on +36° arc at 1.3m)
         const rightPanel = createHoloPanel(
-            1.35, 1.6, 540, 640,
-            new THREE.Vector3(1.85, 1.40, -1.95),
-            -Math.PI * 0.23, 0 // Angled ~41.4° inward
+            0.92, 1.09, 540, 640,
+            new THREE.Vector3(rightArcX, EYE_LEVEL, rightArcZ),
+            -SIDE_PANEL_YAW, 0 // Angled -36° inward facing pilot
         );
 
         function drawRightPanel() {
@@ -1133,6 +1303,8 @@
         drawBottomPanel();
         drawRightPanel();
         drawMissionPanel();
+        drawHeaderPanel();
+        drawEmergencyBanner();
 
         // --- Interaction: Raycasting & Click Handling ---
         const raycaster = new THREE.Raycaster();
@@ -1301,56 +1473,98 @@
         }
 
         async function handleBottomPanelClick(uvX, uvY) {
-            // Intensity Buttons
-            if (uvY >= 0.30 && uvY <= 0.75) {
-                if (uvX >= 0.03 && uvX <= 0.15) {
+            const x = uvX * bottomPanel.canvas.width;
+            const y = (1 - uvY) * bottomPanel.canvas.height;
+
+            // Intensity Buttons: y: 45 to 115
+            if (y >= 45 && y <= 115) {
+                if (x >= 24 && x <= 100) {
                     state.intensity = 'LOW';
                     state.speed = 0.3;
                     playChime(600, 0.05);
                     drawBottomPanel();
-                } else if (uvX >= 0.14 && uvX <= 0.29) {
+                } else if (x >= 106 && x <= 202) {
                     state.intensity = 'MEDIUM';
                     state.speed = 0.6;
                     playChime(700, 0.05);
                     drawBottomPanel();
-                } else if (uvX >= 0.28 && uvX <= 0.41) {
+                } else if (x >= 208 && x <= 288) {
                     state.intensity = 'HIGH';
                     state.speed = 1.0;
                     playChime(850, 0.05);
                     drawBottomPanel();
                 }
             }
-            // Stop button
-            if (uvX >= 0.42 && uvX <= 0.79 && uvY >= 0.25 && uvY <= 0.85) {
+
+            // Stop button: x: 310 to 540, y: 26 to 114
+            if (x >= 310 && x <= 540 && y >= 26 && y <= 114) {
                 if (state.eStopActive) await resetEmergencyStop();
                 else await stopRobot();
             }
-            // Exit VR button
-            if (uvX >= 0.80 && uvX <= 0.98 && uvY >= 0.30 && uvY <= 0.75) {
-                const session = renderer.xr.getSession();
-                if (session) session.end();
+
+            const activeMission = Boolean(state.mission?.active);
+            if (activeMission) {
+                // End mission button: x: 556 to 676, y: 40 to 98
+                if (x >= 556 && x <= 676 && y >= 40 && y <= 98) {
+                    await endMission();
+                }
+                // Exit VR button: x: 690 to 785, y: 40 to 98
+                if (x >= 690 && x <= 785 && y >= 40 && y <= 98) {
+                    const session = renderer.xr.getSession();
+                    if (session) session.end();
+                }
+            } else {
+                // Exit VR button: x: 570 to 750, y: 40 to 98
+                if (x >= 570 && x <= 750 && y >= 40 && y <= 98) {
+                    const session = renderer.xr.getSession();
+                    if (session) session.end();
+                }
             }
         }
 
         async function handleMissionPanelClick(uvX, uvY) {
             const x = uvX * missionPanel.canvas.width;
             const y = (1 - uvY) * missionPanel.canvas.height;
-            if (y >= 96 && y <= 134) {
-                if (x >= 20 && x < 62 && state.operators.length && !state.mission?.active) {
+
+            // Operator prev/next: y: 100 to 155
+            if (y >= 100 && y <= 155) {
+                if (x >= 24 && x <= 74 && state.operators.length && !state.mission?.active) {
                     state.operatorIndex = (state.operatorIndex - 1 + state.operators.length) % state.operators.length;
                     syncMissionControls();
-                } else if (x >= 426 && x <= 468 && state.operators.length && !state.mission?.active) {
+                } else if (x >= 526 && x <= 576 && state.operators.length && !state.mission?.active) {
                     state.operatorIndex = (state.operatorIndex + 1) % state.operators.length;
                     syncMissionControls();
                 }
-            } else if (y >= 166 && y <= 204 && !state.mission?.active) {
+            }
+            // Zone prev/next: y: 175 to 230
+            else if (y >= 175 && y <= 230 && !state.mission?.active) {
                 const current = missionZones.indexOf(state.zone);
-                if (x >= 20 && x < 62) state.zone = missionZones[(current - 1 + missionZones.length) % missionZones.length];
-                else if (x >= 426 && x <= 468) state.zone = missionZones[(current + 1 + missionZones.length) % missionZones.length];
+                if (x >= 24 && x <= 74) state.zone = missionZones[(current - 1 + missionZones.length) % missionZones.length];
+                else if (x >= 526 && x <= 576) state.zone = missionZones[(current + 1 + missionZones.length) % missionZones.length];
                 syncMissionControls();
-            } else if (y >= 208 && y <= 240) {
-                if (x >= 20 && x <= 240 && !state.mission?.active) await startMission();
-                else if (x >= 280 && x <= 500 && state.mission?.active) await endMission();
+            }
+            // Start mission: x: 175 to 425, y: 235 to 300
+            else if (y >= 235 && y <= 300) {
+                if (x >= 175 && x <= 425 && !state.mission?.active) await startMission();
+            }
+        }
+
+        async function handleEmergencyBannerClick(uvX, uvY) {
+            const x = uvX * emergencyBanner.canvas.width;
+            const y = (1 - uvY) * emergencyBanner.canvas.height;
+            // Reset button: x: 200 to 520, y: 160 to 250
+            if (x >= 200 && x <= 520 && y >= 160 && y <= 250) {
+                playChime(600, 0.08);
+                await resetEmergencyStop();
+            }
+        }
+
+        function handleHeaderPanelClick(uvX, uvY) {
+            const x = uvX * headerPanel.canvas.width;
+            // Clicking mission chip (x: 130 to 470) toggles mission panel
+            if (x >= 130 && x <= 470) {
+                missionPanel.mesh.visible = !missionPanel.mesh.visible;
+                playChime(700, 0.05);
             }
         }
 
@@ -1409,7 +1623,11 @@
         }
 
         function dispatchRaycastInteraction(ray) {
-            const interactiveMeshes = [bottomPanel.mesh, rightPanel.mesh, missionPanel.mesh];
+            const interactiveMeshes = [bottomPanel.mesh, rightPanel.mesh];
+            if (headerPanel && headerPanel.mesh) interactiveMeshes.push(headerPanel.mesh);
+            if (missionPanel && missionPanel.mesh.visible) interactiveMeshes.push(missionPanel.mesh);
+            if (emergencyBanner && emergencyBanner.mesh.visible) interactiveMeshes.push(emergencyBanner.mesh);
+
             const hits = ray.intersectObjects(interactiveMeshes);
             if (hits.length > 0) {
                 const hit = hits[0];
@@ -1420,6 +1638,10 @@
                     handleRightPanelClick(uv.x, uv.y);
                 } else if (hit.object === missionPanel.mesh) {
                     handleMissionPanelClick(uv.x, uv.y);
+                } else if (hit.object === emergencyBanner.mesh) {
+                    handleEmergencyBannerClick(uv.x, uv.y);
+                } else if (hit.object === headerPanel.mesh) {
+                    handleHeaderPanelClick(uv.x, uv.y);
                 }
             }
         }
@@ -1491,7 +1713,7 @@
         function recenterCamera() {
             camYaw = 0;
             camPitch = 0;
-            camera.position.set(0, 1.4, 0);
+            camera.position.set(0, EYE_LEVEL, 0);
             camera.rotation.set(0, 0, 0, 'YXZ');
             playChime(900, 0.08);
             updateCommandStatus("VIEW_RESET", "View recentered");
@@ -1648,12 +1870,16 @@
             virtualJoystickHasSentMotion = false;
             drawLeftPanel();
             drawBottomPanel();
+            drawHeaderPanel();
+            drawEmergencyBanner();
             return sendApiCommand("/api/v1/emergency-stop", { source: "emergency" });
         }
 
         async function resetEmergencyStop() {
             state.eStopActive = false;
             drawBottomPanel();
+            drawHeaderPanel();
+            drawEmergencyBanner();
             return sendApiCommand("/api/v1/emergency-stop/reset", { sequenced: true });
         }
 
@@ -1720,6 +1946,7 @@
                 state.robotConnected = true;
                 drawLeftPanel();
                 drawCenterPanel();
+                drawHeaderPanel();
             };
             ws.onmessage = (event) => {
                 try {
@@ -1733,6 +1960,8 @@
                         drawLeftPanel();
                         drawCenterPanel();
                         drawBottomPanel();
+                        drawHeaderPanel();
+                        drawEmergencyBanner();
                     }
                     if (data.type === 'mission_update' && data.mission) applyMissionStatus(data.mission);
                 } catch (e) {}
@@ -1740,6 +1969,7 @@
             ws.onclose = () => {
                 state.robotConnected = false;
                 drawLeftPanel();
+                drawHeaderPanel();
                 setTimeout(initWebSocket, 2000);
             };
         }
@@ -1775,6 +2005,7 @@
                 state.fps = Math.round((frameCount * 1000) / (now - lastFpsTime));
                 frameCount = 0;
                 lastFpsTime = now;
+                drawHeaderPanel();
             }
 
             renderer.render(scene, camera);

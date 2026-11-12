@@ -49,6 +49,19 @@ def test_cockpit_endpoint():
         assert "BARRY // COCKPIT" in resp.text
         assert "DOGZILLA FORWARD OPTICS" in resp.text
 
+
+def test_cockpit_vr_endpoint():
+    """Verifies that /cockpit/vr returns WebXR 3D cockpit aligned with Unity Barry.exe layout."""
+    with TestClient(app) as client:
+        resp = client.get("/cockpit/vr")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert "EYE_LEVEL" in resp.text
+        assert "SIDE_PANEL_YAW" in resp.text
+        assert "headerPanel" in resp.text
+        assert "emergencyBanner" in resp.text
+        assert "BARRY" in resp.text
+
     line3 = "Tag UID: A1:B2:C3:D4"
     match3 = UID_REGEX.search(line3)
     assert match3 is not None
