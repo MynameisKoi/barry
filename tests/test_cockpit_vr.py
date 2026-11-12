@@ -114,6 +114,7 @@ def _run_find_ui_js(checks):
     presets = html[html.index("const LLM_PRESETS = ["):html.index("// Galactic theme tokens")]
     handlers = html[html.index("const finding = () =>"):html.index("let llmPoll = null;")]
     start_goal = html[html.index("async function startGoal(goal)"):html.index("async function cancelGoal()")]
+    helpers = html[html.index("function scrollBrain(lines)"):html.index('new Panel("brain",')]
     panels = html[html.index('new Panel("brain",'):html.index("// ------------------------------------------------------------------ renderer, scene, environment")]
     script = r'''
 const assert = require("node:assert/strict");
@@ -121,6 +122,7 @@ const state = {brainOpen:true, llmTask:{state:"idle", steps:[]}};
 const desktop = {};
 const document = {getElementById:()=>desktop};
 const markDirty = ()=>{};
+const setFont = ()=>{};
 const pollLlm = ()=>{};
 const cancelGoal = ()=>{};
 const T = new Proxy({}, {get:()=>"color"});
@@ -130,10 +132,11 @@ let texts=[], buttons={};
 const txt=(_ctx,text)=>texts.push(text);
 const definitions={};
 class Panel {constructor(name, options){definitions[name]=options;}}
+const ctx = {save:()=>{},restore:()=>{},beginPath:()=>{},rect:()=>{},clip:()=>{},measureText:()=>({width:10})};
 const panel = {fs:x=>x, root:()=>{}, button:(id,x,y,w,h,fn)=>{buttons[id]=fn;return false;}};
 let calls=[];
 global.fetch=async(url,options)=>{calls.push({url,options});return {ok:true,json:async()=>({task:{mode:"find",state:"running",target:"ball",steps:[]}})};};
-''' + presets + handlers + start_goal + panels + '\n(async()=>{\n' + checks + '\n})().catch(e=>{console.error(e);process.exit(1)});'
+''' + presets + handlers + start_goal + helpers + panels + '\n(async()=>{\n' + checks + '\n})().catch(e=>{console.error(e);process.exit(1)});'
     result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -183,8 +186,62 @@ def test_brain_cancel_switches_label_and_handler_for_find_tasks():
     _run_find_ui_js(r'''
 for (const mode of ["plan","find"]) {
   texts=[];buttons={};state.llmTask={mode,state:"running",steps:[]};
-  definitions.brain.draw({},panel);
+  definitions.brain.draw(ctx,panel);
   assert.ok(texts.includes(mode==="find" ? "Stop finding" : "Cancel"));
   assert.equal(buttons.cancel,mode==="find" ? stopFinding : cancelGoal);
 }
 ''')
+
+
+def test_brain_answer_scroll_behavior_and_controller_motion_isolation():
+    """Run shipped canvas/scroll/controller code against Node test doubles."""
+    import shutil
+    import subprocess
+    import pytest
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js required for cockpit behavior coverage")
+    html = TestClient(app).get("/cockpit/vr").text
+    helpers = html[html.index("function scrollBrain(lines)"):html.index('new Panel("brain",')]
+    brain = html[html.index('new Panel("brain",'):html.index('new Panel("auto",')]
+    controllers = html[html.index("function updateControllers(now, dt)"):html.index("// ------------------------------------------------------------------ desktop:")]
+    script = r'''
+const assert=require('node:assert/strict');
+const state={brainOpen:true,llmTask:{id:'one',state:'done',answer:Array.from({length:30},(_,i)=>`Line ${i+1}`).join('\n'),steps:[{tool:'turn',args:{degrees:30}}]}};
+const DEAD_ZONE=.12,VOICE_HOLD_S=.35,ESTOP_HOLD_S=.3;
+const markDirty=()=>{},setFont=()=>{},chip=()=>{},fillRR=()=>{},wrap=()=>{};
+const T=new Proxy({},{get:()=>''}),LLM_PRESETS=[];
+const startGoal=()=>{},cancelGoal=()=>{},stopFinding=()=>{};
+let definition,texts=[],buttons={},clipped=false,clipHeight=0;
+class Panel{constructor(name,options){definition=options;}}
+const ctx={save:()=>{},restore:()=>{},beginPath:()=>{},rect:(x,y,w,h)=>{clipHeight=h;},clip:()=>{clipped=true;},measureText:t=>({width:t.length*10})};
+const txt=(ctx,text)=>texts.push(text);
+const p={fs:x=>x,root:()=>{},button:(id,x,y,w,h,fn,enabled=true)=>{buttons[id]={fn,enabled};return false;}};
+''' + helpers + brain + r'''
+definition.draw(ctx,p);
+assert.equal(clipped,true);assert.equal(buttons.answerUp.enabled,false);
+assert.ok(texts.includes('line 1–9 of 30'));assert.ok(!texts.includes('turn 30°'));
+const expanded=clipHeight;buttons.answerDown.fn();assert.equal(state.brainScroll,1);
+texts=[];definition.draw(ctx,p);assert.ok(texts.includes('line 2–10 of 30'));
+state.llmTask.state='running';definition.draw(ctx,p);assert.ok(clipHeight<expanded);
+state.llmTask.answer+='\nNew answer';definition.draw(ctx,p);assert.equal(state.brainScroll,0);
+scrollBrain(3);state.llmTask.id='two';definition.draw(ctx,p);assert.equal(state.brainScroll,0);
+scrollBrain(1000);definition.draw(ctx,p);assert.equal(buttons.answerDown.enabled,false);
+state.brainScroll=0;state.brainScrollMax=20;
+const stick={};scrollBrainStick(stick,1,true,1000);assert.equal(state.brainScroll,1);
+scrollBrainStick(stick,1,true,1100);assert.equal(state.brainScroll,1);
+scrollBrainStick(stick,1,true,1150);assert.equal(state.brainScroll,2);
+scrollBrainStick(stick,1,false,1300);assert.equal(state.brainScroll,2);
+const vec={copy(){return this},set(){return this},applyMatrix4(){return this},setFromMatrixPosition(){return this}};
+const tmpMat={identity(){return this},extractRotation(){return this}},tmpOrigin=vec,tmpDir=vec,tmpQuat={};
+const panels={brain:{}},pickPanel=()=>panels.brain,pick=()=>null,setHover=()=>{};
+const controllers=[{hand:'right',source:{gamepad:{axes:[0,0,0,1],buttons:[]}},target:{matrixWorld:{}},cursor:{},ray:{userData:{setLength:()=>{}}},prev:{}}];
+const stopRobot=()=>{},toggleActions=()=>{},cycleIntensity=()=>{},startTalking=()=>{},stopTalking=()=>{},triggerEmergencyStop=()=>{},updateGrab=()=>{},resetLayout=()=>{};
+let estopHeld=0,resetHeld=0,sent;
+const radial=(x,y)=>[x,y],r2=x=>x,teleopTick=(now,motion)=>{sent=motion};
+''' + controllers + r'''
+updateControllers(2000,.016);
+assert.equal(Math.abs(sent.forward),0);assert.equal(Math.abs(sent.turn),0);assert.equal(Math.abs(sent.strafe),0);
+'''
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
