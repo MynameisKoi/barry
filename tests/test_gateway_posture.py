@@ -11,7 +11,7 @@ from backend.robot.remote import RemoteRobotClient
 from backend.robot.simulator import RobotSimulator
 
 
-@pytest.mark.parametrize('source', ['hand', 'voice', 'llm', 'emergency'])
+@pytest.mark.parametrize('source', ['voice', 'llm', 'emergency'])
 def test_posture_limits_and_level(source):
     async def run():
         sim = RobotSimulator()
@@ -80,7 +80,7 @@ def test_measured_imu_does_not_block_commanded_neutral_posture(source):
             assert (await gateway.motion(MotionCommand(forward=.3), source=source)).status == 'ACCEPTED'
             assert (await gateway.set_posture({'height': 'medium', 'pitch': -8}, source=source)).status == 'ACCEPTED'
             await gateway.status(source=source)
-            assert (await gateway.motion(MotionCommand(forward=.3), source=source)).status == 'INVALID'
+            assert (await gateway.motion(MotionCommand(forward=.3), source=source)).status == ('ACCEPTED' if source == 'hand' else 'INVALID')
             assert (await gateway.level_posture(source=source)).status == 'ACCEPTED'
             await gateway.status(source=source)
             assert (await gateway.motion(MotionCommand(forward=.3), source=source)).status == 'ACCEPTED'
@@ -88,4 +88,35 @@ def test_measured_imu_does_not_block_commanded_neutral_posture(source):
             assert (await gateway.motion(MotionCommand(forward=.3), source=source)).status == 'ACCEPTED'
         finally:
             robot.close()
+    asyncio.run(run())
+
+
+def test_hand_takeover_stops_levels_settles_then_moves():
+    async def run():
+        class RecordingSimulator(RobotSimulator):
+            def stop(self):
+                events.append('stop')
+                return super().stop()
+            def set_posture(self, posture):
+                events.append(('posture', posture.height.value, posture.pitch))
+                return super().set_posture(posture)
+            def move_analog(self, command):
+                events.append('motion')
+                return super().move_analog(command)
+        events = []
+        sim = RecordingSimulator()
+        gateway = CommandGateway(sim)
+        gateway.posture_settle_s = .02
+        assert (await gateway.set_posture({'height': 'low', 'pitch': -8}, source='llm')).status == 'ACCEPTED'
+        sim.moving = True
+        events.clear()
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        result = await gateway.motion(MotionCommand(forward=.3), source='hand')
+        assert result.status == 'ACCEPTED'
+        assert loop.time() - started >= .02
+        assert events == ['stop', ('posture', 'medium', 0), 'motion']
+        assert sim.get_control_state().posture.pitch == 0
+        assert sim.get_control_state().posture.height.value == 'medium'
+        assert (await gateway.set_posture({'height': 'low', 'pitch': 11}, source='hand')).status == 'INVALID'
     asyncio.run(run())
