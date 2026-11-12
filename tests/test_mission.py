@@ -45,8 +45,9 @@ def test_mission_lifecycle(test_db):
     assert post_status["active"] is False
 
 
-def test_invalid_operator_mission_start(test_db):
-    """Verifies that non-existent operators cannot start a mission."""
+def test_invalid_operator_mission_start(monkeypatch, test_db):
+    """Verifies that non-existent operators cannot start a mission when unregistered tags are disallowed."""
+    monkeypatch.setenv("AUTH_ALLOW_UNREGISTERED_TAGS", "false")
     service = MissionService(db_manager=test_db)
     with pytest.raises(ValueError):
         service.start_mission(operator_id="NON_EXISTENT_OP", zone="Zone-X")

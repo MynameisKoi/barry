@@ -61,7 +61,13 @@ class CommandGateway:
         self.live_detections = live_detections
 
     def _mission_required(self, source: str) -> bool:
-        """Only voice and LLM control require an active mission; hand control operates directly."""
+        """Determines if an active mission is required.
+        When REQUIRE_ACTIVE_MISSION is disabled (default for frictionless testing / teammate onboarding),
+        all sources (hand, voice, llm) operate with full access without requiring an active mission.
+        """
+        require_mission = os.environ.get("REQUIRE_ACTIVE_MISSION", "false").lower() in ("1", "true", "yes")
+        if not require_mission:
+            return False
         return source in {"voice", "llm"} and not self.mission_check()
 
     async def motion(self, command: MotionCommand, *, source: str) -> GatewayResult:

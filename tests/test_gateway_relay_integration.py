@@ -130,7 +130,8 @@ def test_quest_session_delete_stops_motion_and_invalidates_the_session(monkeypat
     assert paths.count(protocol.PATH_STOP) >= 1
 
 
-def test_hand_motion_succeeds_without_mission_while_voice_and_llm_require_mission():
+def test_hand_motion_succeeds_without_mission_while_voice_and_llm_require_mission(monkeypatch):
+    monkeypatch.setenv("REQUIRE_ACTIVE_MISSION", "true")
     active = False
     def pi(request):
         return httpx.Response(201 if request.url.path == protocol.PATH_SESSION else 200,
@@ -142,7 +143,7 @@ def test_hand_motion_succeeds_without_mission_while_voice_and_llm_require_missio
     client = TestClient(app); headers = quest_headers(client)
     # Hand motion via /api/v1/motion succeeds even when active == False
     assert client.post(protocol.PATH_MOTION, json={"forward": .2}, headers=headers).status_code == 200
-    # Voice and LLM are blocked with MISSION_REQUIRED while active == False
+    # Voice and LLM are blocked with MISSION_REQUIRED while active == False and REQUIRE_ACTIVE_MISSION=true
     gateway._last_hand_at = 0.0
     voice_blocked = asyncio.run(gateway.motion(MotionCommand(forward=0.2), source="voice"))
     llm_blocked = asyncio.run(gateway.motion(MotionCommand(forward=0.2), source="llm"))
@@ -154,6 +155,14 @@ def test_hand_motion_succeeds_without_mission_while_voice_and_llm_require_missio
     llm_ok = asyncio.run(gateway.motion(MotionCommand(forward=0.2), source="llm"))
     assert voice_ok.status == "ACCEPTED"
     assert llm_ok.status == "ACCEPTED"
+
+    # When REQUIRE_ACTIVE_MISSION is false (full access mode), voice & llm succeed without mission
+    monkeypatch.setenv("REQUIRE_ACTIVE_MISSION", "false")
+    active = False
+    voice_free = asyncio.run(gateway.motion(MotionCommand(forward=0.2), source="voice"))
+    llm_free = asyncio.run(gateway.motion(MotionCommand(forward=0.2), source="llm"))
+    assert voice_free.status == "ACCEPTED"
+    assert llm_free.status == "ACCEPTED"
 
 
 @pytest.mark.parametrize("path", [protocol.PATH_STOP, protocol.PATH_EMERGENCY_STOP])

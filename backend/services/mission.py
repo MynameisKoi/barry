@@ -6,6 +6,7 @@ audit event persistence, and active inspection state.
 
 from datetime import datetime, timezone
 import json
+import os
 from typing import Any, Dict, List, Optional
 import uuid
 from backend.database import DatabaseManager, db
@@ -27,16 +28,27 @@ class MissionService:
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
 
-            # Verify operator exists
+            # Verify operator exists, or auto-provision if unregistered
             cursor.execute(
                 "SELECT operator_id, name, role FROM operators WHERE operator_id = ?",
                 (operator_id.strip(),),
             )
             op = cursor.fetchone()
             if not op:
-                raise ValueError(
-                    f"Cannot start mission: Operator '{operator_id}' not found."
-                )
+                allow_anon_op = os.environ.get("AUTH_ALLOW_UNREGISTERED_TAGS", "true").lower() in ("1", "true", "yes")
+                if allow_anon_op:
+                    cursor.execute(
+                        """
+                        INSERT OR REPLACE INTO operators (operator_id, name, role, tag_uid, created_at)
+                        VALUES (?, ?, 'Field Operator', ?, ?)
+                        """,
+                        (operator_id.strip(), f"Operator {operator_id.strip()}", f"AUTOGEN-{operator_id.strip()}", timestamp),
+                    )
+                    op = {"operator_id": operator_id.strip(), "name": f"Operator {operator_id.strip()}", "role": "Field Operator"}
+                else:
+                    raise ValueError(
+                        f"Cannot start mission: Operator '{operator_id}' not found."
+                    )
 
             # Check if there is already an active mission
             cursor.execute(
