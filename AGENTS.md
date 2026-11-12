@@ -50,6 +50,8 @@ One source of truth for every agent (Tomville team agents and partner agents) wo
 
 ## 2. Current architecture and alignment status
 
+Posture: pitch is forwarded unchanged to SDK `attitude("p", pitch)`; camera-down sign cannot be established from code and requires Tom’s hardware verification. Simulator posture changes immediately. `POSTURE_SETTLE_S` defaults to 0.5 s (uncalibrated hardware estimate). Gateway motion requires zero attitude and medium height; call `level_posture(source=...)` before moving.
+
 ### WebXR cockpit = 1:1 port of the Unity dashboard
 `backend/static/cockpit_vr.html` is a port of `frontend/barry-vr/Assets/Barry/App/Editor/DashboardSceneBuilder.cs`
 (same positions, sizes, Galactic theme tokens, copy and controller mapping; three.js r187 self-hosted in

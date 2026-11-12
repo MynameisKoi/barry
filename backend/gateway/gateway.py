@@ -46,6 +46,7 @@ class CommandGateway:
         self._active_task: asyncio.Task[Any] | None = None
         self._active_source: str | None = None
         self._arbitration_lock = asyncio.Lock()
+        self.posture_settle_s = _env_float("POSTURE_SETTLE_S", 0.5)
         self.hand_hold_s = _env_float("GATEWAY_HAND_HOLD_S", 2.0)
         self._last_hand_at = 0.0
         try:
@@ -77,6 +78,9 @@ class CommandGateway:
         blocked = await self._prepare(source, cid)
         if blocked:
             return blocked
+        posture_block = None if command.is_zero else self._posture_motion_block(source, cid)
+        if posture_block:
+            return posture_block
         if self._emergency_stopped:
             return GatewayResult("ESTOP_ACTIVE", "Emergency stop is latched.", cid, source)
         if self._mission_required(source):
@@ -136,6 +140,9 @@ class CommandGateway:
         blocked = await self._prepare(source, cid)
         if blocked:
             return blocked
+        posture_block = self._posture_motion_block(source, cid)
+        if posture_block:
+            return posture_block
         if self._emergency_stopped:
             return GatewayResult("ESTOP_ACTIVE", "Emergency stop is latched.", cid, source)
         if self._mission_required(source):
@@ -296,6 +303,9 @@ class CommandGateway:
         blocked = await self._prepare(source, cid)
         if blocked:
             return blocked
+        posture_block = self._posture_motion_block(source, cid)
+        if posture_block:
+            return posture_block
         if self._emergency_stopped:
             return GatewayResult("ESTOP_ACTIVE", "Emergency stop is latched.", cid, source)
         if self._mission_required(source):
@@ -369,6 +379,9 @@ class CommandGateway:
         blocked = await self._prepare(source, cid)
         if blocked:
             return blocked
+        posture_block = self._posture_motion_block(source, cid)
+        if posture_block:
+            return posture_block
         if self._emergency_stopped:
             return GatewayResult("ESTOP_ACTIVE", "Emergency stop is latched.", cid, source)
         if self._mission_required(source):
@@ -384,7 +397,25 @@ class CommandGateway:
             return self._result(result, source, cid)
         return await self._run_owned(run(), source, cid)
 
+    def _posture_motion_block(self, source: str, cid: str) -> GatewayResult | None:
+        posture = self.robot.get_control_state().posture
+        if posture.pitch or posture.roll or posture.yaw or posture.height.value != "medium":
+            return GatewayResult("INVALID", "Level posture to medium height before motion (level_posture).", cid, source)
+        return None
+
+    async def level_posture(self, *, source: str) -> GatewayResult:
+        """Restore zero attitude and medium height, then wait for posture settling."""
+        return await self.set_posture({"height": "medium", "pitch": 0}, source=source)
+
     async def set_posture(self, values: dict[str, Any], *, source: str) -> GatewayResult:
+        """Set body attitude (degrees) and height in one command.
+
+        Pitch is forwarded unchanged to SDK attitude('p'); code does not establish
+        whether positive or negative pitch points the mounted camera down. Tom must
+        verify the physical sign. Simulator posture applies immediately; the default
+        POSTURE_SETTLE_S=0.5 is a conservative, uncalibrated hardware estimate.
+        Motion requires zero attitude and medium height; use level_posture first.
+        """
         cid = self._id(source)
         blocked = await self._prepare(source, cid)
         if blocked:
@@ -397,8 +428,21 @@ class CommandGateway:
                              values.get("pitch", 0), values.get("yaw", 0))
         except (ValueError, TypeError, KeyError) as exc:
             return GatewayResult("INVALID", str(exc), cid, source)
-        result = await self._robot_call("set_posture", target, source=source, cid=cid)
-        return self._result(result, source, cid)
+        from backend.robot.config import check_attitude
+        reason = check_attitude(target.roll, target.pitch, target.yaw)
+        if reason:
+            return GatewayResult("INVALID", reason, cid, source)
+        async def apply() -> GatewayResult:
+            if self.robot.get_control_state().moving:
+                stopped = await self._robot_call("stop", source=source, cid=cid)
+                if not stopped.ok:
+                    return self._result(stopped, source, cid)
+            result = await self._robot_call("set_posture", target, source=source, cid=cid)
+            outcome = self._result(result, source, cid)
+            if result.ok:
+                await asyncio.sleep(self.posture_settle_s)
+            return outcome
+        return await self._run_owned(apply(), source, cid)
 
     async def reset(self, *, source: str) -> GatewayResult:
         cid = self._id(source)
