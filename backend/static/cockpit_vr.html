@@ -138,7 +138,7 @@ function chime(freq, ms) {
     o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime + ms / 1000);
   } catch (e) {}
 }
-function setVoice(phase, text = "") { state.voice = { phase, text }; markDirty("header", "status"); }
+function setVoice(phase, text = "") { state.voice = { phase, text }; markDirty("header", "status", "strip"); }
 async function ensureMic() {
   if (voice.stream && voice.stream.active) return voice.stream;
   if (!navigator.mediaDevices?.getUserMedia) throw new Error(window.isSecureContext ? "no microphone API" : "microphone needs HTTPS or the chrome://flags origin");
@@ -673,6 +673,8 @@ class Panel {
   }
   /** Register a hit rect; returns true while it is hovered (and enabled). */
   button(id, x, y, w, h, onClick, enabled = true) { this.targets.push({ id, x, y, w, h, onClick, enabled }); return this.hover === id && enabled; }
+  /** Press-and-hold target: onPress when the trigger/mouse goes down on it, onRelease when it comes up (anywhere). */
+  hold(id, x, y, w, h, onPress, onRelease, enabled = true) { this.targets.push({ id, x, y, w, h, onPress, onRelease, enabled }); return this.hover === id && enabled; }
   /** { target } for a button, { solid: true } for an opaque area, null for a transparent spot (the ray passes on). */
   hit(uv) {
     const x = uv.x * (this.wPx + 2 * this.margin) - this.margin, y = (1 - uv.y) * (this.hPx + 2 * this.margin) - this.margin;
@@ -715,7 +717,7 @@ new Panel("header", {
     x += txt(ctx, "BARRY", x, 0, 200, H, { size: p.fs(20), weight: 800, font: "brand", tracking: 0.18, color: T.brand }) + 16;
     x += chip(ctx, x, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: c.mission[0], tone: c.mission[1] }) + 10;
     const vp = state.voice.phase;
-    if (vp === "listening") chip(ctx, x, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: "LISTENING · release Y to send", tone: "danger" });
+    if (vp === "listening") chip(ctx, x, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: "LISTENING · release to send", tone: "danger" });
     else if (vp === "sending") chip(ctx, x, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: "TRANSCRIBING…", tone: "accent" });
     let rx = W - 20;
     rx -= chip(ctx, rx, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: c.control[0], tone: c.control[1], anchorRight: true }) + 10;
@@ -871,15 +873,22 @@ new Panel("strip", {
     txt(ctx, "STOP", 360, 14 + 8, 240, 40, { size: p.fs(30), weight: 800, tracking: 0.12, color: "#FFFFFF", align: "center" });
     txt(ctx, "A button · or point + trigger", 360, 14 + 50, 240, 20, { size: p.fs(12), font: "mono", color: "#FFFFFF", align: "center", fit: true });
     const inXR = renderer.xr.isPresenting;
-    const eh = p.button("exit", 636, 28, 140, 52, () => renderer.xr.getSession()?.end(), inXR);
-    fillRR(ctx, 636, 28, 140, 52, 10, "#FFFFFF", eh ? T.accent : T.exitBorder, eh ? 2 : 1);
-    txt(ctx, "Exit VR", 636, 28, 140, 52, { size: p.fs(15), weight: 700, align: "center", color: inXR ? T.textPrimary : T.grey6B });
+    const eh = p.button("exit", 616, 28, 100, 52, () => renderer.xr.getSession()?.end(), inXR);
+    fillRR(ctx, 616, 28, 100, 52, 10, "#FFFFFF", eh ? T.accent : T.exitBorder, eh ? 2 : 1);
+    txt(ctx, "Exit VR", 616, 28, 100, 52, { size: p.fs(15), weight: 700, align: "center", color: inXR ? T.textPrimary : T.grey6B, fit: true });
+    // Hold to talk (point + hold trigger; same as holding Y). WebXR-only addition to the Unity strip.
+    const vp = state.voice.phase;
+    const th = p.hold("talk", 728, 28, 100, 52, startTalking, stopTalking);
+    const talkFill = vp === "listening" ? T.dangerSolid : vp === "sending" ? T.accentSoft : th ? T.accentSoft : "#FFFFFF";
+    fillRR(ctx, 728, 28, 100, 52, 10, talkFill, vp === "listening" ? T.dangerSolid : T.accent, th || vp === "listening" ? 2 : 1);
+    const talkLabel = vp === "listening" ? "Release to send" : vp === "sending" ? "Sending…" : "Hold to talk";
+    wrap(ctx, talkLabel, 734, 28, 88, 52, { size: p.fs(13), weight: 700, color: vp === "listening" ? "#FFFFFF" : T.accent, valign: "middle" });
     if (state.mission?.active) {                               // End mission: two presses within 3 s
       const armed = performance.now() < state.endArmedUntil;
       const label = state.endBusy ? "Ending…" : armed ? `Press again to end (${Math.ceil((state.endArmedUntil - performance.now()) / 1000)} s)` : state.endError ? "End failed · retry" : "End mission";
-      const mh = p.button("end", 796, 28, 140, 52, pressEndMission, !state.endBusy);
-      fillRR(ctx, 796, 28, 140, 52, 10, armed ? T.dangerSoft : "#FFFFFF", armed ? T.dangerSolid : mh ? T.accent : T.neutralBorder, armed || mh ? 2 : 1);
-      wrap(ctx, label, 802, 28, 128, 52, { size: p.fs(13), weight: 700, color: armed ? T.dangerText : T.grey3D, valign: "middle" });
+      const mh = p.button("end", 840, 28, 100, 52, pressEndMission, !state.endBusy);
+      fillRR(ctx, 840, 28, 100, 52, 10, armed ? T.dangerSoft : "#FFFFFF", armed ? T.dangerSolid : mh ? T.accent : T.neutralBorder, armed || mh ? 2 : 1);
+      wrap(ctx, label, 846, 28, 88, 52, { size: p.fs(13), weight: 700, color: armed ? T.dangerText : T.grey3D, valign: "middle" });
     }
   },
 });
@@ -1199,6 +1208,9 @@ function setHover(owner, result) {
   owner.hover = target ? result : null;
 }
 function clickTarget(h) { if (h?.target?.enabled && h.target.onClick) { h.target.onClick(); h.panel.dirty = true; } }
+/** Starts a press-and-hold target under the pointer; returns it so the caller can release it later. */
+function pressTarget(h) { if (h?.target?.enabled && h.target.onPress) { h.target.onPress(); h.panel.dirty = true; return h.target; } return null; }
+function releaseTarget(t) { if (t?.onRelease) t.onRelease(); markDirty("strip"); }
 
 for (let i = 0; i < 2; i++) {
   const target = renderer.xr.getController(i);
@@ -1213,9 +1225,11 @@ for (let i = 0; i < 2; i++) {
   });
   target.addEventListener("disconnected", () => {
     if (state.teleop === "DRIVING") stopRobot("Controller lost");     // tracking lost while driving → STOP
+    if (c.holding) { releaseTarget(c.holding); c.holding = null; }
     c.source = null; c.hand = null; cur.visible = false; setHover(c, null);
   });
-  target.addEventListener("selectstart", () => clickTarget(c.hover));
+  target.addEventListener("selectstart", () => { c.holding = pressTarget(c.hover); if (!c.holding) clickTarget(c.hover); });
+  target.addEventListener("selectend", () => { if (c.holding) { releaseTarget(c.holding); c.holding = null; } });
   target.addEventListener("squeezestart", () => startGrab(c));
   target.addEventListener("squeezeend", () => { if (c.grab) { c.grab = null; saveLayout(); } });
   scene.add(target); scene.add(grip);
@@ -1312,7 +1326,11 @@ function mousePick(e) {
   raycaster.setFromCamera(ndc, camera);
   setHover(mouseOwner, pick(raycaster.ray.origin.clone(), raycaster.ray.direction.clone()));
 }
-renderer.domElement.addEventListener("pointerdown", (e) => { dragging = true; dragMoved = 0; lastX = e.clientX; lastY = e.clientY; });
+let mouseHolding = null;
+renderer.domElement.addEventListener("pointerdown", (e) => {
+  if (!renderer.xr.isPresenting) { mousePick(e); mouseHolding = pressTarget(mouseOwner.hover); if (mouseHolding) return; }
+  dragging = true; dragMoved = 0; lastX = e.clientX; lastY = e.clientY;
+});
 addEventListener("pointermove", (e) => {
   if (renderer.xr.isPresenting) return;
   if (dragging) {
@@ -1323,6 +1341,7 @@ addEventListener("pointermove", (e) => {
   mousePick(e);
 });
 addEventListener("pointerup", (e) => {
+  if (mouseHolding) { releaseTarget(mouseHolding); mouseHolding = null; return; }
   const wasDrag = dragging && dragMoved >= 6; dragging = false;
   if (!wasDrag && !renderer.xr.isPresenting && e.target === renderer.domElement) { mousePick(e); clickTarget(mouseOwner.hover); }
 });
@@ -1429,7 +1448,7 @@ talkBtn.addEventListener("pointerdown", (e) => { e.preventDefault(); startTalkin
 for (const ev of ["pointerup", "pointerleave", "pointercancel"]) talkBtn.addEventListener(ev, stopTalking);
 addEventListener("keydown", (e) => { if (e.key.toLowerCase() === "v" && !e.repeat && document.activeElement?.tagName !== "INPUT") startTalking(); });
 addEventListener("keyup", (e) => { if (e.key.toLowerCase() === "v") stopTalking(); });
-window.__barry = { state, panels, renderer, scene, camera, controllers, teleopTick, updateControllers, clientLog, startGrab, resetLayout, screenRoot, sendClip, voice };
+window.__barry = { state, panels, renderer, scene, camera, controllers, teleopTick, updateControllers, clientLog, startGrab, resetLayout, screenRoot, sendClip, voice, pressTarget, releaseTarget };
 </script>
 </body>
 </html>
