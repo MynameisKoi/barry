@@ -1,7 +1,10 @@
 """WebXR cockpit (Unity layout port): page, vendored assets, camera relay URL and the client-log endpoint."""
 
 import re
+import shutil
+import subprocess
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.main import app, dog_video_url
@@ -403,3 +406,66 @@ assert.equal(voice.level, 0);
     assert result.returncode == 0, result.stdout + result.stderr
     assert "LISTENING ${bars} · release to send" in html
     assert 'fillRR(ctx, 736, 70, barW, 4, 2, "#34D399")' in html
+
+
+def test_cockpit_vr_found_object_snapshot():
+    html = TestClient(app).get("/cockpit/vr").text
+    assert "getSnapshotImage" in html
+    assert "TARGET SPOTTED" in html
+    assert "task.found_snapshot" in html
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js not available")
+
+    # Extract getSnapshotImage function definition
+    m = re.search(r"let snapshotImg = null, snapshotSrc = null;\s*function getSnapshotImage\(src\) \{[\s\S]*?^\}", html, re.MULTILINE)
+    assert m, "getSnapshotImage function not found"
+    snapshot_fn = m.group(0)
+
+    script = r'''
+const assert = require('assert');
+let dirtyPanels = [];
+function markDirty(p) { dirtyPanels.push(p); }
+
+class MockImage {
+  constructor() {
+    this.complete = false;
+    this.naturalWidth = 0;
+    this._src = '';
+  }
+  get src() { return this._src; }
+  set src(val) {
+    this._src = val;
+    this.complete = true;
+    this.naturalWidth = 320;
+    this.naturalHeight = 240;
+    if (this.onload) this.onload();
+  }
+}
+global.Image = MockImage;
+
+''' + snapshot_fn + r'''
+
+// Initial null call
+assert.strictEqual(getSnapshotImage(null), null);
+assert.strictEqual(getSnapshotImage(''), null);
+
+// Valid data URL
+const dataUrl = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD...';
+const img1 = getSnapshotImage(dataUrl);
+assert.ok(img1 !== null, 'Image should be returned once loaded');
+assert.strictEqual(img1.src, dataUrl);
+assert.ok(dirtyPanels.includes('brain'), 'markDirty("brain") should be called on load');
+
+// Second call with same url should return cached instance
+const img2 = getSnapshotImage(dataUrl);
+assert.strictEqual(img1, img2, 'Should return cached image instance');
+
+// Third call with new url creates new instance
+const img3 = getSnapshotImage('data:image/jpeg;base64,anotherimage');
+assert.notStrictEqual(img1, img3);
+'''
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+
