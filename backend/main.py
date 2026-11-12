@@ -381,7 +381,17 @@ app.include_router(missions_router)
 llm_gateway_adapter = CommandGatewayAdapter(
     lambda: app.state.gateway,
 )
-llm_router = create_llm_router(QuestRelayAuth.from_env(), gateway=llm_gateway_adapter)
+def _log_llm_run(summary: dict) -> None:
+    """One event per autonomous find run (goal, outcome, duration, steps, model calls, token usage)."""
+    mission_service.log_event(event_type="llm_find_run", description=json.dumps(summary, default=str), source="llm")
+
+
+llm_router = create_llm_router(
+    QuestRelayAuth.from_env(),
+    gateway=llm_gateway_adapter,
+    camera=lambda: getattr(app.state, "camera", None),   # look() reads the one shared CameraService
+    run_logger=_log_llm_run,
+)
 app.include_router(llm_router)
 app.include_router(create_voice_router(
     QuestRelayAuth.from_env(),

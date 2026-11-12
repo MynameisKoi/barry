@@ -63,6 +63,9 @@ class CommandGatewayAdapter:
     async def run_action(self, action_id: int, *, source: str) -> Any:
         return self._dict(await self.gateway.run_action(action_id, source=self.source))
 
+    async def set_posture(self, height: str, pitch: float, *, source: str) -> Any:
+        return self._dict(await self.gateway.set_posture({"height": height, "pitch": pitch}, source=self.source))
+
     async def status(self) -> dict[str, Any]:
         return await self.gateway.status(source=self.source)
 

@@ -171,6 +171,46 @@ A fallback for when the laptop or its backend is unavailable. Hand control only.
 - Not for real-time steering, because LLM latency is seconds.
 - The VR shows the plan and the current step. Any hand input or "stop" cancels the task.
 
+### Phase 6b: autonomous "find an object" mode (decided 2026-11-12)
+
+**Tom's decisions**
+
+1. The autonomous mode is **find an object**: the operator names it ("find a ball") and the brain drives the dog by itself.
+2. **120 s per search.** A search that reaches 120 s without finding the object ends the session as "not found".
+3. **Camera snapshots are sent to Claude** (vision) in addition to the YOLO detections.
+4. **No operator-supervision requirement for now** (no headset-presence dead-man). The preemption stays: any hand input, STOP, voice "stop" or e-stop ends the run at once, and a dedicated **Stop finding** button does too.
+5. **Vertical look:** `look()` can tilt the body (pitch, clamped to the safe attitude limit of 10 deg) and change the body height (low / medium / high); the scan is level, then down, then up at each heading.
+6. **WATCH + automatic re-search:** after the object is found the dog stands still and watches with YOLO only (no Claude call); if the object is unseen for more than 2 s a new search starts by itself. The whole session is capped by `LLM_FIND_SESSION_S` (**300 s = 5 min while testing**; Tom can raise it).
+7. Common names map to COCO labels (ball -> sports ball, phone -> cell phone, sofa -> couch, ...); anything else is left to the model to recognise in the image.
+
+**How it works** (`backend/ai/control/`): the same brain loop as Phase 6 with a find tool set (`look`, `move`, `turn`, `found`, `stop`) and limits enforced by the executor (a rejected call is never executed, whatever the model says):
+
+| Rule | Value |
+|---|---|
+| Move | <= 1.0 s at speed <= 0.3 |
+| Turn | <= 45 deg |
+| `look()` first | before the first motion and between any two motions (a violating call is rejected) |
+| Body posture | level / medium is restored automatically before any `move` and when the run ends (after the stop) |
+| `look(pitch_deg, height)` | pitch clamped to +/-10 deg (`ATTITUDE_SAFE_LIMITS["pitch"]`); settles ~0.5 s before the photo; the response reports the posture actually used |
+| Search budget | 120 s, 40 model turns, 60 steps (`LLM_FIND_*`) |
+| Camera | a frame older than 2 s, no camera, or an unreadable frame ends the run ("camera lost") with a stop |
+| Always stop | found/lost/timeout/camera lost/refusal/error/cancel: a `stop` is sent (a hand-input preemption leaves the stop to the operator's own command, which owns the robot) |
+
+`look()` returns an **image block inside the tool_result** (`{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", ...}}`, <= 640 px wide, JPEG q70) next to a text block with the YOLO detections, the frame age and the posture. YOLO is also checked after each look: the target at confidence >= 0.5 (`LLM_FIND_CONFIDENCE`) ends the search at once, so the dog does not walk past it.
+
+**Session**: SEARCHING (Claude loop) -> found -> WATCHING (stop, level posture, YOLO about once a second, no model calls) -> target unseen > 2 s -> LOST -> a fresh SEARCHING (a new conversation) -> ... until the session cap, a search that ends not-found, or the operator ends it.
+
+**API** (all need `X-Robot-Key`):
+
+- `POST /api/v1/llm/find {"object": "ball"}` -> `{"status": "started", "task": {...}}`. The object is 1-3 words of letters (spaces, `-`, `'`), checked on the raw text. `/plan` and voice goals like "find a chair" route here too.
+- `POST /api/v1/llm/find/stop` -> `{"stopped": true, "task": {...}}`: the **Stop finding** button (search or watch): stop, posture reset, outcome `stopped_by_operator`. `POST /api/v1/llm/task/cancel` also ends a find session.
+- `GET /api/v1/llm/task` for a find session adds: `mode: "find"`, `target`, `phase` (`searching | watching | lost`), `seconds_left` (this search), `timeout_s`, `session_left`, `session_s`, `searches`, `found {label, where}`, `outcome` (`found | not_found | timeout | session_end | camera_lost | stopped_by_operator | cancelled | refused | error | limit`), `posture {pitch_deg, height}`, `model_calls`, `input_tokens`, `output_tokens`, and per step `note` (the model's short reason).
+- Each find run is logged as an `llm_find_run` event (goal, outcome, duration, steps, looks, searches, model calls, tokens).
+
+**Env** (see `.env.example`): `LLM_FIND_TIMEOUT_S=120`, `LLM_FIND_SESSION_S=300`, `LLM_FIND_MAX_TURNS=40`, `LLM_FIND_MAX_STEPS=60`, `LLM_FIND_CONFIDENCE=0.5`, `LLM_FIND_LOST_S=2`, `LLM_FIND_WATCH_S=1`, `LLM_FIND_SETTLE_S=0.5`.
+
+**Open: pitch sign.** `look(pitch_deg)` uses a logical convention, **positive = camera UP, negative = DOWN** (stated in the tool description). The simulator only echoes the commanded pitch and has no camera, so the sign cannot be verified in simulation; which sign tilts the real camera down is to be confirmed on the dog and mapped inside the gateway/robot layer (#135), not in the brain.
+
 ## Phase 7 (optional): Robot camera for normal modes
 
 The Pi camera stream already exists after Phase 4. This phase uses it for normal operation too:
