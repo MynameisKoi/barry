@@ -71,6 +71,12 @@ def test_detection_loop_with_synthetic_source_and_stale_results():
     loop.stop()
 
 
+def test_detection_loop_uses_configured_yolo_fps(monkeypatch):
+    monkeypatch.setenv("YOLO_FPS", "3")
+    loop = DetectionLoop(SyntheticSource(CameraConfig(device="synthetic")), EmptyDetector())
+    assert loop.fps == 3
+
+
 class FailsFirstReadSource:
     name = "fails-once"
     def __init__(self): self.reads = 0; self.opens = 0; self.opened = False

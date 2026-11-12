@@ -6,7 +6,7 @@ trap 'rm -rf "$TMP"' EXIT
 PYTHON_BIN="$(which python3.12 || which python3)"
 "$PYTHON_BIN" -m venv "$TMP/venv"
 "$TMP/venv/bin/python" -m pip install --upgrade pip
-"$TMP/venv/bin/pip" install --extra-index-url https://download.pytorch.org/whl/cpu "ultralytics==8.3.0" "torch>=2.4.0" "torchvision" "onnx>=1.16.0"
+"$TMP/venv/bin/pip" install --extra-index-url https://download.pytorch.org/whl/cpu "ultralytics==8.3.0" "torch>=2.4.0" "torchvision" "onnx>=1.16.0" "onnxscript"
 export PATH="$TMP/venv/bin:$PATH"
 mkdir -p "$ROOT/models"
 cd "$TMP"
