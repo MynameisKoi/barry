@@ -323,9 +323,12 @@ def create_robot_relay_router(
     async def status_route(request: Request):
         state = await get_gateway().status(source="hand")
         control = state.get("control_state", {})
-        return JSONResponse({"robot_mode": getattr(get_gateway().robot.robot_mode, "value", "simulation"),
+        robot = get_gateway().robot
+        remote_url = getattr(getattr(robot, "config", None), "remote_url", None) or os.environ.get("ROBOT_REMOTE_URL")
+        return JSONResponse({"robot_mode": getattr(robot.robot_mode, "value", "simulation"),
                              "connected": state.get("online", False), "control_session_active": state.get("online", False),
                              "last_command_age_ms": 0, "watchdog": {"armed": state.get("online", False), "timeout_ms": 0},
-                             "intensity": control.get("intensity", "medium"), "gait": control.get("gait", "trot")})
+                             "intensity": control.get("intensity", "medium"), "gait": control.get("gait", "trot"),
+                             "robot_remote_url": remote_url})
 
     return router

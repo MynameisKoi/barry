@@ -79,6 +79,12 @@ Open `http://<laptop-ip>:8000/cockpit/vr` in the Quest Browser and click **ENTER
 - [ ] **Emergency Stop (E-Stop)**:
   - Press button **A** on the right controller (or hold Grips + **A** for 0.3s).
   - **Check**: Big red emergency banner appears across the viewport, latches immediately, and halts all motion until cleared.
+- [ ] **Direct Robot Emergency Fallback Mode (PR #159)**:
+  - On the Status panel, point and click the **MODE: RELAY (LAPTOP :8000)** button.
+  - **Check**: Switches immediately to **MODE: DIRECT (PI :8100)** with a tactile haptic pulse.
+  - **Check**: The Header strip displays a vivid amber warning chip `EMERGENCY DIRECT MODE: DIRECT TO ROBOT`.
+  - **Check**: Push left thumbstick forward to drive Dogzilla directly bypassing the laptop relay.
+  - Click again to smoothly return to **MODE: RELAY (LAPTOP :8000)**.
 - [ ] **VR Controller Haptic Feedback**:
   - Touch any button or grab a movable panel: feel a crisp tactile click (25ms) in the hand controller.
   - Latch Emergency Stop (button **A** or grips+**A**): feel a heavy, unmistakable warning rumble (300ms at 1.0 intensity) across both controllers.
