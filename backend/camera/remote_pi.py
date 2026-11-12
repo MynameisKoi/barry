@@ -28,7 +28,7 @@ class RemotePiCameraSource(FrameSource):
         self.close()
         self._client = httpx.Client(transport=self.transport, timeout=self.timeout_s)
         try:
-            request = self._client.build_request("GET", self.url, headers={"X-Robot-Key": self.api_key})
+            request = self._client.build_request("GET", self.url, headers={"X-Robot-Key": self.api_key} if self.api_key else {})
             self._response = self._client.send(request, stream=True)
             self._response.raise_for_status()
             self._chunks = self._response.iter_bytes()

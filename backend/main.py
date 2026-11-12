@@ -40,7 +40,7 @@ from backend.auth.authorization import auth_service
 from backend.auth.flipper_listener import FlipperListener, find_flipper_port
 from backend.camera.auth import CameraAuth
 from backend.camera.config import CameraConfig, CameraConfigError
-from backend.camera.factory import build_camera_service
+from backend.camera.factory import build_camera_service, dog_video_url
 from backend.camera.interface import CameraUnavailableError
 from backend.camera.router import create_camera_router
 from backend.database import db
@@ -474,17 +474,6 @@ async def post_client_log(request: Request):
 @app.get("/api/debug/client-log", tags=["Debug"])
 async def get_client_log():
     return {"entries": _client_log}
-
-
-def dog_video_url() -> str:
-    """URL of the dog's Yahboom MJPEG feed: DOG_VIDEO_URL, else port 6500 on the ROBOT_REMOTE_URL host."""
-    explicit = os.getenv("DOG_VIDEO_URL", "").strip()
-    if explicit:
-        return explicit
-    from urllib.parse import urlparse
-
-    host = urlparse(os.getenv("ROBOT_REMOTE_URL", "")).hostname
-    return f"http://{host}:6500/video_feed" if host else "http://192.168.137.236:6500/video_feed"
 
 
 @app.get("/api/camera/stream", tags=["Camera"])

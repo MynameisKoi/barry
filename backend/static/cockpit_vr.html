@@ -37,6 +37,7 @@
 <div id="hud">
   <button id="enter-vr" disabled>CHECKING VR…</button>
   <label><input type="checkbox" id="arm-keys"> Arm keyboard driving</label>
+  <button id="reset-layout" type="button" style="background:#FFFFFF;color:#1F1E1B;border:1px solid #DAD5CB;cursor:pointer">Reset panel layout</button>
   <span id="vr-reason"></span>
 </div>
 <img id="camera-source" alt="">
@@ -46,6 +47,9 @@ import * as THREE from "three";
 // ------------------------------------------------------------------ constants (Unity DashboardSceneBuilder / HANDOFF)
 const EYE = 1.6;
 const SIDE_PANEL_YAW = 36;              // degrees; Unity comment: 30° in the handoff overlaps the camera screen
+// Control strip 35° below the eye line (HANDOFF said 25°): at 25° its top edge rose into the camera screen
+// as soon as the head sat a few cm lower than at session start. Tilted 30° so it faces the eye.
+const STRIP_BELOW_DEG = 35, STRIP_TILT_DEG = 30;
 const DEAD_ZONE = 0.12;                 // InputMapping default
 const SEND_HZ = 10;                     // RobotControlService default
 const FAILURES_BEFORE_STOP = 3;         // RobotControlService
@@ -903,16 +907,42 @@ moon.position.copy(fromEye(-40, 25, 30)); moon.scale.setScalar(Math.tan(0.5 * DE
 
 // ------------------------------------------------------------------ place panels (DashboardSceneBuilder.Build)
 const P = panels;
-placeUnity(P.header.group, 0, EYE + 0.588, 2.0);
-placeUnity(P.camera.group, 0, EYE, 2.0);
-placeUnity(P.cameraOverlay.group, 0, EYE, 2.0); P.cameraOverlay.group.translateZ(0.004);
 placeOnArc(P.status.group, -SIDE_PANEL_YAW, 1.3, EYE);
 placeOnArc(P.actions.group, SIDE_PANEL_YAW, 1.3, EYE);
-placeUnity(P.strip.group, 0, EYE - 0.9 * Math.sin(25 * DEG), 0.9 * Math.cos(25 * DEG), 15, 0);
+placeUnity(P.strip.group, 0, EYE - 0.9 * Math.sin(STRIP_BELOW_DEG * DEG), 0.9 * Math.cos(STRIP_BELOW_DEG * DEG), STRIP_TILT_DEG, 0);
 placeOnArc(P.brain.group, 46, 1.25, EYE + 0.1);
 placeUnity(P.mission.group, 0, EYE - 0.22, 1.35);
 placeUnity(P.banner.group, 0, EYE + 0.12, 1.6);
-for (const p of Object.values(panels)) scene.add(p.group);
+for (const p of Object.values(panels)) { scene.add(p.group); p.moveRoot = p.group; }
+// Header, camera screen and its overlay move as one "screen" (Unity places them together at 2.0 m).
+const screenRoot = new THREE.Group(); screenRoot.name = "screen";
+placeUnity(screenRoot, 0, EYE, 2.0); scene.add(screenRoot);
+screenRoot.add(P.camera.group); P.camera.group.position.set(0, 0, 0);
+screenRoot.add(P.cameraOverlay.group); P.cameraOverlay.group.position.set(0, 0, 0.004);
+screenRoot.add(P.header.group); P.header.group.position.set(0, 0.588, 0);
+for (const n of ["header", "camera", "cameraOverlay"]) P[n].moveRoot = screenRoot;
+
+// ---- Movable layout (WebXR only): point + hold grip to move a panel; saved per headset in localStorage.
+const LAYOUT_KEY = "barry.vr.layout.v1";
+const movableRoots = [...new Set(Object.values(panels).map((p) => p.moveRoot))];
+const rootName = (r) => r.name || Object.values(panels).find((p) => p.moveRoot === r).name;
+const defaultLayout = new Map(movableRoots.map((r) => [r, { p: r.position.clone(), q: r.quaternion.clone() }]));
+function saveLayout() {
+  const out = {};
+  for (const r of movableRoots) out[rootName(r)] = { p: r.position.toArray(), q: r.quaternion.toArray() };
+  try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(out)); } catch (e) {}
+}
+function loadLayout() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "{}");
+    for (const r of movableRoots) { const v = saved[rootName(r)]; if (v) { r.position.fromArray(v.p); r.quaternion.fromArray(v.q); } }
+  } catch (e) {}
+}
+function resetLayout() {
+  for (const [r, d] of defaultLayout) { r.position.copy(d.p); r.quaternion.copy(d.q); }
+  try { localStorage.removeItem(LAYOUT_KEY); } catch (e) {}
+}
+loadLayout();
 
 // Live video: its own plane over the camera screen's inner area (inset 10 mockup px), aspect "contain".
 const videoCanvas = document.createElement("canvas"); videoCanvas.width = 640; videoCanvas.height = 360;
@@ -1017,7 +1047,7 @@ for (let i = 0; i < 2; i++) {
   const grip = renderer.xr.getControllerGrip(i);
   const ray = buildRay(); target.add(ray);
   const cur = buildCursor(); cur.visible = false; scene.add(cur);
-  const c = { index: i, target, grip, ray, cursor: cur, source: null, hand: null, hover: null, hoverKey: null, prev: {}, tips: null };
+  const c = { index: i, target, grip, ray, cursor: cur, source: null, hand: null, hover: null, hoverKey: null, prev: {}, tips: null, grab: null };
   target.addEventListener("connected", (e) => {
     c.source = e.data; c.hand = e.data.handedness;
     if (c.tips) grip.remove(c.tips);
@@ -1028,13 +1058,44 @@ for (let i = 0; i < 2; i++) {
     c.source = null; c.hand = null; cur.visible = false; setHover(c, null);
   });
   target.addEventListener("selectstart", () => clickTarget(c.hover));
+  target.addEventListener("squeezestart", () => startGrab(c));
+  target.addEventListener("squeezeend", () => { if (c.grab) { c.grab = null; saveLayout(); } });
   scene.add(target); scene.add(grip);
   controllers.push(c);
 }
 
 // Per-frame controller handling: rays/cursor, buttons (A STOP, grips+A e-stop, B actions, X intensity, Y brain), sticks.
 const tmpMat = new THREE.Matrix4(), tmpOrigin = new THREE.Vector3(), tmpDir = new THREE.Vector3(), tmpQuat = new THREE.Quaternion();
-let estopHeld = 0;
+let estopHeld = 0, resetHeld = 0;
+const allPanelMeshes = Object.values(panels).map((p) => p.mesh);
+const grabMat = new THREE.Matrix4(), headPos = new THREE.Vector3();
+/** Nearest opaque panel under the controller ray (any panel, including the non-clickable screen). */
+function pickPanel(c) {
+  tmpMat.identity().extractRotation(c.target.matrixWorld);
+  raycaster.set(tmpOrigin.setFromMatrixPosition(c.target.matrixWorld), tmpDir.set(0, 0, -1).applyMatrix4(tmpMat));
+  for (const hit of raycaster.intersectObjects(allPanelMeshes.filter((m) => m.visible), false)) {
+    if (hit.uv && hit.object.userData.panel.hit(hit.uv)) return hit.object.userData.panel;
+  }
+  return null;
+}
+function startGrab(c) {
+  if (c.grab || !c.source) return;
+  const panel = pickPanel(c);
+  if (!panel) return;
+  const root = panel.moveRoot;
+  if (controllers.some((o) => o !== c && o.grab?.root === root)) return;
+  root.updateMatrixWorld();
+  c.grab = { root, offset: grabMat.copy(c.target.matrixWorld).invert().multiply(root.matrixWorld).clone() };
+}
+/** Follow the hand, keep the panel upright and facing the head. */
+function updateGrab(c) {
+  const { root, offset } = c.grab;
+  grabMat.multiplyMatrices(c.target.matrixWorld, offset);
+  root.position.setFromMatrixPosition(grabMat);
+  renderer.xr.getCamera().getWorldPosition(headPos);
+  headPos.y = root.position.y;                       // yaw only: panels stay upright
+  if (headPos.distanceToSquared(root.position) > 1e-4) root.lookAt(headPos);
+}
 function updateControllers(now, dt) {
   let lx = 0, ly = 0, rx = 0, lGrip = false, rGrip = false, aHeld = false;
   for (const c of controllers) {
@@ -1067,6 +1128,14 @@ function updateControllers(now, dt) {
   // Dedicated e-stop: both grips + A held 0.3 s (EmergencyStopGesture). A alone already sent STOP.
   if (lGrip && rGrip && aHeld) { estopHeld += dt; if (estopHeld >= ESTOP_HOLD_S && !state.estopLatched) triggerEmergencyStop(); }
   else estopHeld = 0;
+  // Moving a panel pauses driving: the sticks read as centred (a drive in progress gets its release-stop).
+  let grabbing = false;
+  for (const c of controllers) if (c.grab) { grabbing = true; if (c.source) updateGrab(c); else c.grab = null; }
+  if (grabbing) { lx = ly = rx = 0; }
+  // Reset layout: both thumbsticks clicked in and held 1 s.
+  const sticksDown = controllers.filter((c) => c.source?.gamepad?.buttons[3]?.pressed).length === 2;
+  if (sticksDown) { resetHeld += dt; if (resetHeld >= 1 && resetHeld - dt < 1) { resetLayout(); state.result = { status: "LAYOUT", message: "Panel layout reset" }; markDirty("status"); } }
+  else resetHeld = 0;
   const [sx, sy] = radial(lx, ly); const [tx] = radial(rx, 0);
   teleopTick(now, { forward: r2(-sy), strafe: r2(-sx), turn: r2(-tx) }, "hand");
 }
@@ -1190,7 +1259,8 @@ loadOperators(); refreshMission(); setInterval(refreshMission, 3000);
 loadActions();
 connectSocket();
 fetch("/api/v1/llm/task").then((r) => (r.ok ? r.json() : null)).then((t) => { if (t) { state.llmTask = t; markDirty("brain"); if (t.state === "running") pollLlm(); } }).catch(() => {});
-window.__barry = { state, panels, renderer, scene, camera, controllers, teleopTick, updateControllers, clientLog };
+document.getElementById("reset-layout").addEventListener("click", resetLayout);
+window.__barry = { state, panels, renderer, scene, camera, controllers, teleopTick, updateControllers, clientLog, startGrab, resetLayout, screenRoot };
 </script>
 </body>
 </html>
