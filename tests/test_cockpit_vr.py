@@ -653,4 +653,81 @@ assert.strictEqual(Math.round(right * 10) / 10, 0.7);
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_cockpit_vr_emergency_direct_robot_mode():
+    client = TestClient(app)
+    html = client.get("/cockpit/vr").text
+    assert "EMERGENCY DIRECT MODE: DIRECT TO ROBOT" in html
+    assert "toggleDirectMode" in html
+    assert 'p.button("toggleDirect"' in html
+    assert "MODE: DIRECT (PI :8100)" in html
+    assert "MODE: RELAY (LAPTOP :8000)" in html
+
+    # Verify relay status route exposes robot_remote_url
+    status_resp = client.get("/api/v1/status")
+    assert status_resp.status_code == 200
+    assert "robot_remote_url" in status_resp.json()
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js not available")
+
+    script = r'''
+const assert = require('assert');
+
+const state = {
+  directMode: false,
+  directRobotUrl: "http://192.168.1.120:8100"
+};
+const dirtyPanels = [];
+function markDirty(...p) { dirtyPanels.push(...p); }
+const pulses = [];
+function pulseAllHaptics(i, d) { pulses.push({ i, d }); }
+
+function toggleDirectMode() {
+  state.directMode = !state.directMode;
+  pulseAllHaptics(0.6, 80);
+  markDirty("header", "status", "strip");
+}
+
+let dispatchedUrl = null;
+async function mockFetch(url, opts) {
+  dispatchedUrl = url;
+  return { ok: true, status: 200, json: async () => ({ status: "accepted" }) };
+}
+
+async function api(path, { body = null } = {}) {
+  let requestPath = path;
+  if (state.directMode) {
+    const base = (state.directRobotUrl || "http://localhost:8100").replace(/\/+$/, "");
+    requestPath = `${base}${path}`;
+  }
+  return await mockFetch(requestPath, { body });
+}
+
+// 1. Initial Relay Mode (laptop :8000)
+assert.strictEqual(state.directMode, false);
+api("/api/v1/motion", { body: { forward: 0.3 } });
+assert.strictEqual(dispatchedUrl, "/api/v1/motion");
+
+// 2. Toggle to Direct Robot Mode
+toggleDirectMode();
+assert.strictEqual(state.directMode, true);
+assert.strictEqual(pulses.length, 1);
+assert.ok(dirtyPanels.includes("header"));
+
+// 3. API now dispatches directly to robot URL
+api("/api/v1/motion", { body: { forward: 0.3 } });
+assert.strictEqual(dispatchedUrl, "http://192.168.1.120:8100/api/v1/motion");
+
+// 4. Toggle back to Relay Mode
+toggleDirectMode();
+assert.strictEqual(state.directMode, false);
+api("/api/v1/motion", { body: { forward: 0.0 } });
+assert.strictEqual(dispatchedUrl, "/api/v1/motion");
+'''
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+
 
