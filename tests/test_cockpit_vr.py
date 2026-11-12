@@ -19,9 +19,14 @@ def test_cockpit_vr_uses_vendored_three_and_unity_layout():
         for name in ("header", "camera", "status", "actions", "strip", "mission", "banner", "brain"):
             assert f'new Panel("{name}"' in html
         # Unity placement constants.
-        assert "placeUnity(P.header.group, 0, EYE + 0.588, 2.0)" in html
+        assert "placeUnity(screenRoot, 0, EYE, 2.0)" in html and "P.header.group.position.set(0, 0.588, 0)" in html
+        # Panels can be moved in VR (grip) and the layout is saved / reset.
+        assert 'addEventListener("squeezestart", () => startGrab(c))' in html
+        assert "barry.vr.layout.v1" in html and "function resetLayout()" in html
+        assert "if (grabbing) { lx = ly = rx = 0; }" in html      # no driving while moving a panel
         assert "placeOnArc(P.status.group, -SIDE_PANEL_YAW, 1.3, EYE)" in html
         assert "placeOnArc(P.brain.group, 46, 1.25, EYE + 0.1)" in html
+        assert "const STRIP_BELOW_DEG = 35, STRIP_TILT_DEG = 30;" in html
         for path in ("three/three.module.js", "three/three.core.js", "fonts/Inter.ttf", "fonts/JetBrainsMono.ttf", "fonts/Orbitron.ttf"):
             assert client.get(f"/static/vendor/{path}").status_code == 200, path
 

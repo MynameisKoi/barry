@@ -95,8 +95,10 @@ namespace Barry.App.Editor
             var actions = BuildActions();
             PlaceOnArc(actions.gameObject, SidePanelYaw, 1.3f, Eye);
             var strip = BuildControlStrip();
-            float below = 25f * Mathf.Deg2Rad;
-            Place(strip.gameObject, new Vector3(0, Eye - 0.9f * Mathf.Sin(below), 0.9f * Mathf.Cos(below)), Quaternion.Euler(15f, 0, 0));
+            // 35° below the eye line (HANDOFF: 25°) so the strip never covers the camera screen when the head sits
+            // lower than at session start; tilted 30° to face the eye. Mirrored in backend/static/cockpit_vr.html.
+            float below = 35f * Mathf.Deg2Rad;
+            Place(strip.gameObject, new Vector3(0, Eye - 0.9f * Mathf.Sin(below), 0.9f * Mathf.Cos(below)), Quaternion.Euler(30f, 0, 0));
             var brain = BuildBrainPanel();
             PlaceOnArc(brain.gameObject, 46f, 1.25f, Eye + 0.1f);   // further right and higher than the Actions pill, so the control strip never covers it; Y opens it
             var missionPanel = BuildMissionPanel();

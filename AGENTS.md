@@ -62,15 +62,19 @@ One source of truth for every agent (Tomville team agents and partner agents) wo
 | Status panel | arc −36°, 1.3 m | robot, control, camera fps, RTT, battery, COMMAND SENT bars |
 | Actions panel | arc +36°, 1.3 m | collapsed `ACTIONS · B` pill; list from `/api/v1/actions` |
 | Brain panel | arc +46°, 1.25 m, y + 0.1 | collapsed `BRAIN · Y` tab; `/api/v1/llm/*` |
-| Control strip | 25° below eye at 0.9 m, tilted 15° up | intensity, STOP, Exit VR, End mission |
+| Control strip | 35° below eye at 0.9 m, tilted 30° up | intensity, STOP, Exit VR, End mission |
 | Mission card | (0, 1.6 − 0.22, 1.35) | shown while no mission is active |
 | E-stop banner | (0, 1.6 + 0.12, 1.6) | shown while latched; reset needs two presses |
 
 Conversion to three.js: `(x, y, z)` → `(x, y, −z)`, yaw `a` → `rotation.y = −a`, pitch `p` → `rotation.x = −p`.
 Controller mapping (HANDOFF §6): left stick move/strafe, right stick X turn, A = STOP, both grips + A held 0.3 s = e-stop,
 B = actions, X = intensity, Y = brain. Release of the sticks sends STOP; after any stop the sticks must be centred before driving again.
+WebXR only: point at a panel and hold grip to move it (driving is paused while holding; saved per headset in localStorage);
+both thumbsticks clicked in for 1 s resets the layout. The control strip sits 35° below the eye line (tilted 30°) in both apps.
+Camera: with `ROBOT_MODE=remote` the laptop camera service (YOLO, `/api/v1/camera/*`) reads the dog's MJPEG feed
+(`DOG_VIDEO_URL`, else port 6500 on the `ROBOT_REMOTE_URL` host), never the laptop webcam; `CAMERA_SOURCE=dog` forces it.
 
-### Motion control and authentication (testing defaults, pending Tom's decision; see PR #124 review)
+### Motion control and authentication (testing defaults; Tom decided on 2026-11-12 to keep them as they are)
 - `REQUIRE_ACTIVE_MISSION=false`: hand, voice and LLM can move the robot without an active mission.
 - `AUTH_ALLOW_UNREGISTERED_TAGS=true`: any scanned tag UID is auto-provisioned as an operator.
 - `QUEST_API_KEY_ALLOW_ANONYMOUS=true`, `CAMERA_API_KEY_ALLOW_ANONYMOUS=true`: anonymous relay for local tests.
