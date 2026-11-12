@@ -141,7 +141,7 @@ async def wait_phase(runner, phase, loops=2000):
     for _ in range(loops):
         if runner.task.phase == phase:
             return
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.001)
     raise AssertionError(f"never reached phase {phase}; at {runner.task.phase}/{runner.task.state}")
 
 
@@ -553,7 +553,7 @@ async def test_two_seconds_of_absence_is_tolerated_more_than_two_is_not():
     for _ in range(3000):
         if brain.calls == 2:
             break
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.001)
     assert brain.calls == 2 and task.phase == "lost"
     assert polls["n"] >= 10 and clock.now - 1000.0 >= 9.0         # it sat through the 2 s gap, and lost it only after the 3 s one
     gate.set()
