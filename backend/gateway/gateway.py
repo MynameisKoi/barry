@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import math
+import logging
 import os
 import time
 import uuid
@@ -79,7 +80,7 @@ class CommandGateway:
         blocked = await self._prepare(source, cid)
         if blocked:
             return blocked
-        posture_block = None if command.is_zero else self._posture_motion_block(source, cid)
+        posture_block = None if command.is_zero else await self._posture_motion_block(source, cid)
         if posture_block:
             return posture_block
         if self._emergency_stopped:
@@ -141,7 +142,7 @@ class CommandGateway:
         blocked = await self._prepare(source, cid)
         if blocked:
             return blocked
-        posture_block = self._posture_motion_block(source, cid)
+        posture_block = await self._posture_motion_block(source, cid)
         if posture_block:
             return posture_block
         if self._emergency_stopped:
@@ -304,7 +305,7 @@ class CommandGateway:
         blocked = await self._prepare(source, cid)
         if blocked:
             return blocked
-        posture_block = self._posture_motion_block(source, cid)
+        posture_block = await self._posture_motion_block(source, cid)
         if posture_block:
             return posture_block
         if self._emergency_stopped:
@@ -380,7 +381,7 @@ class CommandGateway:
         blocked = await self._prepare(source, cid)
         if blocked:
             return blocked
-        posture_block = self._posture_motion_block(source, cid)
+        posture_block = await self._posture_motion_block(source, cid)
         if posture_block:
             return posture_block
         if self._emergency_stopped:
@@ -398,9 +399,17 @@ class CommandGateway:
             return self._result(result, source, cid)
         return await self._run_owned(run(), source, cid)
 
-    def _posture_motion_block(self, source: str, cid: str) -> GatewayResult | None:
+    async def _posture_motion_block(self, source: str, cid: str) -> GatewayResult | None:
+        if self._emergency_stopped:
+            return GatewayResult("ESTOP_ACTIVE", "Emergency stop is latched.", cid, source)
         posture = self._commanded_posture
         if posture.pitch or posture.roll or posture.height.value != "medium":
+            if source == "hand":
+                result = await self.level_posture(source="hand")
+                if result.status == "ACCEPTED":
+                    logging.getLogger(__name__).info("auto-levelled before hand motion; command_id=%s", cid)
+                    return None
+                return result
             return GatewayResult("INVALID", "Level posture to medium height before motion (level_posture).", cid, source)
         return None
 
@@ -415,7 +424,8 @@ class CommandGateway:
         whether positive or negative pitch points the mounted camera down. Tom must
         verify the physical sign. Simulator posture applies immediately; the default
         POSTURE_SETTLE_S=0.5 is a conservative, uncalibrated hardware estimate.
-        Motion requires commanded zero pitch/roll and medium height (yaw ignored); use level_posture first.
+        Motion requires commanded zero pitch/roll and medium height (yaw ignored).
+        Hand motion levels and settles automatically; voice/LLM must level first.
         """
         cid = self._id(source)
         blocked = await self._prepare(source, cid)
