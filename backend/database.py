@@ -164,40 +164,44 @@ class DatabaseManager:
                 """
             )
 
-            # Seed demo operators if table is empty
-            cursor.execute("SELECT COUNT(*) AS count FROM operators")
-            row = cursor.fetchone()
-            if row and row["count"] == 0:
-                demo_operators = [
-                    (
-                        "OP-001",
-                        "Alice Vance",
-                        "Chief Inspection Lead",
-                        "04:A2:3B:4C:5D:6E:7F",
-                        now_iso,
-                    ),
-                    (
-                        "OP-002",
-                        "Bob Martinez",
-                        "Field Operations Specialist",
-                        "04:11:22:33:44:55:66",
-                        now_iso,
-                    ),
-                    (
-                        "OP-003",
-                        "Charlie Knox",
-                        "Security & Safety Officer",
-                        "04:99:88:77:66:55:44",
-                        now_iso,
-                    ),
-                ]
-                cursor.executemany(
-                    """
-                    INSERT INTO operators (operator_id, name, role, tag_uid, created_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    demo_operators,
-                )
+            # Seed demo operators (including Flipper Zero HID H10301 badge OP-004)
+            demo_operators = [
+                (
+                    "OP-001",
+                    "Alice Vance",
+                    "Chief Inspection Lead",
+                    "04:A2:3B:4C:5D:6E:7F",
+                    now_iso,
+                ),
+                (
+                    "OP-002",
+                    "Bob Martinez",
+                    "Field Operations Specialist",
+                    "04:11:22:33:44:55:66",
+                    now_iso,
+                ),
+                (
+                    "OP-003",
+                    "Charlie Knox",
+                    "Security & Safety Officer",
+                    "04:99:88:77:66:55:44",
+                    now_iso,
+                ),
+                (
+                    "OP-004",
+                    "Primary Field Lead",
+                    "Robotic Mission Commander",
+                    "2E:B7:76",
+                    now_iso,
+                ),
+            ]
+            cursor.executemany(
+                """
+                INSERT OR IGNORE INTO operators (operator_id, name, role, tag_uid, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                demo_operators,
+            )
 
 
 # Global default database instance

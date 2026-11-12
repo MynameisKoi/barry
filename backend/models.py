@@ -27,13 +27,20 @@ class OperatorResponse(OperatorBase):
 
 
 class AuthScanRequest(BaseModel):
-    tag_uid: str = Field(..., description="NFC tag UID (e.g. 04:A2:3B:4C:5D:6E:7F or 04A23B4C5D6E7F)")
+    tag_uid: str = Field(..., description="NFC/RFID tag UID (e.g. 2E:B7:76 or 04:A2:3B:4C:5D:6E:7F)")
+    mission_action: Optional[str] = Field(
+        default=None,
+        description="Optional mission lifecycle action on authorized scan: 'none', 'auto'/'toggle', 'start', or 'stop'",
+    )
+    zone: str = Field(default="Sector-A", description="Target inspection zone when starting a mission")
 
 
 class AuthScanResponse(BaseModel):
     authorized: bool
     operator: Optional[OperatorResponse] = None
     message: str
+    mission_action_taken: Optional[str] = None
+    mission: Optional[Dict[str, Any]] = None
 
 
 class RobotCommandRequest(BaseModel):

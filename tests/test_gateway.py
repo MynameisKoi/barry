@@ -20,13 +20,25 @@ def sim_gateway():
     return sim, CommandGateway(sim, mission_check=lambda: True, max_speed=0.6, max_bounded_s=1)
 
 
-def test_motion_requires_mission_and_has_command_metadata(sim_gateway):
+def test_motion_requires_mission_only_for_voice_and_llm_not_hand(sim_gateway):
     sim, _ = sim_gateway
     gateway = CommandGateway(sim, mission_check=lambda: False)
-    result = asyncio.run(gateway.motion(MotionCommand(forward=0.5), source="hand"))
-    assert result.status == "MISSION_REQUIRED"
-    assert result.command_id and result.source == "hand"
+    # Voice and LLM require an active mission
+    voice_res = asyncio.run(gateway.motion(MotionCommand(forward=0.5), source="voice"))
+    assert voice_res.status == "MISSION_REQUIRED"
+    assert voice_res.command_id and voice_res.source == "voice"
     assert not sim.moving
+
+    llm_res = asyncio.run(gateway.run_bounded("forward", 0.2, 0.4, source="llm"))
+    assert llm_res.status == "MISSION_REQUIRED"
+    assert llm_res.command_id and llm_res.source == "llm"
+    assert not sim.moving
+
+    # Hand control moves directly without requiring an active mission
+    hand_res = asyncio.run(gateway.motion(MotionCommand(forward=0.5), source="hand"))
+    assert hand_res.status == "ACCEPTED"
+    assert hand_res.command_id and hand_res.source == "hand"
+    assert sim.moving
 
 
 def test_speed_and_duration_limits_are_clamped(sim_gateway):

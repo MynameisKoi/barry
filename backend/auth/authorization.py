@@ -131,7 +131,7 @@ class AuthService:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                INSERT INTO operators (operator_id, name, role, tag_uid, created_at)
+                INSERT OR REPLACE INTO operators (operator_id, name, role, tag_uid, created_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (

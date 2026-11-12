@@ -750,11 +750,10 @@
         function applyMissionStatus(mission) {
             state.mission = mission && typeof mission === "object" ? mission : { active: false };
             state.missionStatusKnown = true;
-            state.motionMissionBlocked = !state.mission.active;
+            // Hand/joystick motion is always allowed without an active mission; only voice/LLM require a mission.
+            state.motionMissionBlocked = false;
             if (state.mission.active && state.commandStatus === "MISSION_REQUIRED") {
                 updateCommandStatus("READY", "Mission active; ready to drive");
-            } else if (!state.mission.active && state.commandStatus === "MISSION_REQUIRED") {
-                updateCommandStatus("MISSION_REQUIRED", "Start a mission to drive");
             }
             syncMissionControls();
         }
@@ -1964,6 +1963,25 @@
                         drawEmergencyBanner();
                     }
                     if (data.type === 'mission_update' && data.mission) applyMissionStatus(data.mission);
+                    if (data.type === 'auth_event') {
+                        if (data.authorized && data.operator) {
+                            playChime(1040, 0.12);
+                            const opIdx = state.operators.findIndex(o => o.operator_id === data.operator.operator_id);
+                            if (opIdx >= 0) {
+                                state.operatorIndex = opIdx;
+                                const select = document.getElementById("mission-operator");
+                                if (select) select.value = data.operator.operator_id;
+                            }
+                            state.missionFeedback = data.message || `Flipper Badge Verified: ${data.operator.name}`;
+                            updateCommandStatus("READY", state.missionFeedback);
+                        } else {
+                            playChime(320, 0.2);
+                            state.missionFeedback = data.message || `Unauthorized badge: ${data.tag_uid}`;
+                            updateCommandStatus("AUTH_REQUIRED", state.missionFeedback);
+                        }
+                        if (data.mission) applyMissionStatus(data.mission);
+                        else syncMissionControls();
+                    }
                 } catch (e) {}
             };
             ws.onclose = () => {
