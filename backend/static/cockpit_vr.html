@@ -37,6 +37,7 @@
 <div id="hud">
   <button id="enter-vr" disabled>CHECKING VR…</button>
   <label><input type="checkbox" id="arm-keys"> Arm keyboard driving</label>
+  <button id="stop-finding" hidden style="background:#C42B2B;color:white;border:0;cursor:pointer">Stop finding</button>
   <button id="talk" type="button" style="background:#FFFFFF;color:#1F1E1B;border:1px solid #DAD5CB;cursor:pointer">Hold to talk (V)</button>
   <button id="reset-layout" type="button" style="background:#FFFFFF;color:#1F1E1B;border:1px solid #DAD5CB;cursor:pointer">Reset panel layout</button>
   <span id="vr-reason"></span>
@@ -61,6 +62,8 @@ const ACCEPTED_DISCLAIMER = "Accepted by API · not proof of movement";
 const LEVELS = ["LOW", "MEDIUM", "HIGH"];
 const ZONES = ["Zone-A", "Zone-B", "Zone-C", "Zone-D"];
 const LLM_PRESETS = [
+  ["Find a ball", "find:ball"], ["Find a person", "find:person"],
+  ["Find a chair", "find:chair"], ["Find a bottle", "find:bottle"],
   ["Look around and tell me what you see", "Look and tell me what you see"],
   ["Walk forward 2 seconds", "Walk forward 2 seconds"],
   ["Turn right 90°", "Turn right 90 degrees"],
@@ -443,8 +446,37 @@ async function runAction(id) {
 }
 function toggleActions() { state.actionsOpen = !state.actionsOpen; if (state.actionsOpen) loadActions(); markDirty("actions"); }
 
+const finding = () => state.llmTask?.mode === "find" && state.llmTask?.state === "running";
+function syncFinding() {
+  document.getElementById("stop-finding").hidden = !finding();
+  document.getElementById("stop-finding").disabled = state.llmCancelling;
+  markDirty("brain", "auto", "header");
+}
+async function startFinding(object) {
+  if (state.llmStarting) return;
+  state.llmStarting = true; state.llmError = "";
+  try {
+    const r = await fetch("/api/v1/llm/find", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ object }) });
+    const p = await r.json();
+    if (!r.ok || !p.task) throw new Error(p.detail || "Find request failed");
+    state.llmTask = p.task;
+  } catch (e) { state.llmError = e.message; }
+  state.llmStarting = false; syncFinding(); pollLlm();
+}
+async function stopFinding() {
+  if (state.llmCancelling) return;
+  state.llmCancelling = true; syncFinding();
+  try {
+    const r = await fetch("/api/v1/llm/find/stop", { method: "POST" });
+    const p = await r.json();
+    if (!r.ok) throw new Error(p.detail || "Stop finding failed; retry or use STOP");
+    if (p.task) state.llmTask = p.task;
+  } catch (e) { state.llmError = e.message; }
+  state.llmCancelling = false; syncFinding();
+}
 let llmPoll = null;
 async function startGoal(goal) {
+  if (goal.startsWith("find:")) return startFinding(goal.slice(5));
   if (state.llmStarting) return;
   state.llmReplaced = state.llmTask.state === "running";
   state.llmStarting = true; state.llmError = ""; markDirty("brain");
@@ -466,7 +498,7 @@ function pollLlm() {
   if (llmPoll) return;
   llmPoll = setInterval(async () => {
     try { const r = await fetch("/api/v1/llm/task"); if (r.ok) state.llmTask = await r.json(); } catch (e) {}
-    markDirty("brain");
+    syncFinding();
     if (state.llmTask.state !== "running") { clearInterval(llmPoll); llmPoll = null; }
   }, 1000);
 }
@@ -713,6 +745,7 @@ new Panel("header", {
     const W = p.wPx, H = 56;
     p.root(ctx, 0, 0, W, H, 14);
     const c = headerChips(); const cs = p.fs(13);
+    if (finding()) c.mission = [`AUTO · FIND ${state.llmTask.target || "object"}`, "accent"];
     let x = 20;
     x += txt(ctx, "BARRY", x, 0, 200, H, { size: p.fs(20), weight: 800, font: "brand", tracking: 0.18, color: T.brand }) + 16;
     x += chip(ctx, x, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: c.mission[0], tone: c.mission[1] }) + 10;
@@ -959,10 +992,10 @@ new Panel("brain", {
     if (p.button("close", 420, 16, 160, 44, () => { state.brainOpen = false; markDirty("brain"); })) fillRR(ctx, 420, 18, 156, 40, 10, T.accentSoft);
     txt(ctx, "Y · close", 400, 22, 172, 34, { size: p.fs(22), font: "mono", color: T.textSecondary, align: "right" });
     LLM_PRESETS.forEach(([label, goal], i) => {
-      const y = 70 + i * 64;
-      const h = p.button(`p${i}`, 28, y, 544, 56, () => startGoal(goal), !state.llmStarting);
-      fillRR(ctx, 28, y, 544, 56, 12, h ? T.accentSoft : T.rowFill, h ? T.accent : T.neutralBorder, h ? 2 : 1);
-      txt(ctx, label, 44, y, 520, 56, { size: p.fs(24), weight: 700, fit: true });
+      const y = 70 + Math.floor(i / 2) * 64, x = 28 + (i % 2) * 276;
+      const h = p.button(`p${i}`, x, y, 268, 56, () => startGoal(goal), !state.llmStarting);
+      fillRR(ctx, x, y, 268, 56, 12, h ? T.accentSoft : T.rowFill, h ? T.accent : T.neutralBorder, h ? 2 : 1);
+      txt(ctx, label, x + 12, y, 244, 56, { size: p.fs(24), weight: 700, fit: true });
     });
     const task = state.llmTask || { state: "idle" };
     const running = task.state === "running";
@@ -972,17 +1005,37 @@ new Panel("brain", {
     const steps = task.steps || []; const first = Math.max(0, steps.length - 6);
     steps.slice(first).forEach((s, i) => {
       const y = 480 + i * 38;
-      const args = s.args && typeof s.args === "object" ? Object.values(s.args).join(" ") : "";
+      const a = s.args || {};
+      const args = s.tool === "look" ? `pitch ${a.pitch_deg ?? a.pitch ?? 0}°, ${a.height ?? "normal"}`
+        : s.tool === "move" ? `${a.direction || "forward"} ${a.seconds ?? a.duration_s ?? ""} s`
+        : s.tool === "turn" ? `${a.degrees ?? a.angle ?? ""}°`
+        : Object.values(a).join(" ");
       txt(ctx, `${s.tool}${args ? ` ${args}` : ""}`, 28, y, 340, 34, { size: p.fs(22), font: "mono", fit: true });
       const st = s.result?.status && s.state !== "done" ? s.result.status : s.state;
       txt(ctx, String(st || "").toUpperCase(), 380, y, 192, 34, { size: p.fs(22), weight: 700, font: "mono", color: T.textSecondary, align: "right", fit: true });
     });
     if (first > 0) txt(ctx, `+${first} earlier`, 28, 708, 300, 28, { size: p.fs(21), font: "mono", color: T.textSecondary });
-    const answer = state.llmError || task.answer || task.message || "";
+    const answer = state.llmError || task.answer || (task.mode === "find" && task.outcome ? `${task.outcome.replaceAll("_", " ")} · ${task.message || task.target || ""}` : task.message) || "";
     if (answer) wrap(ctx, answer, 28, 738, 544, 74, { size: p.fs(26), weight: 700 });
-    const ch = p.button("cancel", 28, 816, 544, 62, cancelGoal, running && !state.llmCancelling);
+    const ch = p.button("cancel", 28, 816, 544, 62, task.mode === "find" ? stopFinding : cancelGoal, running && !state.llmCancelling);
     fillRR(ctx, 28, 816, 544, 62, 14, running ? (ch ? "#A82222" : T.dangerSolid) : T.neutralBorder);
-    txt(ctx, state.llmCancelling ? "Cancelling…" : "Cancel", 28, 816, 544, 62, { size: p.fs(30), weight: 700, color: "#FFFFFF", align: "center" });
+    txt(ctx, state.llmCancelling ? "Stopping…" : task.mode === "find" ? "Stop finding" : "Cancel", 28, 816, 544, 62, { size: p.fs(30), weight: 700, color: "#FFFFFF", align: "center" });
+  },
+});
+
+new Panel("auto", {
+  wPx: 880, hPx: 76, S: S_FAR, dist: 2, order: 4,
+  draw(ctx, p) {
+    p.visible = finding();
+    if (!p.visible) return;
+    const t = state.llmTask;
+    p.root(ctx, 0, 0, 880, 76, 12);
+    const phase = t.phase === "watching" ? "WATCHING" : t.phase === "lost" ? "LOST → re-search" : `SEARCHING ${Math.max(0, Math.ceil(Number(t.seconds_left) || 0))} s`;
+    txt(ctx, `AUTO · FIND ${t.target || "object"} · ${phase}`, 16, 8, 620, 30, { size: p.fs(17), font: "mono", weight: 700, color: T.accent, fit: true });
+    txt(ctx, state.llmError || `Session ${Math.max(0, Math.ceil(Number(t.session_left) || 0))} s left`, 16, 40, 600, 25, { size: p.fs(13), font: "mono" });
+    p.button("stopFinding", 650, 10, 214, 56, stopFinding, !state.llmCancelling);
+    fillRR(ctx, 650, 10, 214, 56, 10, T.dangerSolid);
+    txt(ctx, state.llmCancelling ? "Stopping…" : "Stop finding", 660, 10, 194, 56, { size: p.fs(18), weight: 700, color: "#FFFFFF", align: "center", fit: true });
   },
 });
 
@@ -1071,6 +1124,7 @@ placeOnArc(P.status.group, -SIDE_PANEL_YAW, 1.3, EYE);
 placeOnArc(P.actions.group, SIDE_PANEL_YAW, 1.3, EYE);
 placeUnity(P.strip.group, 0, EYE - 0.9 * Math.sin(STRIP_BELOW_DEG * DEG), 0.9 * Math.cos(STRIP_BELOW_DEG * DEG), STRIP_TILT_DEG, 0);
 placeOnArc(P.brain.group, 46, 1.25, EYE + 0.1);
+placeUnity(P.auto.group, 0, EYE - 0.63, 2.0);
 placeUnity(P.mission.group, 0, EYE - 0.22, 1.35);
 placeUnity(P.banner.group, 0, EYE + 0.12, 1.6);
 for (const p of Object.values(panels)) { scene.add(p.group); p.moveRoot = p.group; }
@@ -1441,7 +1495,9 @@ pollDetections();
 loadOperators(); refreshMission(); setInterval(refreshMission, 3000);
 loadActions();
 connectSocket();
-fetch("/api/v1/llm/task").then((r) => (r.ok ? r.json() : null)).then((t) => { if (t) { state.llmTask = t; markDirty("brain"); if (t.state === "running") pollLlm(); } }).catch(() => {});
+fetch("/api/v1/llm/task").then((r) => (r.ok ? r.json() : null)).then((t) => { if (t) { state.llmTask = t; syncFinding(); markDirty("brain"); if (t.state === "running") pollLlm(); } }).catch(() => {});
+document.getElementById("stop-finding").addEventListener("click", stopFinding);
+syncFinding();
 document.getElementById("reset-layout").addEventListener("click", resetLayout);
 const talkBtn = document.getElementById("talk");
 talkBtn.addEventListener("pointerdown", (e) => { e.preventDefault(); startTalking(); });
