@@ -84,6 +84,10 @@ Open `http://<laptop-ip>:8000/cockpit/vr` in the Quest Browser and click **ENTER
   - Latch Emergency Stop (button **A** or grips+**A**): feel a heavy, unmistakable warning rumble (300ms at 1.0 intensity) across both controllers.
   - Push-to-talk (hold **Y**): feel subtle confirmation pulses on record start and release.
   - Autonomous find locks onto target (`WATCHING`): feel double-pulse confirmation that the AI spotted the target.
+  - Low Battery warning (< 20%) & High Latency (> 350ms): feel tactile warning pulse alerts when thresholds are crossed.
+- [ ] **Low Battery & High RTT Latency Warning HUD**:
+  - When battery drops below 20%, verify a red warning chip `LOW BATTERY · <pct>%` appears in the Header strip, the Status panel battery bar turns red (`#F87171`), and a 180ms haptic alert fires.
+  - When network RTT latency spikes above 350ms, verify an amber warning chip `HIGH LATENCY · <rtt>ms` appears in the Header, the Backend RTT cell colors red/orange, and a 120ms haptic alert fires.
 
 ### C. Voice & Push-to-Talk (PR #128, PR #132)
 - [ ] **In-Headset Push-to-Talk**:
