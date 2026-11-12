@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from backend.ai.control.brain import AnthropicBrain, MockBrain, ModelTurn, RawCall
 from backend.ai.control.executor import (
-    DryRunGateway, FindLimits, LoopLimits, TaskRunner, describe_where, parse_find_goal, target_labels,
+    DryRunGateway, FindLimits, LoopLimits, Task, TaskRunner, describe_where, parse_find_goal, target_labels,
 )
 from backend.ai.control.router import create_llm_router
 from backend.ai.control.tools import FIND_MAX_PITCH, FIND_TOOL_DEFS, PlanValidationError, validate_call
@@ -110,6 +110,29 @@ class ScriptBrain:
         return self.turns.pop(0) if self.turns else turn(text="I could not find it.")
 
 
+class TrackedTask(Task):
+    """A Task that records every value assigned to ``phase`` (in order), so a test can ask "did it reach WATCHING?"
+    instead of sampling the current phase, which races with a fast run (found -> watching -> lost in a millisecond)."""
+
+    def __setattr__(self, name, value):
+        if name == "phase":
+            self.__dict__.setdefault("phase_log", []).append(value)
+        super().__setattr__(name, value)
+
+
+def track_phases(runner):
+    """Make every task this runner starts a TrackedTask (done before the run's coroutine first executes)."""
+    begin = runner._begin
+
+    async def tracked(task):
+        task.__class__ = TrackedTask
+        task.__dict__["phase_log"] = []
+        return await begin(task)
+
+    runner._begin = tracked
+    return runner
+
+
 def limits(**kw):
     base = dict(timeout_s=120.0, session_s=1e9, settle_s=0.0, watch_interval_s=0.0, lost_after_s=2.0)
     base.update(kw)
@@ -121,7 +144,7 @@ def make(brain, clock=None, seen=None, tick=1.0, camera=..., gateway=None, run_l
     gw = gateway or FindGateway(clock, seen=seen, tick=tick)
     cam = FakeCamera(clock) if camera is ... else camera
     runner = TaskRunner(gw, brain, LoopLimits(), camera=cam, find_limits=limits(**kw), clock=clock, run_logger=run_logger)
-    return runner, gw, clock
+    return track_phases(runner), gw, clock
 
 
 async def settle(runner, loops=200):
@@ -137,12 +160,25 @@ async def run_to_end(runner):
     return runner.task
 
 
-async def wait_phase(runner, phase, loops=2000):
-    for _ in range(loops):
-        if runner.task.phase == phase:
-            return
+def phase_sequence(task):
+    """The phases the task went through, in order, consecutive repeats collapsed (e.g. searching, watching, lost, searching)."""
+    out = []
+    for phase in task.__dict__.get("phase_log", []):
+        if not out or out[-1] != phase:
+            out.append(phase)
+    return out
+
+
+async def wait_phase(runner, phase, times=1, timeout_s=5.0):
+    """Wait until the task HAS ENTERED ``phase`` (``times`` times in all), however briefly, from the recorded transition
+    log. A real 1 ms sleep lets the JPEG worker thread (``asyncio.to_thread``) finish; the timeout is wall-clock."""
+    task = runner.task
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while phase_sequence(task).count(phase) < times:
+        if loop.time() > deadline:
+            raise AssertionError(f"never reached phase {phase} x{times}; transitions={phase_sequence(task)} at {task.phase}/{task.state}")
         await asyncio.sleep(0.001)
-    raise AssertionError(f"never reached phase {phase}; at {runner.task.phase}/{runner.task.state}")
 
 
 # ------------------------------------------------------------------ tools / validation
@@ -213,24 +249,33 @@ def test_where_description_from_the_box():
 
 @pytest.mark.asyncio
 async def test_fake_brain_drives_look_move_look_found_and_the_run_ends_with_a_stop():
-    brain = ScriptBrain([
+    visible = {"on": False}                  # YOLO sees nothing while searching, so only the found() tool can end the search
+    script = iter([
         turn(call("look"), text="Looking around."),
         turn(call("move", {"direction": "forward", "seconds": 1.0, "speed": 0.3}), text="Stepping forward."),
         turn(call("look")),
         turn(call("found", {"label": "ball", "where": "ahead, about 1 m"}), text="I can see it."),
     ])
-    runner, gw, _ = make(brain)
+
+    def brain_fn(messages):
+        step = next(script)
+        if step.calls[0].name == "found":
+            visible["on"] = True             # ...and the ball stays in view afterwards, so WATCH holds (no race with a re-search)
+        return step
+
+    runner, gw, _ = make(ScriptBrain(fn=brain_fn), seen=lambda: [det("sports ball", 0.8)] if visible["on"] else [])
     task = await runner.start_find("ball")
     await wait_phase(runner, "watching")
+    assert task.phase == "watching" and task.state == "running"          # deterministic: the target is in view, WATCH cannot end
 
     assert [s.tool for s in task.steps] == ["look", "move", "look", "found"]
     assert all(s.state == "done" for s in task.steps)
     assert task.steps[0].note == "Looking around."                      # the model's short reason is kept
-    assert task.found == {"label": "ball", "where": "ahead, about 1 m"} or task.found["label"] == "ball"
-    assert gw.names[-1] == "stop" or gw.names[-2:] == ["stop", "set_posture"][-2:] or "stop" in gw.names
-    assert gw.of("run_bounded")[0]["source"] == "llm"
+    assert task.found["label"] == "ball" and task.found["where"] == "ahead, about 1 m"
+    assert gw.of("run_bounded")[0]["source"] == "llm" and "stop" in gw.names     # parked: stop sent when it entered WATCH
+    assert phase_sequence(task) == ["searching", "watching"]            # exactly one search, then watching
     await runner.cancel()                                                # end the session
-    assert gw.names[-1] in ("stop", "set_posture") and "stop" in gw.names
+    assert task.outcome == "stopped_by_operator" and gw.names[-1] in ("stop", "set_posture")
 
 
 @pytest.mark.asyncio
@@ -523,7 +568,7 @@ async def test_target_missing_for_more_than_two_seconds_starts_a_new_search_and_
 
     visible["on"] = True                                           # the new search sees it again
     gate.set()
-    await wait_phase(runner, "watching")
+    await wait_phase(runner, "watching", times=2)                  # the SECOND time it enters WATCH
     assert task.searches == 2 and brain.calls == 2 and task.found["label"] == "sports ball"
     await runner.cancel()
 
