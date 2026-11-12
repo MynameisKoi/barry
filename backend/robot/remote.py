@@ -46,6 +46,7 @@ import httpx
 from backend.robot import protocol
 from backend.robot.config import (
     HEIGHT_PRESETS_Z,
+    MOTION_SCALE_FOR_INTENSITY,
     PACE_FOR_INTENSITY,
     RobotConfig,
     priority_stop_timeout_s,
@@ -126,6 +127,7 @@ class RemoteRobotClient(RobotInterface):
         # Serializes session acquisition + seq assignment + send for mutating
         # commands. stop()/emergency_stop() deliberately do NOT use it.
         self._cmd_lock = threading.Lock()
+        self._style_on_laptop = False   # set when the robot API lacks /movement-style (see set_movement_style)
         # Guards the small bits of shared state below (never held during I/O).
         self._state_lock = threading.RLock()
 
@@ -173,7 +175,8 @@ class RemoteRobotClient(RobotInterface):
     # ------------------------------------------------------------------
 
     def move_analog(self, command: MotionCommand) -> CommandResult:
-        body = {"forward": command.forward, "strafe": command.strafe, "turn": command.turn}
+        scale = self._laptop_motion_scale()
+        body = {"forward": command.forward * scale, "strafe": command.strafe * scale, "turn": command.turn * scale}
         result = self._command("motion", protocol.PATH_MOTION, body)
         if result.ok:
             self._track(moving=not command.is_zero, last_command="stop" if command.is_zero else "motion")
@@ -203,10 +206,32 @@ class RemoteRobotClient(RobotInterface):
 
     def set_movement_style(self, style: MovementStyle) -> CommandResult:
         body = {"intensity": style.intensity.value, "gait": style.gait.value}
-        result = self._command("movement_style", protocol.PATH_MOVEMENT_STYLE, body)
-        if result.ok:
-            self._track(intensity=style.intensity, gait=style.gait)
-        return result
+        if not self._style_on_laptop:
+            result = self._command("movement_style", protocol.PATH_MOVEMENT_STYLE, body)
+            if result.ok or getattr(result, "http_status", None) not in (404, 405):
+                if result.ok:
+                    self._track(intensity=style.intensity, gait=style.gait)
+                return result
+            # Older robot APIs (e.g. the dog's robot_api.py on :8100) have no movement-style route.
+            # Apply intensity here instead: scale analog motion before forwarding it (never above
+            # the raw stick, so HIGH = the previous behaviour). Gait/pace cannot change without the route.
+            self._style_on_laptop = True
+            logger.warning("Robot API has no %s; applying intensity on the laptop (motion scale %s)",
+                           protocol.PATH_MOVEMENT_STYLE, {k.value: v for k, v in MOTION_SCALE_FOR_INTENSITY.items()})
+        self._track(intensity=style.intensity, gait=style.gait)
+        scale = MOTION_SCALE_FOR_INTENSITY[style.intensity]
+        return CommandResult(
+            CommandStatus.ACCEPTED, "movement_style",
+            f"Intensity {style.intensity.value.upper()} applied on the laptop (motion x{scale:g}); "
+            "the robot API has no movement-style route, so the gait/pace is unchanged.",
+            intensity=style.intensity,
+        )
+
+    def _laptop_motion_scale(self) -> float:
+        """Motion scale for laptop-side intensity (1.0 while the robot API handles intensity itself)."""
+        if not self._style_on_laptop:
+            return 1.0
+        return MOTION_SCALE_FOR_INTENSITY.get(self._state.intensity, 1.0)
 
     def set_posture(
         self,
@@ -354,6 +379,9 @@ class RemoteRobotClient(RobotInterface):
                 error = f"malformed telemetry reply: {exc}"
             else:
                 with self._state_lock:
+                    if self._style_on_laptop:   # the robot doesn't know the intensity; the laptop owns it
+                        telemetry.control_state = replace(
+                            telemetry.control_state, intensity=self._state.intensity, gait=self._state.gait)
                     self._state = telemetry.control_state
                     self._last_telemetry = telemetry
                 return telemetry
