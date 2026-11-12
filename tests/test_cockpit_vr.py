@@ -40,6 +40,30 @@ def test_cockpit_vr_safety_rules_present():
     assert '"Controller lost"' in html and '"VR session ended"' in html
 
 
+def test_cockpit_vr_detection_overlay_uses_fresh_normalized_boxes():
+    html = TestClient(app).get("/cockpit/vr").text
+    assert 'const DETECTION_POLL_MS = 333, DETECTION_MAX_AGE_S = 2' in html
+    assert 'fetch("/api/ai/detections", { cache: "no-store" })' in html
+    assert 'payload?.status === "available"' in html
+    assert 'const [top, left, bottom, right] = box' in html
+    assert 'const [top, left, bottom, right] = detection.box' in html
+    assert 'typeof age !== "number"' in html and 'typeof v === "number" && Number.isFinite(v)' in html
+    assert 'const rect = containedVideoRect(sourceW, sourceH)' in html
+    assert 'rect.x + left * rect.w' in html and 'rect.y + top * rect.h' in html
+    assert 'age_s: age' in html and 'd.age_s + elapsed <= DETECTION_MAX_AGE_S' in html
+    assert 'state.detectionStatus !== "available" || !state.cameraLive' in html
+    assert 'detectionOn ? `DETECT · ${detections.length}` : "DETECT OFF"' in html
+    assert 'if (signature !== state.detectionsSignature)' in html
+
+
+def test_cockpit_vr_contained_video_rect_handles_wide_and_tall_frames():
+    html = TestClient(app).get("/cockpit/vr").text
+    assert 'const VIDEO_INSET = 10, VIDEO_INNER_W = 860, VIDEO_INNER_H = 475' in html
+    assert 'if (vh > VIDEO_INNER_H) { vh = VIDEO_INNER_H; vw = VIDEO_INNER_H * aspect; }' in html
+    assert 'return { x: VIDEO_INSET + (VIDEO_INNER_W - vw) / 2, y: VIDEO_INSET + (VIDEO_INNER_H - vh) / 2, w: vw, h: vh }' in html
+    assert 'videoMesh.scale.set(rect.w * S_FAR / 1000, rect.h * S_FAR / 1000, 1)' in html
+
+
 def test_dog_video_url_prefers_explicit_then_robot_host(monkeypatch):
     monkeypatch.setenv("DOG_VIDEO_URL", "http://10.0.0.5:6500/video_feed")
     assert dog_video_url() == "http://10.0.0.5:6500/video_feed"

@@ -73,6 +73,7 @@ WebXR only: hold Y (>= 0.35 s) = push-to-talk to `POST /api/v1/voice/command` (t
 both thumbsticks clicked in for 1 s resets the layout. The control strip sits 35° below the eye line (tilted 30°) in both apps.
 Camera: with `ROBOT_MODE=remote` the laptop camera service (YOLO, `/api/v1/camera/*`) reads the dog's MJPEG feed
 (`DOG_VIDEO_URL`, else port 6500 on the `ROBOT_REMOTE_URL` host), never the laptop webcam; `CAMERA_SOURCE=dog` forces it.
+WebXR detection overlay: `/api/ai/detections` returns normalized `[ymin, xmin, ymax, xmax]` boxes; map them over the contained video rectangle and show only available results with `age_s ≤ 2` while the camera is LIVE.
 
 ### Motion control and authentication (testing defaults; Tom decided on 2026-11-12 to keep them as they are)
 - `REQUIRE_ACTIVE_MISSION=false`: hand, voice and LLM can move the robot without an active mission.
