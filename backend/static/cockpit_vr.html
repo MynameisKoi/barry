@@ -129,7 +129,7 @@ const hasControl = () => Boolean(controlSessionId);
 // runs a matched command (forward/back N s, turn left/right N°, stop, emergency stop) as source "voice", or hands
 // anything else to the LLM brain. Max 15 s per clip (the router's limit).
 const VOICE_HOLD_S = 0.35, VOICE_MAX_MS = 15000;
-const voice = { phase: "idle", stream: null, recorder: null, chunks: [], timer: null, startedAt: 0 };
+const voice = { phase: "idle", stream: null, recorder: null, chunks: [], timer: null, startedAt: 0, level: 0, analyser: null, audioContext: null, dataArray: null };
 state.voice = { phase: "idle", text: "" };
 let audioCtx = null;
 function chime(freq, ms) {
@@ -141,11 +141,47 @@ function chime(freq, ms) {
     o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime + ms / 1000);
   } catch (e) {}
 }
+function setupVoiceAnalyser(stream) {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx || !stream) return;
+    if (!voice.audioContext || voice.audioContext.state === "closed") {
+      voice.audioContext = new AudioCtx();
+    }
+    if (voice.audioContext.state === "suspended") {
+      voice.audioContext.resume().catch(() => {});
+    }
+    const sourceNode = voice.audioContext.createMediaStreamSource(stream);
+    voice.analyser = voice.audioContext.createAnalyser();
+    voice.analyser.fftSize = 64;
+    sourceNode.connect(voice.analyser);
+    voice.dataArray = new Uint8Array(voice.analyser.frequencyBinCount);
+  } catch (_) {
+    voice.analyser = null;
+  }
+}
+function updateVoiceLevel() {
+  if (voice.phase !== "recording" || !voice.analyser || !voice.dataArray) {
+    voice.level = 0;
+    return 0;
+  }
+  try {
+    voice.analyser.getByteFrequencyData(voice.dataArray);
+    let sum = 0;
+    for (let i = 0; i < voice.dataArray.length; i++) sum += voice.dataArray[i];
+    const avg = sum / (voice.dataArray.length || 1);
+    voice.level = Math.min(1.0, Math.max(0.0, avg / 128.0));
+  } catch (_) {
+    voice.level = 0;
+  }
+  return voice.level;
+}
 function setVoice(phase, text = "") { state.voice = { phase, text }; markDirty("header", "status", "strip"); }
 async function ensureMic() {
   if (voice.stream && voice.stream.active) return voice.stream;
   if (!navigator.mediaDevices?.getUserMedia) throw new Error(window.isSecureContext ? "no microphone API" : "microphone needs HTTPS or the chrome://flags origin");
   voice.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  setupVoiceAnalyser(voice.stream);
   return voice.stream;
 }
 async function startTalking() {
@@ -171,13 +207,14 @@ async function startTalking() {
 }
 function stopTalking() {
   clearTimeout(voice.timer);
+  voice.level = 0;
   if (voice.phase === "starting") { voice.phase = "idle"; return; }
   if (voice.phase !== "recording") return;
   voice.phase = "sending"; chime(520, 90);
   try { voice.recorder.stop(); } catch (e) { voice.phase = "idle"; }
 }
 async function sendClip(blob) {
-  if (performance.now() - voice.startedAt < 300 || blob.size < 500) { voice.phase = "idle"; setVoice("error", "Too short: hold Y while you speak"); return; }
+  if (performance.now() - voice.startedAt < 300 || blob.size < 500) { voice.phase = "idle"; voice.level = 0; setVoice("error", "Too short: hold Y while you speak"); return; }
   setVoice("sending", "Transcribing…");
   const ext = blob.type.includes("mp4") ? "m4a" : "webm";
   const form = new FormData(); form.append("audio", blob, `clip.${ext}`);
@@ -197,7 +234,7 @@ async function sendClip(blob) {
     }
   } catch (err) {
     setVoice("error", `Voice failed: ${err.message}`);
-  } finally { voice.phase = "idle"; }
+  } finally { voice.phase = "idle"; voice.level = 0; }
 }
 
 // ------------------------------------------------------------------ HTTP (control session + sequenced commands)
@@ -792,8 +829,10 @@ new Panel("header", {
     x += txt(ctx, "BARRY", x, 0, 200, H, { size: p.fs(20), weight: 800, font: "brand", tracking: 0.18, color: T.brand }) + 16;
     x += chip(ctx, x, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: c.mission[0], tone: c.mission[1] }) + 10;
     const vp = state.voice.phase;
-    if (vp === "listening") chip(ctx, x, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: "LISTENING · release to send", tone: "danger" });
-    else if (vp === "sending") chip(ctx, x, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: "TRANSCRIBING…", tone: "accent" });
+    if (vp === "listening") {
+      const bars = [" ", " ", "▂", "▃", "▄", "▅", "▆", "▇"][Math.min(7, Math.floor(voice.level * 8))] || " ";
+      chip(ctx, x, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: `LISTENING ${bars} · release to send`, tone: "danger" });
+    } else if (vp === "sending") chip(ctx, x, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: "TRANSCRIBING…", tone: "accent" });
     let rx = W - 20;
     rx -= chip(ctx, rx, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: c.control[0], tone: c.control[1], anchorRight: true }) + 10;
     rx -= chip(ctx, rx, 12, { h: 32, padX: 12, gap: 8, r: 8, size: cs, text: c.robot[0], tone: c.robot[1], anchorRight: true }) + 10;
@@ -970,6 +1009,10 @@ new Panel("strip", {
     const th = p.hold("talk", 728, 28, 100, 52, startTalking, stopTalking);
     const talkFill = vp === "listening" ? T.dangerSolid : vp === "sending" ? T.accentSoft : th ? T.accentSoft : "#FFFFFF";
     fillRR(ctx, 728, 28, 100, 52, 10, talkFill, vp === "listening" ? T.dangerSolid : T.accent, th || vp === "listening" ? 2 : 1);
+    if (vp === "listening" && voice.level > 0.05) {
+      const barW = Math.round(84 * voice.level);
+      fillRR(ctx, 736, 70, barW, 4, 2, "#34D399");
+    }
     const talkLabel = vp === "listening" ? "Release to send" : vp === "sending" ? "Sending…" : "Hold to talk";
     wrap(ctx, talkLabel, 734, 28, 88, 52, { size: p.fs(13), weight: 700, color: vp === "listening" ? "#FFFFFF" : T.accent, valign: "middle" });
     if (state.mission?.active) {                               // End mission: two presses within 3 s
@@ -1584,6 +1627,7 @@ renderer.setAnimationLoop(() => {
     updateVideo(now);
     if (state.latchPhase === "confirming") { if (now > state.latchUntil) state.latchPhase = "idle"; markDirty("banner"); }
     if (state.endArmedUntil) { if (now > state.endArmedUntil) state.endArmedUntil = 0; markDirty("strip"); }
+    if (state.voice?.phase === "listening") { updateVoiceLevel(); markDirty("header", "strip"); }
     if (now - lastRedraw > 50) { lastRedraw = now; for (const p of Object.values(panels)) if (p.dirty) p.redraw(); }
   } catch (err) { if (!window.__loopErr) { window.__loopErr = true; reportClient("error", `frame: ${err.stack || err}`); } }
   renderer.render(scene, camera);
@@ -1617,7 +1661,7 @@ talkBtn.addEventListener("pointerdown", (e) => { e.preventDefault(); startTalkin
 for (const ev of ["pointerup", "pointerleave", "pointercancel"]) talkBtn.addEventListener(ev, stopTalking);
 addEventListener("keydown", (e) => { if (e.key.toLowerCase() === "v" && !e.repeat && document.activeElement?.tagName !== "INPUT") startTalking(); });
 addEventListener("keyup", (e) => { if (e.key.toLowerCase() === "v") stopTalking(); });
-window.__barry = { state, panels, renderer, scene, camera, controllers, teleopTick, updateControllers, clientLog, startGrab, resetLayout, screenRoot, sendClip, voice, pressTarget, releaseTarget, pulseHaptic, pulseAllHaptics };
+window.__barry = { state, panels, renderer, scene, camera, controllers, teleopTick, updateControllers, clientLog, startGrab, resetLayout, screenRoot, sendClip, voice, pressTarget, releaseTarget, pulseHaptic, pulseAllHaptics, updateVoiceLevel, setupVoiceAnalyser };
 </script>
 </body>
 </html>
