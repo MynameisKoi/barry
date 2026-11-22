@@ -1,6 +1,6 @@
 # BARRY API Specification (v1)
 
-This document describes the HTTP routes that exist on `main`. The code is the source of truth. Where a shape is defined in a module, this page points there rather than copying every field. Routes marked **dry run** accept requests but do not send anything to the robot yet.
+This document describes the HTTP routes that exist on `main`. The code is the source of truth. Where a shape is defined in a module, this page points there rather than copying every field.
 
 Where a route is defined is given in brackets after each heading.
 
@@ -11,7 +11,7 @@ Where a route is defined is given in brackets after each heading.
 | Service | Base URL | Used by |
 |---|---|---|
 | Laptop backend | `http://<LAPTOP_IP>:8000` | Quest (`/api/v1/*`), cockpit browser |
-| Pi Robot API | `http://<PI_ADDRESS>:8100` | Laptop relay only, plus emergency mode from the Quest (Phase 4, not built yet) |
+| Pi Robot API | `http://<PI_ADDRESS>:8100` | Laptop relay, plus emergency direct mode from the WebXR cockpit (#159) |
 
 The laptop backend is `backend.main:app`. The Pi API is `backend.robot.server:app`.
 
@@ -35,7 +35,7 @@ Auth dependencies: `backend/robot/relay_router.py` (`QuestRelayAuth`), `backend/
 
 ## 1. Quest robot relay (laptop) [`backend/robot/relay_router.py`]
 
-The laptop relays these routes to the Pi unchanged, so the Quest uses the same request and response shapes as the Pi API in section 2. Two extra behaviours apply:
+The laptop sends these routes through the command gateway (`backend/gateway/gateway.py`) to the Pi. The Quest uses the same request and response shapes as the Pi API in section 2. Two extra behaviours apply:
 
 - If the Pi cannot be reached, the laptop returns **503** with `{"detail": "Pi Robot API unavailable."}`.
 - Responses from the Pi, including its 401, 409, 422, 423 and 503, are passed through with their status codes.
@@ -143,7 +143,7 @@ All camera responses carry `Cache-Control: no-store`.
 
 ---
 
-## 4. Voice prototype (dry run) [`backend/voice/router.py`]
+## 4. Voice [`backend/voice/router.py`]
 
 ### `POST /api/v1/voice/command`
 
@@ -156,17 +156,17 @@ Auth: `X-Robot-Key` (`QUEST_API_KEY`).
 {"transcript": "forward two seconds", "command": "...", "args": {...}, "matched": true}
 ```
 
-`command`, `args` and `matched` come from `match_command()` in `backend/voice/commands.py`. Nothing is sent to the robot yet (dry run).
+`command`, `args` and `matched` come from `match_command()` in `backend/voice/commands.py`. The response also has `command_result` and `task`. A matched command runs on the robot through the gateway as source `voice`, and stop or e-stop also cancels a running LLM task. An unmatched transcript starts an LLM task and `task` holds it.
 
 Errors: 400 empty clip; 413 clip too large; 502 transcription failed; 503 transcription not configured (`OPENAI_API_KEY` unset). Transcription uses the OpenAI transcription API; the model is `OPENAI_TRANSCRIBE_MODEL` (default `gpt-transcribe`), see `backend/voice/transcribe.py`.
 
 ---
 
-## 5. LLM control prototype (dry run) [`backend/ai/control/router.py`]
+## 5. LLM control [`backend/ai/control/router.py`]
 
 Auth: `X-Robot-Key` (`QUEST_API_KEY`). The brain is Anthropic `claude-sonnet-5-5` by default (`ANTHROPIC_CONTROL_MODEL` overrides it; `ANTHROPIC_API_KEY` is required). `LLM_PLANNER=mock` selects the offline brain. See `backend/ai/control/router.py`, `brain.py` and `executor.py`.
 
-The brain is a loop. The model calls robot tools one step at a time and sees each result before it picks the next. There is **no confirm step**: the loop starts as soon as you post a goal. The executor runs against a dry-run gateway until the command gateway (#57) is merged.
+The brain is a loop. The model calls robot tools one step at a time and sees each result before it picks the next. There is **no confirm step**: the loop starts as soon as you post a goal. Each tool call is sent to the robot through the command gateway as source `llm`, within the gateway's limits.
 
 ### `POST /api/v1/llm/plan`
 
