@@ -83,4 +83,4 @@ curl http://localhost:8000/api/ai/status
 
 1. **Resilience:** `AIOrchestrator` (`backend/ai/orchestrator.py`) wraps all provider calls. If the primary provider times out, hits a rate limit, or returns invalid JSON, BARRY automatically attempts `FALLBACK_LLM_PROVIDER` (default `mock`). If all providers fail, BARRY stores a degraded `unavailable` analysis record and **never** drops the ingested inspection event.
 2. **Prompt-Injection Isolation:** All event payloads are wrapped in `<untrusted_observation>` tags and treated strictly as sensor data.
-3. **Strict Control Separation:** The LLM is advisory only — it cannot authorize NFC credentials, issue robot movement commands, or override emergency stop.
+3. **Gateway-bounded control:** The LLM control brain (`backend/ai/control/`) moves the robot only through the command gateway, within the gateway's limits. It never overrides stop or emergency stop, and any hand input or stop cancels its task. The analysis providers above cannot authorize NFC credentials.

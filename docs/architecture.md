@@ -92,7 +92,7 @@ The system runs as two services:
    - **Watchdog**: the Pi stops the robot if no command arrives within `ROBOT_WATCHDOG_MS` (default 500 ms). Clients resend movement commands while a direction is held, so a dropped laptop or Wi-Fi link brings the robot to a halt.
    - **Speed cap**: the Pi limits requested speed to `ROBOT_MAX_SPEED`.
    - **Link loss**: if the Pi is unreachable, `RemoteRobotClient` reports `connected: false` instead of raising, so the Quest shows the robot as offline.
-   - Movements are intended to require active mission authorization (enforced on the laptop; planned, not yet implemented in `backend/main.py`).
+   - **Mission check**: the command gateway can require an active mission for voice and LLM motion (`REQUIRE_ACTIVE_MISSION`). It is `false` for testing (decided 2026-11-12). Stop and emergency stop never need a mission.
 
 6. **Security Boundary**:
    Every Robot API route except `/healthz` requires the `X-Robot-Key` header to match `ROBOT_API_KEY`, a shared secret configured on both the laptop and the Pi. In `dogzilla` mode the Pi app fails on its first request if the key is unset (`ROBOT_API_KEY is required`), and the Robot API does not enable CORS because only the laptop backend calls it.
@@ -145,16 +145,14 @@ The two-service split above is the target design. On the laptop, `backend/robot/
 - **Relay routes for emergency stop, reset, posture, reset and discrete motion** (#69). Emergency stop uses the priority lane, like `/stop`.
 - **Pi deployment files**: `deploy/pi/` (systemd unit, `robot.env.example`, README) (#64).
 - **Windows PC-VR build** for Quest Link (#61): `Barry → Build PC-VR (Windows)` in the Unity editor, and `frontend/barry-vr/build_pcvr.sh`.
-- **Voice prototype, dry run** (#60): `POST /api/v1/voice/command` (OpenAI transcription, fixed command matching). Nothing is sent to the robot.
-- **LLM planner prototype, dry run** (#65): `/api/v1/llm/*`, using Anthropic `claude-sonnet-5-5`.
-- **LLM brain loop** (#71): `POST /api/v1/llm/plan` starts the loop and returns at once. Poll `GET /api/v1/llm/task`. Caps: `LLM_MAX_STEPS`, `LLM_MAX_TURNS` (8), `LLM_TIMEOUT_S` (60). Failures appear as task state. There is no confirm step. Still runs against a dry-run gateway until #57.
+- **Command gateway** (#57): `backend/gateway/gateway.py`, one owner of the Pi lease. The Quest relay, voice and LLM all send robot commands through it, with stop/e-stop > hand > voice > LLM priority and limits.
+- **Command metadata** (#58): `X-Command-Source` and `X-Command-Id` headers, for audit.
+- **Voice mode** (#60): `POST /api/v1/voice/command` (OpenAI transcription, fixed command matching). Matched commands run on the robot through the gateway as source `voice`; anything else is sent to the LLM brain.
+- **LLM brain loop** (#65, #71): `POST /api/v1/llm/plan` starts the loop and returns at once. Poll `GET /api/v1/llm/task`. Anthropic `claude-sonnet-5-5`. Caps: `LLM_MAX_STEPS`, `LLM_MAX_TURNS` (8), `LLM_TIMEOUT_S` (60). Failures appear as task state. There is no confirm step. Tool calls move the robot through the gateway as source `llm`.
+- **Find-object mode** (Phase 6b): `POST /api/v1/llm/find`, see [control-plan.md](control-plan.md).
+- **Robot camera for normal modes** (Phase 7): with `ROBOT_MODE=remote` the laptop reads the dog's MJPEG feed and runs YOLO on it.
+- **Emergency direct mode** (#159): the WebXR cockpit can send hand commands straight to the Pi (`:8100`).
 - **Stop and emergency stop need no Quest key** (#72): `POST /api/v1/stop` and `POST /api/v1/emergency-stop` are always allowed, since they can only make the robot safer. The laptop still sends its own `ROBOT_API_KEY` to the Pi.
 
-**In progress:**
-- **Command gateway** (#57): one owner of the Pi lease. The voice and LLM routes and the cockpit will switch to it. Until then they use the dry run.
-- **Command metadata** (#58): `X-Command-Source` and `X-Command-Id` headers, for audit.
-
 **Not yet built:**
-- Emergency mode (Phase 4) and the robot camera (Phase 7).
-- Mission authorization on movement.
 - `requirements-pi.txt`. The Pi install list is in `deploy/pi/README.md`.
